@@ -1,22 +1,28 @@
 openapi: 3.1.0
 info:
-  # Do not change the title, if the title changes, the import paths will be broken
   title: Api
   version: 0.1.0
-  description: API specification
+  description: Shift Scheduler API
 servers:
   - url: /api
     description: Base API path
 tags:
   - name: health
     description: Health operations
+  - name: surveys
+    description: Survey management
+  - name: respondents
+    description: Respondent management
+  - name: responses
+    description: Survey responses
+  - name: allocations
+    description: Shift allocations
 paths:
   /healthz:
     get:
       operationId: healthCheck
       tags: [health]
       summary: Health check
-      description: Returns server health status
       responses:
         "200":
           description: Healthy
@@ -24,6 +30,435 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+
+  /surveys:
+    get:
+      operationId: listSurveys
+      tags: [surveys]
+      summary: List all surveys
+      responses:
+        "200":
+          description: List of surveys
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Survey"
+    post:
+      operationId: createSurvey
+      tags: [surveys]
+      summary: Create a new survey for a given month
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateSurveyBody"
+      responses:
+        "201":
+          description: Survey created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Survey"
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /surveys/{id}:
+    get:
+      operationId: getSurvey
+      tags: [surveys]
+      summary: Get a survey with all its shifts
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Survey detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SurveyDetail"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    patch:
+      operationId: updateSurvey
+      tags: [surveys]
+      summary: Update a survey (e.g. close it)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateSurveyBody"
+      responses:
+        "200":
+          description: Survey updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Survey"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /surveys/{id}/responses:
+    get:
+      operationId: getSurveyResponses
+      tags: [responses]
+      summary: Get all responses for a survey
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: List of responses
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/RespondentWithResponses"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /surveys/{id}/stats:
+    get:
+      operationId: getSurveyStats
+      tags: [surveys]
+      summary: Get availability statistics for a survey
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Survey statistics
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SurveyStats"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /surveys/{id}/allocate:
+    post:
+      operationId: runAllocation
+      tags: [allocations]
+      summary: Run automatic shift allocation for a closed survey
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RunAllocationBody"
+      responses:
+        "200":
+          description: Allocation result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AllocationResult"
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /surveys/{id}/allocations:
+    get:
+      operationId: getAllocations
+      tags: [allocations]
+      summary: Get current allocations for a survey
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Allocations
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AllocationResult"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /surveys/{id}/allocations/adjust:
+    patch:
+      operationId: adjustAllocation
+      tags: [allocations]
+      summary: Manually adjust a respondent's allocation (penalty override)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdjustAllocationBody"
+      responses:
+        "200":
+          description: Adjusted allocation
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AllocationResult"
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /surveys/{id}/allocation-stats:
+    get:
+      operationId: getAllocationStats
+      tags: [allocations]
+      summary: Get statistical analysis of shift allocations
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Allocation statistics
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AllocationStats"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /respond/{surveyToken}:
+    get:
+      operationId: getPublicSurvey
+      tags: [responses]
+      summary: Get public survey form data by token
+      parameters:
+        - name: surveyToken
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Public survey form
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PublicSurvey"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "410":
+          description: Survey closed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    post:
+      operationId: submitResponse
+      tags: [responses]
+      summary: Submit availability response for a survey
+      parameters:
+        - name: surveyToken
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SubmitResponseBody"
+      responses:
+        "201":
+          description: Response submitted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SubmitResponseResult"
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "410":
+          description: Survey closed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /respondents:
+    get:
+      operationId: listRespondents
+      tags: [respondents]
+      summary: List all respondents
+      responses:
+        "200":
+          description: List of respondents
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Respondent"
+    post:
+      operationId: createRespondent
+      tags: [respondents]
+      summary: Create or update a respondent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateRespondentBody"
+      responses:
+        "201":
+          description: Respondent created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Respondent"
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /respondents/{id}:
+    patch:
+      operationId: updateRespondent
+      tags: [respondents]
+      summary: Update a respondent's category or name
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateRespondentBody"
+      responses:
+        "200":
+          description: Respondent updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Respondent"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    delete:
+      operationId: deleteRespondent
+      tags: [respondents]
+      summary: Delete a respondent
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: Deleted
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
 components:
   schemas:
     HealthStatus:
@@ -34,3 +469,496 @@ components:
       required:
         - status
 
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error
+
+    Survey:
+      type: object
+      properties:
+        id:
+          type: integer
+        title:
+          type: string
+        month:
+          type: integer
+        year:
+          type: integer
+        status:
+          type: string
+          enum: [open, closed]
+        token:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - title
+        - month
+        - year
+        - status
+        - token
+        - createdAt
+        - updatedAt
+
+    Shift:
+      type: object
+      properties:
+        id:
+          type: integer
+        surveyId:
+          type: integer
+        date:
+          type: string
+          format: date
+        dayType:
+          type: string
+          enum: [weekday, weekend]
+        startTime:
+          type: string
+        endTime:
+          type: string
+        durationHours:
+          type: number
+        label:
+          type: string
+      required:
+        - id
+        - surveyId
+        - date
+        - dayType
+        - startTime
+        - endTime
+        - durationHours
+        - label
+
+    SurveyDetail:
+      type: object
+      properties:
+        id:
+          type: integer
+        title:
+          type: string
+        month:
+          type: integer
+        year:
+          type: integer
+        status:
+          type: string
+          enum: [open, closed]
+        token:
+          type: string
+        shifts:
+          type: array
+          items:
+            $ref: "#/components/schemas/Shift"
+        responseCount:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - title
+        - month
+        - year
+        - status
+        - token
+        - shifts
+        - responseCount
+        - createdAt
+        - updatedAt
+
+    Respondent:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        email:
+          type: ["string", "null"]
+        category:
+          type: string
+          enum: [AFP, General]
+        createdAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - name
+        - category
+        - createdAt
+
+    RespondentWithResponses:
+      type: object
+      properties:
+        respondentId:
+          type: integer
+        name:
+          type: string
+        category:
+          type: string
+          enum: [AFP, General]
+        selectedShiftIds:
+          type: array
+          items:
+            type: integer
+        totalAvailableHours:
+          type: number
+      required:
+        - respondentId
+        - name
+        - category
+        - selectedShiftIds
+        - totalAvailableHours
+
+    PublicSurvey:
+      type: object
+      properties:
+        id:
+          type: integer
+        title:
+          type: string
+        month:
+          type: integer
+        year:
+          type: integer
+        status:
+          type: string
+          enum: [open, closed]
+        shifts:
+          type: array
+          items:
+            $ref: "#/components/schemas/Shift"
+      required:
+        - id
+        - title
+        - month
+        - year
+        - status
+        - shifts
+
+    SubmitResponseBody:
+      type: object
+      properties:
+        name:
+          type: string
+        email:
+          type: ["string", "null"]
+        selectedShiftIds:
+          type: array
+          items:
+            type: integer
+      required:
+        - name
+        - selectedShiftIds
+
+    SubmitResponseResult:
+      type: object
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
+      required:
+        - success
+        - message
+
+    CreateSurveyBody:
+      type: object
+      properties:
+        month:
+          type: integer
+          minimum: 1
+          maximum: 12
+        year:
+          type: integer
+        title:
+          type: ["string", "null"]
+      required:
+        - month
+        - year
+
+    UpdateSurveyBody:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [open, closed]
+        title:
+          type: ["string", "null"]
+
+    CreateRespondentBody:
+      type: object
+      properties:
+        name:
+          type: string
+        email:
+          type: ["string", "null"]
+        category:
+          type: string
+          enum: [AFP, General]
+      required:
+        - name
+        - category
+
+    UpdateRespondentBody:
+      type: object
+      properties:
+        name:
+          type: ["string", "null"]
+        email:
+          type: ["string", "null"]
+        category:
+          type: ["string", "null"]
+          enum: [AFP, General, null]
+
+    RunAllocationBody:
+      type: object
+      properties:
+        afpCount:
+          type: integer
+          description: Number of AFP members (4 or 5)
+        afpMinHours:
+          type: number
+          description: Minimum hours for AFP members
+        afpMaxHours:
+          type: number
+          description: Maximum hours for AFP members
+      required:
+        - afpCount
+
+    AllocatedShift:
+      type: object
+      properties:
+        shiftId:
+          type: integer
+        date:
+          type: string
+          format: date
+        label:
+          type: string
+        durationHours:
+          type: number
+        dayType:
+          type: string
+          enum: [weekday, weekend]
+      required:
+        - shiftId
+        - date
+        - label
+        - durationHours
+        - dayType
+
+    RespondentAllocation:
+      type: object
+      properties:
+        respondentId:
+          type: integer
+        name:
+          type: string
+        category:
+          type: string
+          enum: [AFP, General]
+        allocatedShifts:
+          type: array
+          items:
+            $ref: "#/components/schemas/AllocatedShift"
+        totalHours:
+          type: number
+        isManuallyAdjusted:
+          type: boolean
+        penaltyNote:
+          type: ["string", "null"]
+      required:
+        - respondentId
+        - name
+        - category
+        - allocatedShifts
+        - totalHours
+        - isManuallyAdjusted
+
+    AllocationResult:
+      type: object
+      properties:
+        surveyId:
+          type: integer
+        allocations:
+          type: array
+          items:
+            $ref: "#/components/schemas/RespondentAllocation"
+        averageHours:
+          type: number
+        stdDev:
+          type: number
+        unallocatedShiftIds:
+          type: array
+          items:
+            type: integer
+      required:
+        - surveyId
+        - allocations
+        - averageHours
+        - stdDev
+        - unallocatedShiftIds
+
+    AdjustAllocationBody:
+      type: object
+      properties:
+        respondentId:
+          type: integer
+        shiftIdsToAdd:
+          type: array
+          items:
+            type: integer
+        shiftIdsToRemove:
+          type: array
+          items:
+            type: integer
+        penaltyNote:
+          type: ["string", "null"]
+      required:
+        - respondentId
+
+    ShiftTypeStat:
+      type: object
+      properties:
+        shiftLabel:
+          type: string
+        dayType:
+          type: string
+          enum: [weekday, weekend]
+        totalSelections:
+          type: integer
+        selectionRate:
+          type: number
+      required:
+        - shiftLabel
+        - dayType
+        - totalSelections
+        - selectionRate
+
+    RespondentStat:
+      type: object
+      properties:
+        respondentId:
+          type: integer
+        name:
+          type: string
+        category:
+          type: string
+          enum: [AFP, General]
+        totalAvailableHours:
+          type: number
+        shiftsSelected:
+          type: integer
+        weekdayShifts:
+          type: integer
+        weekendShifts:
+          type: integer
+      required:
+        - respondentId
+        - name
+        - category
+        - totalAvailableHours
+        - shiftsSelected
+        - weekdayShifts
+        - weekendShifts
+
+    SurveyStats:
+      type: object
+      properties:
+        totalRespondents:
+          type: integer
+        averageAvailableHours:
+          type: number
+        stdDevAvailableHours:
+          type: number
+        shiftTypeStats:
+          type: array
+          items:
+            $ref: "#/components/schemas/ShiftTypeStat"
+        respondentStats:
+          type: array
+          items:
+            $ref: "#/components/schemas/RespondentStat"
+      required:
+        - totalRespondents
+        - averageAvailableHours
+        - stdDevAvailableHours
+        - shiftTypeStats
+        - respondentStats
+
+    AllocationRespondentStat:
+      type: object
+      properties:
+        respondentId:
+          type: integer
+        name:
+          type: string
+        category:
+          type: string
+          enum: [AFP, General]
+        totalHours:
+          type: number
+        weekdayShifts:
+          type: integer
+        weekendShifts:
+          type: integer
+        shiftCount:
+          type: integer
+        isManuallyAdjusted:
+          type: boolean
+      required:
+        - respondentId
+        - name
+        - category
+        - totalHours
+        - weekdayShifts
+        - weekendShifts
+        - shiftCount
+        - isManuallyAdjusted
+
+    AllocationStats:
+      type: object
+      properties:
+        averageHours:
+          type: number
+        stdDev:
+          type: number
+        minHours:
+          type: number
+        maxHours:
+          type: number
+        respondentStats:
+          type: array
+          items:
+            $ref: "#/components/schemas/AllocationRespondentStat"
+        afpStats:
+          type: array
+          items:
+            $ref: "#/components/schemas/AllocationRespondentStat"
+        generalStats:
+          type: array
+          items:
+            $ref: "#/components/schemas/AllocationRespondentStat"
+      required:
+        - averageHours
+        - stdDev
+        - minHours
+        - maxHours
+        - respondentStats
+        - afpStats
+        - generalStats

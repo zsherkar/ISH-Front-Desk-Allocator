@@ -1,0 +1,15 @@
+Help me design a website (accessible by desktop and phone), where I can do this:
+
+1. Put out a survey collection form for respondents to select for their availability (if at the backend, I select a particular month, the internal form should automatically be created with all weekday shifts (9-11, 11-2, 2-5 and 5-8) and weekend shifts (8-12, 12-4, 4-8) for that month without me manually needing to create the form. Depending upon what date is a weekday and what is a weekend according to a month, the form should get created (see the code below about this)
+
+2. It should collect all the responses and store them internally, accessible by me.
+
+4. Once I close the form, on the backend, the system should automatically allot equal number of shifts for categories of respondents: AFP category where each of the 4 (or 5) AFPs get 3-4 hours of shift time and General category where after AFP allotment, the remaining shifts should be divided equally in all the respondents in such a manner that the number of hours they should get should be within 1-2 standard deviation of the average. Basically I should be able to select which respondents go to which category (AFP, General, Penalty) and so on, and the category should be customized accordingly. 
+
+5. The system should be customizable in a way that it allows me to manually change final allocation hours if someone is being penalized for a month.
+
+6. It should also ensure that if someone has given such less availability that they're way below the average number of hours, it should not collapse and allot them a decent number of shifts, as close to the average while keeping others closest to the average.
+
+7. It should ensure that everyone only gets shift they chose and not a shift they did not choose. 
+
+8. There should be a statistical analysis on the backend of availability according to overall response by a respondent about each shift type etc., and also a statistical analysis on the backend post-allocation to show how many of each type of shift allotted to someone, total hours, average and so on.
