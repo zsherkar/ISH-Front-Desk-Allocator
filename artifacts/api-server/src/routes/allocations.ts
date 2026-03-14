@@ -72,6 +72,8 @@ async function buildAllocationResult(surveyId: number) {
       return {
         shiftId: id,
         date: shift.date,
+        startTime: shift.startTime,
+        endTime: shift.endTime,
         label: shift.label,
         durationHours: shift.durationHours,
         dayType: shift.dayType as "weekday" | "weekend",
@@ -129,9 +131,7 @@ router.post("/surveys/:id/allocate", async (req, res): Promise<void> => {
 
   const result = await runAllocation({
     surveyId: id,
-    afpCount: parsed.data.afpCount,
-    afpMinHours: parsed.data.afpMinHours ?? 3,
-    afpMaxHours: parsed.data.afpMaxHours ?? 4,
+    afpRespondentIds: parsed.data.afpRespondentIds,
   });
 
   // Save allocations to DB

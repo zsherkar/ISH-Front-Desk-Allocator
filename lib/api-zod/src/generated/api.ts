@@ -152,15 +152,9 @@ export const RunAllocationParams = zod.object({
 });
 
 export const RunAllocationBody = zod.object({
-  afpCount: zod.number().describe("Number of AFP members (4 or 5)"),
-  afpMinHours: zod
-    .number()
-    .optional()
-    .describe("Minimum hours for AFP members"),
-  afpMaxHours: zod
-    .number()
-    .optional()
-    .describe("Maximum hours for AFP members"),
+  afpRespondentIds: zod
+    .array(zod.number())
+    .describe("IDs of respondents to treat as AFP (get exactly 10 hours each)"),
 });
 
 export const RunAllocationResponse = zod.object({

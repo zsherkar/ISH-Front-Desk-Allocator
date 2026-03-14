@@ -728,17 +728,13 @@ components:
     RunAllocationBody:
       type: object
       properties:
-        afpCount:
-          type: integer
-          description: Number of AFP members (4 or 5)
-        afpMinHours:
-          type: number
-          description: Minimum hours for AFP members
-        afpMaxHours:
-          type: number
-          description: Maximum hours for AFP members
+        afpRespondentIds:
+          type: array
+          items:
+            type: integer
+          description: IDs of respondents to treat as AFP (get exactly 10 hours each)
       required:
-        - afpCount
+        - afpRespondentIds
 
     AllocatedShift:
       type: object

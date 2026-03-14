@@ -7,10 +7,6 @@
  */
 
 export interface RunAllocationBody {
-  /** Number of AFP members (4 or 5) */
-  afpCount: number;
-  /** Minimum hours for AFP members */
-  afpMinHours?: number;
-  /** Maximum hours for AFP members */
-  afpMaxHours?: number;
+  /** IDs of respondents to treat as AFP (get exactly 10 hours each) */
+  afpRespondentIds: number[];
 }
