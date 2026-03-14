@@ -15,7 +15,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { ArrowLeft, Lock, Calendar, Users, BarChart3, Clock, Settings, BrainCircuit } from "lucide-react";
+import { ArrowLeft, Lock, Calendar, Users, BarChart3, Clock, Settings, BrainCircuit, CheckCircle2 } from "lucide-react";
 import { Link } from "wouter";
 import { clsx } from "clsx";
 
