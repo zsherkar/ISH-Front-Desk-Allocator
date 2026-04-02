@@ -17,6 +17,8 @@ export function AdminSurveys() {
   const [month, setMonth] = useState<string>(String(new Date().getMonth() + 1));
   const [year, setYear] = useState<string>(String(new Date().getFullYear()));
   const [copiedId, setCopiedId] = useState<number | null>(null);
+  const surveyList = Array.isArray(surveys) ? surveys : [];
+  const hasUnexpectedSurveyPayload = Boolean(surveys) && !Array.isArray(surveys);
 
   const handleCreate = async () => {
     try {
@@ -69,7 +71,7 @@ export function AdminSurveys() {
 
         {isLoading ? (
           <div className="p-12 text-center text-slate-400 animate-pulse">Loading surveys...</div>
-        ) : !surveys || surveys.length === 0 ? (
+        ) : surveyList.length === 0 ? (
           <div className="p-16 text-center flex flex-col items-center">
             <div className="w-16 h-16 bg-slate-100 rounded-full flex items-center justify-center mb-4 text-slate-400">
               <Calendar className="w-8 h-8" />
@@ -79,10 +81,15 @@ export function AdminSurveys() {
             <Button onClick={() => setIsCreateOpen(true)} variant="outline" className="rounded-xl">
               Create First Survey
             </Button>
+            {hasUnexpectedSurveyPayload && (
+              <p className="text-xs text-amber-600 mt-2">
+                API returned unexpected survey payload. Ensure API server is running and `/api` is reachable.
+              </p>
+            )}
           </div>
         ) : (
           <div className="divide-y divide-slate-100">
-            {surveys.map((survey) => (
+            {surveyList.map((survey) => (
               <div key={survey.id} className="p-4 hover:bg-slate-50 transition-colors flex items-center justify-between group">
                 <div className="flex items-center gap-4">
                   <div className="w-12 h-12 rounded-xl bg-blue-50 text-primary flex items-center justify-center font-display font-bold text-lg">

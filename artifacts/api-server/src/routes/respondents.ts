@@ -1,12 +1,13 @@
 import { Router, type IRouter } from "express";
 import { eq } from "drizzle-orm";
-import { db, respondentsTable } from "@workspace/db";
+import { db, respondentsTable, allocationsTable, surveysTable, shiftsTable } from "@workspace/db";
 import {
   CreateRespondentBody,
   UpdateRespondentBody,
   ListRespondentsResponse,
   UpdateRespondentResponse,
 } from "@workspace/api-zod";
+import { computeAverage, computeMedian, computeStdDev } from "../lib/stats.js";
 
 const router: IRouter = Router();
 
@@ -85,6 +86,119 @@ router.delete("/respondents/:id", async (req, res): Promise<void> => {
   }
 
   res.sendStatus(204);
+});
+
+router.get("/respondents/:id/fd-history", async (req, res): Promise<void> => {
+  const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+  const id = parseInt(raw, 10);
+  if (isNaN(id)) {
+    res.status(400).json({ error: "Invalid id" });
+    return;
+  }
+
+  const [respondent] = await db
+    .select()
+    .from(respondentsTable)
+    .where(eq(respondentsTable.id, id));
+
+  if (!respondent) {
+    res.status(404).json({ error: "Respondent not found" });
+    return;
+  }
+
+  const rows = await db
+    .select({
+      surveyId: allocationsTable.surveyId,
+      shiftId: allocationsTable.shiftId,
+      isManuallyAdjusted: allocationsTable.isManuallyAdjusted,
+      month: surveysTable.month,
+      year: surveysTable.year,
+      surveyTitle: surveysTable.title,
+      dayType: shiftsTable.dayType,
+      durationHours: shiftsTable.durationHours,
+      shiftDate: shiftsTable.date,
+    })
+    .from(allocationsTable)
+    .innerJoin(surveysTable, eq(allocationsTable.surveyId, surveysTable.id))
+    .innerJoin(shiftsTable, eq(allocationsTable.shiftId, shiftsTable.id))
+    .where(eq(allocationsTable.respondentId, id));
+
+  type HistoryBucket = {
+    surveyId: number;
+    month: number;
+    year: number;
+    surveyTitle: string;
+    totalHours: number;
+    shiftCount: number;
+    weekdayShiftCount: number;
+    weekendShiftCount: number;
+    manualAdjustmentsCount: number;
+    firstShiftDate: string | null;
+    lastShiftDate: string | null;
+  };
+
+  const historyBySurvey = new Map<number, HistoryBucket>();
+
+  for (const row of rows) {
+    if (!historyBySurvey.has(row.surveyId)) {
+      historyBySurvey.set(row.surveyId, {
+        surveyId: row.surveyId,
+        month: row.month,
+        year: row.year,
+        surveyTitle: row.surveyTitle,
+        totalHours: 0,
+        shiftCount: 0,
+        weekdayShiftCount: 0,
+        weekendShiftCount: 0,
+        manualAdjustmentsCount: 0,
+        firstShiftDate: row.shiftDate,
+        lastShiftDate: row.shiftDate,
+      });
+    }
+
+    const bucket = historyBySurvey.get(row.surveyId)!;
+    bucket.totalHours += row.durationHours;
+    bucket.shiftCount += 1;
+    if (row.dayType === "weekday") bucket.weekdayShiftCount += 1;
+    if (row.dayType === "weekend") bucket.weekendShiftCount += 1;
+    if (row.isManuallyAdjusted) bucket.manualAdjustmentsCount += 1;
+
+    if (bucket.firstShiftDate === null || row.shiftDate < bucket.firstShiftDate) {
+      bucket.firstShiftDate = row.shiftDate;
+    }
+    if (bucket.lastShiftDate === null || row.shiftDate > bucket.lastShiftDate) {
+      bucket.lastShiftDate = row.shiftDate;
+    }
+  }
+
+  const monthlyHistory = Array.from(historyBySurvey.values()).sort(
+    (a, b) => a.year - b.year || a.month - b.month,
+  );
+
+  const hourValues = monthlyHistory.map((entry) => entry.totalHours);
+  const meanHours = computeAverage(hourValues);
+  const medianHours = computeMedian(hourValues);
+  const stdDevHours = computeStdDev(hourValues, meanHours);
+
+  res.json({
+    respondent: {
+      id: respondent.id,
+      name: respondent.name,
+      email: respondent.email,
+      category: respondent.category,
+    },
+    summary: {
+      monthsWithAllocations: monthlyHistory.length,
+      totalAllocatedHours: hourValues.reduce((sum, value) => sum + value, 0),
+      meanHours,
+      averageHours: meanHours,
+      medianHours,
+      stdDevHours,
+      maxHours: hourValues.length > 0 ? Math.max(...hourValues) : 0,
+      minHours: hourValues.length > 0 ? Math.min(...hourValues) : 0,
+    },
+    monthlyHistory,
+  });
 });
 
 export default router;
