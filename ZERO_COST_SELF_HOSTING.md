@@ -57,6 +57,10 @@ pnpm run smoke:deploy
 
 - Uses Docker Compose if Docker is installed.
 - Automatically falls back to local production smoke test if Docker is unavailable.
+- Uses Docker Compose if Docker is installed.
+- Automatically falls back to local production smoke test if Docker is unavailable.
+- Implemented in Node scripts, so it works in PowerShell/CMD/Bash without requiring `bash`.
+
 
 ## Operations checklist
 
