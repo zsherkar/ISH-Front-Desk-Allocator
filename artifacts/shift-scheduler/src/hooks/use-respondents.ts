@@ -1,13 +1,14 @@
 import { useQueryClient } from "@tanstack/react-query";
 import {
   useListRespondents,
+  useGetRespondentFdHistory,
   useCreateRespondent as useGeneratedCreateRespondent,
   useUpdateRespondent as useGeneratedUpdateRespondent,
   useDeleteRespondent as useGeneratedDeleteRespondent,
   getListRespondentsQueryKey
 } from "@workspace/api-client-react";
 
-export { useListRespondents };
+export { useListRespondents, useGetRespondentFdHistory };
 
 export function useCreateRespondent() {
   const queryClient = useQueryClient();

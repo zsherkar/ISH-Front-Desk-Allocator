@@ -194,12 +194,8 @@ export interface UpdateRespondentBody {
 }
 
 export interface RunAllocationBody {
-  /** Number of AFP members (4 or 5) */
-  afpCount: number;
-  /** Minimum hours for AFP members */
-  afpMinHours?: number;
-  /** Maximum hours for AFP members */
-  afpMaxHours?: number;
+  /** IDs of respondents to treat as AFP (get exactly 10 hours each) */
+  afpRespondentIds: number[];
 }
 
 export type AllocatedShiftDayType =
@@ -314,11 +310,45 @@ export interface AllocationRespondentStat {
 }
 
 export interface AllocationStats {
+  meanHours: number;
   averageHours: number;
+  medianHours: number;
   stdDev: number;
   minHours: number;
   maxHours: number;
+  totalAllocatedHours: number;
   respondentStats: AllocationRespondentStat[];
   afpStats: AllocationRespondentStat[];
   generalStats: AllocationRespondentStat[];
+}
+
+export interface RespondentFdHistoryMonthlyEntry {
+  surveyId: number;
+  month: number;
+  year: number;
+  surveyTitle: string;
+  totalHours: number;
+  shiftCount: number;
+  weekdayShiftCount: number;
+  weekendShiftCount: number;
+  manualAdjustmentsCount: number;
+  firstShiftDate: string | null;
+  lastShiftDate: string | null;
+}
+
+export interface RespondentFdHistorySummary {
+  monthsWithAllocations: number;
+  totalAllocatedHours: number;
+  meanHours: number;
+  averageHours: number;
+  medianHours: number;
+  stdDevHours: number;
+  maxHours: number;
+  minHours: number;
+}
+
+export interface RespondentFdHistory {
+  respondent: Respondent;
+  summary: RespondentFdHistorySummary;
+  monthlyHistory: RespondentFdHistoryMonthlyEntry[];
 }

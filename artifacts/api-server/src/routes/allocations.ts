@@ -2,6 +2,7 @@ import { Router, type IRouter } from "express";
 import { eq, and, inArray } from "drizzle-orm";
 import { db, surveysTable, shiftsTable, respondentsTable, allocationsTable, responsesTable } from "@workspace/db";
 import { runAllocation } from "../lib/allocationEngine.js";
+import { computeAverage, computeMedian, computeStdDev } from "../lib/stats.js";
 import {
   RunAllocationBody,
   AdjustAllocationBody,
@@ -91,12 +92,8 @@ async function buildAllocationResult(surveyId: number) {
   });
 
   const allHours = allocationsList.map((a) => a.totalHours);
-  const avg = allHours.length > 0 ? allHours.reduce((a, b) => a + b, 0) / allHours.length : 0;
-  const variance =
-    allHours.length > 0
-      ? allHours.reduce((sum, h) => sum + Math.pow(h - avg, 2), 0) / allHours.length
-      : 0;
-  const std = Math.sqrt(variance);
+  const avg = computeAverage(allHours);
+  const std = computeStdDev(allHours, avg);
 
   return { surveyId, allocations: allocationsList, averageHours: avg, stdDev: std, unallocatedShiftIds };
 }
@@ -278,17 +275,21 @@ router.get("/surveys/:id/allocation-stats", async (req, res): Promise<void> => {
   const generalStats = allocations.filter((a) => a.category === "General").map(toStat);
 
   const allHours = respondentStats.map((r) => r.totalHours);
-  const avg = allHours.length > 0 ? allHours.reduce((a, b) => a + b, 0) / allHours.length : 0;
-  const variance = allHours.length > 0 ? allHours.reduce((sum, h) => sum + Math.pow(h - avg, 2), 0) / allHours.length : 0;
-  const std = Math.sqrt(variance);
+  const avg = computeAverage(allHours);
+  const median = computeMedian(allHours);
+  const std = computeStdDev(allHours, avg);
   const minHours = allHours.length > 0 ? Math.min(...allHours) : 0;
   const maxHours = allHours.length > 0 ? Math.max(...allHours) : 0;
+  const totalAllocatedHours = allHours.reduce((sum, hours) => sum + hours, 0);
 
   res.json({
+    meanHours: avg,
     averageHours: avg,
+    medianHours: median,
     stdDev: std,
     minHours,
     maxHours,
+    totalAllocatedHours,
     respondentStats,
     afpStats,
     generalStats,

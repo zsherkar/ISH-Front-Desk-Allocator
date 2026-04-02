@@ -26,6 +26,7 @@ import type {
   HealthStatus,
   PublicSurvey,
   Respondent,
+  RespondentFdHistory,
   RespondentWithResponses,
   RunAllocationBody,
   SubmitResponseBody,
@@ -1480,3 +1481,91 @@ export const useDeleteRespondent = <
 > => {
   return useMutation(getDeleteRespondentMutationOptions(options));
 };
+
+/**
+ * @summary Get cross-month front-desk allocation history for a respondent
+ */
+export const getGetRespondentFdHistoryUrl = (id: number) => {
+  return `/api/respondents/${id}/fd-history`;
+};
+
+export const getRespondentFdHistory = async (
+  id: number,
+  options?: RequestInit,
+): Promise<RespondentFdHistory> => {
+  return customFetch<RespondentFdHistory>(getGetRespondentFdHistoryUrl(id), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getGetRespondentFdHistoryQueryKey = (id: number) => {
+  return [`/api/respondents/${id}/fd-history`] as const;
+};
+
+export const getGetRespondentFdHistoryQueryOptions = <
+  TData = Awaited<ReturnType<typeof getRespondentFdHistory>>,
+  TError = ErrorType<ErrorResponse>,
+>(
+  id: number,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getRespondentFdHistory>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ?? getGetRespondentFdHistoryQueryKey(id);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof getRespondentFdHistory>>
+  > = ({ signal }) => getRespondentFdHistory(id, { signal, ...requestOptions });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled: !!id,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof getRespondentFdHistory>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetRespondentFdHistoryQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getRespondentFdHistory>>
+>;
+export type GetRespondentFdHistoryQueryError = ErrorType<ErrorResponse>;
+
+/**
+ * @summary Get cross-month front-desk allocation history for a respondent
+ */
+
+export function useGetRespondentFdHistory<
+  TData = Awaited<ReturnType<typeof getRespondentFdHistory>>,
+  TError = ErrorType<ErrorResponse>,
+>(
+  id: number,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getRespondentFdHistory>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetRespondentFdHistoryQueryOptions(id, options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
