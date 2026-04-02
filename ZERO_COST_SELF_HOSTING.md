@@ -64,11 +64,17 @@ pnpm run smoke:deploy
 If you see `Cannot find module @rollup/rollup-win32-x64-msvc` during `pnpm run smoke:deploy`:
 
 1. Ensure `pnpm-workspace.yaml` does not override `rollup-win32-x64-msvc` to `'-'`.
-2. Reinstall dependencies cleanly:
+2. Refresh lockfile metadata (so stale optional-dependency overrides are removed):
+
+```powershell
+pnpm install --no-frozen-lockfile
+```
+
+3. If needed, reinstall dependencies cleanly:
 
 ```powershell
 Remove-Item -Recurse -Force node_modules
-pnpm install
+pnpm install --no-frozen-lockfile
 ```
 
 ## Operations checklist
