@@ -8,10 +8,13 @@
 import type { AllocationRespondentStat } from "./allocationRespondentStat";
 
 export interface AllocationStats {
+  meanHours: number;
   averageHours: number;
+  medianHours: number;
   stdDev: number;
   minHours: number;
   maxHours: number;
+  totalAllocatedHours: number;
   respondentStats: AllocationRespondentStat[];
   afpStats: AllocationRespondentStat[];
   generalStats: AllocationRespondentStat[];
