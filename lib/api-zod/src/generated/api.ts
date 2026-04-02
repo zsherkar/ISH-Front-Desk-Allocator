@@ -264,10 +264,13 @@ export const GetAllocationStatsParams = zod.object({
 });
 
 export const GetAllocationStatsResponse = zod.object({
+  meanHours: zod.number(),
   averageHours: zod.number(),
+  medianHours: zod.number(),
   stdDev: zod.number(),
   minHours: zod.number(),
   maxHours: zod.number(),
+  totalAllocatedHours: zod.number(),
   respondentStats: zod.array(
     zod.object({
       respondentId: zod.number(),
@@ -395,4 +398,46 @@ export const UpdateRespondentResponse = zod.object({
  */
 export const DeleteRespondentParams = zod.object({
   id: zod.coerce.number(),
+});
+
+/**
+ * @summary Get cross-month front-desk allocation history for a respondent
+ */
+export const GetRespondentFdHistoryParams = zod.object({
+  id: zod.coerce.number(),
+});
+
+export const GetRespondentFdHistoryResponse = zod.object({
+  respondent: zod.object({
+    id: zod.number(),
+    name: zod.string(),
+    email: zod.string().nullish(),
+    category: zod.enum(["AFP", "General"]),
+    createdAt: zod.date(),
+  }),
+  summary: zod.object({
+    monthsWithAllocations: zod.number(),
+    totalAllocatedHours: zod.number(),
+    meanHours: zod.number(),
+    averageHours: zod.number(),
+    medianHours: zod.number(),
+    stdDevHours: zod.number(),
+    maxHours: zod.number(),
+    minHours: zod.number(),
+  }),
+  monthlyHistory: zod.array(
+    zod.object({
+      surveyId: zod.number(),
+      month: zod.number(),
+      year: zod.number(),
+      surveyTitle: zod.string(),
+      totalHours: zod.number(),
+      shiftCount: zod.number(),
+      weekdayShiftCount: zod.number(),
+      weekendShiftCount: zod.number(),
+      manualAdjustmentsCount: zod.number(),
+      firstShiftDate: zod.string().nullable(),
+      lastShiftDate: zod.string().nullable(),
+    }),
+  ),
 });

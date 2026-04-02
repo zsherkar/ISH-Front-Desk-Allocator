@@ -13,10 +13,12 @@ import {
   useRunAllocation,
   useGetAllocationStats,
 } from "@/hooks/use-allocations";
+import { useGetRespondentFdHistory } from "@/hooks/use-respondents";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import {
   ArrowLeft, Lock, LockOpen, Calendar, Users, BarChart3,
   Clock, Settings, BrainCircuit, CheckCircle2, Download, Image,
@@ -25,6 +27,18 @@ import { Link } from "wouter";
 import { clsx } from "clsx";
 import html2canvas from "html2canvas";
 import jsPDF from "jspdf";
+import {
+  BarChart,
+  Bar,
+  CartesianGrid,
+  Legend,
+  Line,
+  LineChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
 
 export function AdminSurveyDetail() {
   const { id } = useParams<{ id: string }>();
@@ -33,15 +47,17 @@ export function AdminSurveyDetail() {
   const { data: survey, isLoading: isSurveyLoading } = useGetSurvey(surveyId);
   const { data: responses } = useGetSurveyResponses(surveyId);
   const { data: stats } = useGetSurveyStats(surveyId);
-  const { data: allocations } = useGetAllocations(surveyId, { query: { retry: false } });
-  const { data: allocStats } = useGetAllocationStats(surveyId, { query: { retry: false, enabled: !!allocations } });
+  const { data: allocations } = useGetAllocations(surveyId);
+  const { data: allocStats } = useGetAllocationStats(surveyId);
 
   const updateMutation = useUpdateSurvey();
   const runAllocMutation = useRunAllocation();
 
   const [afpIds, setAfpIds] = useState<Set<number>>(new Set());
   const [showCalendar, setShowCalendar] = useState(false);
+  const [selectedRespondentId, setSelectedRespondentId] = useState<number | null>(null);
   const calendarRef = useRef<HTMLDivElement>(null);
+  const { data: respondentHistory } = useGetRespondentFdHistory(selectedRespondentId ?? 0);
 
   const toggleAfp = (id: number) => {
     const next = new Set(afpIds);
@@ -446,19 +462,27 @@ export function AdminSurveyDetail() {
           {allocStats && (
             <div className="space-y-6">
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
-                  <p className="text-sm font-medium text-slate-500 mb-1">Overall Average</p>
-                  <p className="text-2xl font-bold text-slate-900">{allocStats.averageHours.toFixed(1)} <span className="text-sm text-slate-400 font-normal">hrs</span></p>
-                </div>
-                <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
-                  <p className="text-sm font-medium text-slate-500 mb-1">Standard Deviation</p>
-                  <p className="text-2xl font-bold text-slate-900">{allocStats.stdDev.toFixed(2)}</p>
-                </div>
-                <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
-                  <p className="text-sm font-medium text-slate-500 mb-1">Min Hours</p>
-                  <p className="text-2xl font-bold text-slate-900">{allocStats.minHours} <span className="text-sm text-slate-400 font-normal">hrs</span></p>
-                </div>
-                <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
+	                <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
+	                  <p className="text-sm font-medium text-slate-500 mb-1">Overall Average</p>
+	                  <p className="text-2xl font-bold text-slate-900">{allocStats.averageHours.toFixed(1)} <span className="text-sm text-slate-400 font-normal">hrs</span></p>
+	                </div>
+	                <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
+	                  <p className="text-sm font-medium text-slate-500 mb-1">Median Hours</p>
+	                  <p className="text-2xl font-bold text-slate-900">{allocStats.medianHours.toFixed(1)} <span className="text-sm text-slate-400 font-normal">hrs</span></p>
+	                </div>
+	                <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
+	                  <p className="text-sm font-medium text-slate-500 mb-1">Standard Deviation</p>
+	                  <p className="text-2xl font-bold text-slate-900">{allocStats.stdDev.toFixed(2)}</p>
+	                </div>
+	                <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
+	                  <p className="text-sm font-medium text-slate-500 mb-1">Total Allocated</p>
+	                  <p className="text-2xl font-bold text-slate-900">{allocStats.totalAllocatedHours.toFixed(1)} <span className="text-sm text-slate-400 font-normal">hrs</span></p>
+	                </div>
+	                <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
+	                  <p className="text-sm font-medium text-slate-500 mb-1">Min Hours</p>
+	                  <p className="text-2xl font-bold text-slate-900">{allocStats.minHours} <span className="text-sm text-slate-400 font-normal">hrs</span></p>
+	                </div>
+	                <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
                   <p className="text-sm font-medium text-slate-500 mb-1">Max Hours</p>
                   <p className="text-2xl font-bold text-slate-900">{allocStats.maxHours} <span className="text-sm text-slate-400 font-normal">hrs</span></p>
                 </div>
@@ -480,20 +504,129 @@ export function AdminSurveyDetail() {
                   <tbody className="divide-y divide-slate-100">
                     {allocStats.respondentStats.map((s) => (
                       <tr key={s.respondentId}>
-                        <td className="px-6 py-3 font-medium text-slate-900">{s.name}</td>
-                        <td className="px-6 py-3">{s.category}</td>
-                        <td className="px-6 py-3 font-bold">{s.totalHours}</td>
-                        <td className="px-6 py-3 text-slate-600">{s.weekdayShifts}</td>
-                        <td className="px-6 py-3 text-slate-600">{s.weekendShifts}</td>
-                      </tr>
+	                        <td className="px-6 py-3 font-medium text-slate-900">
+                            <button
+                              className="underline decoration-dotted underline-offset-4 hover:text-indigo-700"
+                              onClick={() => setSelectedRespondentId(s.respondentId)}
+                            >
+                              {s.name}
+                            </button>
+                          </td>
+	                        <td className="px-6 py-3">{s.category}</td>
+	                        <td className="px-6 py-3 font-bold">{s.totalHours}</td>
+	                        <td className="px-6 py-3 text-slate-600">{s.weekdayShifts}</td>
+	                        <td className="px-6 py-3 text-slate-600">{s.weekendShifts}</td>
+	                      </tr>
                     ))}
                   </tbody>
                 </table>
               </div>
             </div>
           )}
-        </TabsContent>
-      </Tabs>
-    </AdminLayout>
-  );
+	        </TabsContent>
+	      </Tabs>
+
+      <Dialog
+        open={selectedRespondentId !== null}
+        onOpenChange={(open) => {
+          if (!open) setSelectedRespondentId(null);
+        }}
+      >
+        <DialogContent className="max-w-4xl">
+          <DialogHeader>
+            <DialogTitle>
+              {respondentHistory
+                ? `${respondentHistory.respondent.name} — Front Desk History`
+                : "Respondent history"}
+            </DialogTitle>
+          </DialogHeader>
+
+          {!respondentHistory ? (
+            <div className="py-8 text-center text-slate-500">Loading history…</div>
+          ) : (
+            <div className="space-y-6">
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <div className="rounded-xl border border-slate-200 p-4 bg-slate-50">
+                  <p className="text-xs uppercase text-slate-500">Total Hours</p>
+                  <p className="text-xl font-bold text-slate-900">
+                    {respondentHistory.summary.totalAllocatedHours.toFixed(1)}
+                  </p>
+                </div>
+                <div className="rounded-xl border border-slate-200 p-4 bg-slate-50">
+                  <p className="text-xs uppercase text-slate-500">Mean</p>
+                  <p className="text-xl font-bold text-slate-900">
+                    {respondentHistory.summary.meanHours.toFixed(1)}
+                  </p>
+                </div>
+                <div className="rounded-xl border border-slate-200 p-4 bg-slate-50">
+                  <p className="text-xs uppercase text-slate-500">Median</p>
+                  <p className="text-xl font-bold text-slate-900">
+                    {respondentHistory.summary.medianHours.toFixed(1)}
+                  </p>
+                </div>
+                <div className="rounded-xl border border-slate-200 p-4 bg-slate-50">
+                  <p className="text-xs uppercase text-slate-500">Std Dev</p>
+                  <p className="text-xl font-bold text-slate-900">
+                    {respondentHistory.summary.stdDevHours.toFixed(2)}
+                  </p>
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-slate-200 p-4">
+                <h4 className="text-sm font-semibold text-slate-700 mb-3">
+                  Monthly Allocated Hours Trend
+                </h4>
+                <div className="h-64">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart
+                      data={respondentHistory.monthlyHistory.map((entry) => ({
+                        ...entry,
+                        label: `${entry.month}/${entry.year}`,
+                      }))}
+                    >
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="label" />
+                      <YAxis />
+                      <Tooltip />
+                      <Line
+                        type="monotone"
+                        dataKey="totalHours"
+                        name="Hours"
+                        stroke="#4f46e5"
+                        strokeWidth={3}
+                      />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-slate-200 p-4">
+                <h4 className="text-sm font-semibold text-slate-700 mb-3">
+                  Weekday vs Weekend Shift Mix
+                </h4>
+                <div className="h-64">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart
+                      data={respondentHistory.monthlyHistory.map((entry) => ({
+                        ...entry,
+                        label: `${entry.month}/${entry.year}`,
+                      }))}
+                    >
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="label" />
+                      <YAxis />
+                      <Tooltip />
+                      <Legend />
+                      <Bar dataKey="weekdayShiftCount" name="Weekday shifts" fill="#14b8a6" />
+                      <Bar dataKey="weekendShiftCount" name="Weekend shifts" fill="#f59e0b" />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+	    </AdminLayout>
+	  );
 }

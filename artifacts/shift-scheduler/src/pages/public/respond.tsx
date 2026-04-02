@@ -10,7 +10,7 @@ import { clsx } from "clsx";
 
 export function PublicSurveyPage() {
   const { token } = useParams<{ token: string }>();
-  const { data: survey, isLoading, error } = useGetPublicSurvey(token || "", { query: { retry: false } });
+  const { data: survey, isLoading, error } = useGetPublicSurvey(token || "");
   const submitMutation = useSubmitResponse();
 
   const [name, setName] = useState("");

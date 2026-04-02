@@ -459,6 +459,31 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
+  /respondents/{id}/fd-history:
+    get:
+      operationId: getRespondentFdHistory
+      tags: [respondents]
+      summary: Get cross-month front-desk allocation history for a respondent
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Historical respondent analytics
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RespondentFdHistory"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
 components:
   schemas:
     HealthStatus:
@@ -930,13 +955,19 @@ components:
     AllocationStats:
       type: object
       properties:
+        meanHours:
+          type: number
         averageHours:
+          type: number
+        medianHours:
           type: number
         stdDev:
           type: number
         minHours:
           type: number
         maxHours:
+          type: number
+        totalAllocatedHours:
           type: number
         respondentStats:
           type: array
@@ -951,10 +982,98 @@ components:
           items:
             $ref: "#/components/schemas/AllocationRespondentStat"
       required:
+        - meanHours
         - averageHours
+        - medianHours
         - stdDev
         - minHours
         - maxHours
+        - totalAllocatedHours
         - respondentStats
         - afpStats
         - generalStats
+
+    RespondentFdHistoryMonthlyEntry:
+      type: object
+      properties:
+        surveyId:
+          type: integer
+        month:
+          type: integer
+        year:
+          type: integer
+        surveyTitle:
+          type: string
+        totalHours:
+          type: number
+        shiftCount:
+          type: integer
+        weekdayShiftCount:
+          type: integer
+        weekendShiftCount:
+          type: integer
+        manualAdjustmentsCount:
+          type: integer
+        firstShiftDate:
+          type: string
+          nullable: true
+        lastShiftDate:
+          type: string
+          nullable: true
+      required:
+        - surveyId
+        - month
+        - year
+        - surveyTitle
+        - totalHours
+        - shiftCount
+        - weekdayShiftCount
+        - weekendShiftCount
+        - manualAdjustmentsCount
+        - firstShiftDate
+        - lastShiftDate
+
+    RespondentFdHistorySummary:
+      type: object
+      properties:
+        monthsWithAllocations:
+          type: integer
+        totalAllocatedHours:
+          type: number
+        meanHours:
+          type: number
+        averageHours:
+          type: number
+        medianHours:
+          type: number
+        stdDevHours:
+          type: number
+        maxHours:
+          type: number
+        minHours:
+          type: number
+      required:
+        - monthsWithAllocations
+        - totalAllocatedHours
+        - meanHours
+        - averageHours
+        - medianHours
+        - stdDevHours
+        - maxHours
+        - minHours
+
+    RespondentFdHistory:
+      type: object
+      properties:
+        respondent:
+          $ref: "#/components/schemas/Respondent"
+        summary:
+          $ref: "#/components/schemas/RespondentFdHistorySummary"
+        monthlyHistory:
+          type: array
+          items:
+            $ref: "#/components/schemas/RespondentFdHistoryMonthlyEntry"
+      required:
+        - respondent
+        - summary
+        - monthlyHistory
