@@ -1,4 +1,4 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useMemo, useEffect } from "react";
 import { useParams } from "wouter";
 import { AdminLayout } from "@/components/AdminLayout";
 import { ScheduleCalendar } from "@/components/ScheduleCalendar";
@@ -8,11 +8,13 @@ import {
   useGetSurveyResponses,
   useGetSurveyStats,
   useDeleteSurveyResponse,
+  useUpdateSurveyResponse,
 } from "@/hooks/use-surveys";
 import {
   useGetAllocations,
   useRunAllocation,
   useGetAllocationStats,
+  useAdjustAllocation,
 } from "@/hooks/use-allocations";
 import { useGetRespondentFdHistory } from "@/hooks/use-respondents";
 import { Button } from "@/components/ui/button";
@@ -40,6 +42,22 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
+import { format, parseISO } from "date-fns";
+
+function formatTime12(time: string) {
+  const [h, m] = time.split(":").map(Number);
+  const suffix = h >= 12 ? "PM" : "AM";
+  const hour = h % 12 === 0 ? 12 : h % 12;
+  return `${hour}:${String(m).padStart(2, "0")} ${suffix}`;
+}
+
+function formatShiftDisplay(shift: { date: string; startTime: string; endTime: string }) {
+  return `${format(parseISO(shift.date), "EEE, MMM d")} · ${formatTime12(shift.startTime)}-${formatTime12(shift.endTime)}`;
+}
+
+function formatShiftLabelText(label: string) {
+  return label.replace(/\b(\d{2}:\d{2})\b/g, (match) => formatTime12(match));
+}
 
 export function AdminSurveyDetail() {
   const { id } = useParams<{ id: string }>();
@@ -53,20 +71,49 @@ export function AdminSurveyDetail() {
 
   const updateMutation = useUpdateSurvey();
   const runAllocMutation = useRunAllocation();
+  const adjustAllocationMutation = useAdjustAllocation();
+  const updateResponseMutation = useUpdateSurveyResponse();
 
   const [afpIds, setAfpIds] = useState<Set<number>>(new Set());
   const [showCalendar, setShowCalendar] = useState(false);
   const [selectedRespondentId, setSelectedRespondentId] = useState<number | null>(null);
   const [selectedResponse, setSelectedResponse] = useState<any | null>(null);
+  const [selectedShiftIds, setSelectedShiftIds] = useState<Set<number>>(new Set());
+  const [includedRespondentIds, setIncludedRespondentIds] = useState<Set<number>>(new Set());
+  const [statsShift, setStatsShift] = useState<{ id: number; label: string; names: string[] } | null>(null);
+  const [adjustTarget, setAdjustTarget] = useState<number | null>(null);
+  const [adjustShiftIds, setAdjustShiftIds] = useState<Set<number>>(new Set());
   const deleteResponseMutation = useDeleteSurveyResponse();
   const calendarRef = useRef<HTMLDivElement>(null);
   const { data: respondentHistory } = useGetRespondentFdHistory(selectedRespondentId ?? 0);
+
+  useEffect(() => {
+    if (!responses?.length) return;
+    setIncludedRespondentIds((prev) => {
+      if (prev.size > 0) return prev;
+      return new Set(responses.map((r) => r.respondentId));
+    });
+  }, [responses]);
 
   const toggleAfp = (id: number) => {
     const next = new Set(afpIds);
     if (next.has(id)) next.delete(id);
     else next.add(id);
     setAfpIds(next);
+  };
+
+  const toggleIncludedRespondent = (id: number) => {
+    const next = new Set(includedRespondentIds);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    setIncludedRespondentIds(next);
+  };
+
+  const toggleSelectedShift = (shiftId: number) => {
+    const next = new Set(selectedShiftIds);
+    if (next.has(shiftId)) next.delete(shiftId);
+    else next.add(shiftId);
+    setSelectedShiftIds(next);
   };
 
   const handleCloseSurvey = () => {
@@ -77,7 +124,7 @@ export function AdminSurveyDetail() {
 
   const handleReopenSurvey = () => {
     if (confirm("Reopen this survey? Respondents will be able to submit availability again.")) {
-      updateMutation.mutate({ id: surveyId, data: { status: "open" } });
+      updateMutation.mutate({ id: surveyId, data: { status: "open", closesAt: null } as any });
     }
   };
 
@@ -86,11 +133,40 @@ export function AdminSurveyDetail() {
       alert("Survey must be closed before running allocation.");
       return;
     }
+    if (includedRespondentIds.size === 0) {
+      alert("Select at least one respondent to include in allocation.");
+      return;
+    }
     runAllocMutation.mutate(
-      { id: surveyId, data: { afpRespondentIds: Array.from(afpIds) } },
+      { id: surveyId, data: { afpRespondentIds: Array.from(afpIds), includedRespondentIds: Array.from(includedRespondentIds) } as any },
       { onSuccess: () => setShowCalendar(true) }
     );
   };
+
+  const shiftStatsByShift = useMemo(() => {
+    if (!survey?.shifts || !responses?.length) return [];
+    const respondentById = new Map(responses.map((r) => [r.respondentId, r]));
+    return survey.shifts.map((shift) => {
+      const selectedBy = responses
+        .filter((r) => r.selectedShiftIds.includes(shift.id))
+        .map((r) => (r as any).preferredName || r.name);
+      return {
+        id: shift.id,
+        label: formatShiftDisplay(shift),
+        dayType: shift.dayType,
+        totalSelections: selectedBy.length,
+        selectionRate: respondentById.size > 0 ? selectedBy.length / respondentById.size : 0,
+        selectedBy,
+      };
+    });
+  }, [responses, survey?.shifts]);
+  const editedSelectedHours = useMemo(
+    () =>
+      (survey?.shifts || [])
+        .filter((shift) => selectedShiftIds.has(shift.id))
+        .reduce((sum, shift) => sum + shift.durationHours, 0),
+    [selectedShiftIds, survey?.shifts]
+  );
 
   const downloadPNG = async () => {
     if (!calendarRef.current) return;
@@ -193,6 +269,7 @@ export function AdminSurveyDetail() {
             <table className="w-full text-sm text-left">
               <thead className="bg-slate-50 text-slate-500 font-medium border-b border-slate-200">
                 <tr>
+                  <th className="px-6 py-4">Use</th>
                   <th className="px-6 py-4">Respondent</th>
                   <th className="px-6 py-4">Shifts Selected</th>
                   <th className="px-6 py-4">Total Available Hours</th>
@@ -201,15 +278,24 @@ export function AdminSurveyDetail() {
               <tbody className="divide-y divide-slate-100">
                 {!responses?.length ? (
                   <tr>
-                    <td colSpan={3} className="px-6 py-12 text-center text-slate-500">No responses yet.</td>
+                    <td colSpan={4} className="px-6 py-12 text-center text-slate-500">No responses yet.</td>
                   </tr>
                 ) : (
                   responses.map((r) => (
                     <tr key={r.respondentId} className="hover:bg-slate-50 transition-colors">
+                      <td className="px-6 py-4">
+                        <Checkbox
+                          checked={includedRespondentIds.has(r.respondentId)}
+                          onCheckedChange={() => toggleIncludedRespondent(r.respondentId)}
+                        />
+                      </td>
                       <td className="px-6 py-4 font-medium text-slate-900">
                         <button
                           className="underline decoration-dotted underline-offset-4 hover:text-indigo-700"
-                          onClick={() => setSelectedResponse(r)}
+                          onClick={() => {
+                            setSelectedResponse(r);
+                            setSelectedShiftIds(new Set(r.selectedShiftIds));
+                          }}
                         >
                           {(r as any).preferredName || r.name}
                         </button>
@@ -263,9 +349,16 @@ export function AdminSurveyDetail() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
-                    {stats.shiftTypeStats.map((s, idx) => (
-                      <tr key={idx}>
-                        <td className="px-6 py-3 font-medium text-slate-900">{s.shiftLabel}</td>
+                    {shiftStatsByShift.map((s) => (
+                      <tr key={s.id}>
+                        <td className="px-6 py-3 font-medium text-slate-900">
+                          <button
+                            className="underline decoration-dotted underline-offset-4 hover:text-indigo-700"
+                            onClick={() => setStatsShift({ id: s.id, label: s.label, names: s.selectedBy })}
+                          >
+                            {s.label}
+                          </button>
+                        </td>
                         <td className="px-6 py-3 capitalize">{s.dayType}</td>
                         <td className="px-6 py-3">{s.totalSelections}</td>
                         <td className="px-6 py-3">
@@ -366,7 +459,7 @@ export function AdminSurveyDetail() {
                       onClick={handleRunAllocation}
                       className="bg-white rounded-xl"
                     >
-                      Re-run
+                      Run Allocation
                     </Button>
                   )}
                   <Button
@@ -446,7 +539,7 @@ export function AdminSurveyDetail() {
                           <div className="flex flex-wrap gap-2">
                             {a.allocatedShifts.map((s) => (
                               <span key={s.shiftId} className="inline-flex items-center px-2.5 py-1 rounded-md text-xs font-medium bg-slate-100 text-slate-700">
-                                {s.label}
+                                {formatShiftLabelText(s.label)}
                               </span>
                             ))}
                             {a.allocatedShifts.length === 0 && <span className="text-slate-400 italic">None</span>}
@@ -454,7 +547,15 @@ export function AdminSurveyDetail() {
                         </td>
                         <td className="px-6 py-4 font-bold text-slate-700">{a.totalHours} hrs</td>
                         <td className="px-6 py-4 text-right">
-                          <Button variant="ghost" size="sm" className="text-indigo-600 hover:text-indigo-800 hover:bg-indigo-50">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="text-indigo-600 hover:text-indigo-800 hover:bg-indigo-50"
+                            onClick={() => {
+                              setAdjustTarget(a.respondentId);
+                              setAdjustShiftIds(new Set(a.allocatedShifts.map((s) => s.shiftId)));
+                            }}
+                          >
                             <Settings className="w-4 h-4 mr-1" /> Adjust
                           </Button>
                         </td>
@@ -549,19 +650,32 @@ export function AdminSurveyDetail() {
           {selectedResponse && (
             <div className="space-y-4">
               <p className="text-sm text-slate-600">
-                Selected shifts: <strong>{selectedResponse.selectedShiftIds.length}</strong> | Total available hours:{" "}
-                <strong>{selectedResponse.totalAvailableHours}</strong>
+                Selected shifts: <strong>{selectedShiftIds.size}</strong> | Total available hours:{" "}
+                <strong>{editedSelectedHours}</strong>
               </p>
               <div className="max-h-72 overflow-auto rounded-lg border border-slate-200 p-3">
                 {(survey.shifts || [])
-                  .filter((shift) => selectedResponse.selectedShiftIds.includes(shift.id))
                   .map((shift) => (
-                    <div key={shift.id} className="text-sm py-1 border-b last:border-0">
-                      {shift.date} — {shift.label} ({shift.durationHours} hours)
-                    </div>
+                    <label key={shift.id} className="text-sm py-2 border-b last:border-0 flex items-center gap-3">
+                      <Checkbox checked={selectedShiftIds.has(shift.id)} onCheckedChange={() => toggleSelectedShift(shift.id)} />
+                      <span>{formatShiftDisplay(shift)} ({shift.durationHours} hours)</span>
+                    </label>
                   ))}
               </div>
-              <div className="flex justify-end">
+              <div className="flex justify-end gap-2">
+                <Button
+                  variant="outline"
+                  onClick={async () => {
+                    await updateResponseMutation.mutateAsync({
+                      surveyId,
+                      respondentId: selectedResponse.respondentId,
+                      selectedShiftIds: Array.from(selectedShiftIds),
+                    });
+                    setSelectedResponse(null);
+                  }}
+                >
+                  Save Shift Changes
+                </Button>
                 <Button
                   variant="destructive"
                   onClick={async () => {
@@ -679,6 +793,70 @@ export function AdminSurveyDetail() {
               </div>
             </div>
           )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={statsShift !== null} onOpenChange={(open) => !open && setStatsShift(null)}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Selected Respondents: {statsShift?.label}</DialogTitle>
+          </DialogHeader>
+          <div className="max-h-80 overflow-auto rounded-lg border border-slate-200 p-3">
+            {statsShift?.names.length ? (
+              statsShift.names.map((name) => (
+                <div key={name} className="text-sm py-1 border-b last:border-0">
+                  {name}
+                </div>
+              ))
+            ) : (
+              <p className="text-sm text-slate-500">No respondents selected this shift.</p>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={adjustTarget !== null} onOpenChange={(open) => !open && setAdjustTarget(null)}>
+        <DialogContent className="max-w-xl">
+          <DialogHeader>
+            <DialogTitle>Adjust Allocated Shifts</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="max-h-80 overflow-auto rounded-lg border border-slate-200 p-3">
+              {(survey.shifts || []).map((shift) => (
+                <label key={shift.id} className="text-sm py-2 border-b last:border-0 flex items-center gap-3">
+                  <Checkbox
+                    checked={adjustShiftIds.has(shift.id)}
+                    onCheckedChange={() => {
+                      const next = new Set(adjustShiftIds);
+                      if (next.has(shift.id)) next.delete(shift.id);
+                      else next.add(shift.id);
+                      setAdjustShiftIds(next);
+                    }}
+                  />
+                  <span>{formatShiftDisplay(shift)}</span>
+                </label>
+              ))}
+            </div>
+            <div className="flex justify-end">
+              <Button
+                onClick={async () => {
+                  if (adjustTarget === null) return;
+                  const existing = allocations?.allocations.find((a) => a.respondentId === adjustTarget);
+                  const existingIds = new Set(existing?.allocatedShifts.map((s) => s.shiftId) ?? []);
+                  const nextIds = Array.from(adjustShiftIds);
+                  const shiftIdsToAdd = nextIds.filter((id) => !existingIds.has(id));
+                  const shiftIdsToRemove = Array.from(existingIds).filter((id) => !adjustShiftIds.has(id));
+                  await adjustAllocationMutation.mutateAsync({
+                    id: surveyId,
+                    data: { respondentId: adjustTarget, shiftIdsToAdd, shiftIdsToRemove },
+                  } as any);
+                  setAdjustTarget(null);
+                }}
+              >
+                Save Allocation Adjustments
+              </Button>
+            </div>
+          </div>
         </DialogContent>
       </Dialog>
 	    </AdminLayout>

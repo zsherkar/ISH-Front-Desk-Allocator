@@ -122,6 +122,9 @@ router.post("/surveys/:id/allocate", async (req, res): Promise<void> => {
     res.status(400).json({ error: parsed.error.message });
     return;
   }
+  const includedRespondentIds = Array.isArray(req.body?.includedRespondentIds)
+    ? req.body.includedRespondentIds.filter((value: unknown): value is number => typeof value === "number")
+    : undefined;
 
   // Clear existing allocations
   await db.delete(allocationsTable).where(eq(allocationsTable.surveyId, id));
@@ -129,6 +132,7 @@ router.post("/surveys/:id/allocate", async (req, res): Promise<void> => {
   const result = await runAllocation({
     surveyId: id,
     afpRespondentIds: parsed.data.afpRespondentIds,
+    includedRespondentIds,
   });
 
   // Save allocations to DB

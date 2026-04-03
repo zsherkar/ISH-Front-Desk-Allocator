@@ -69,3 +69,30 @@ export function useDeleteSurveyResponse() {
     },
   });
 }
+
+export function useUpdateSurveyResponse() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({
+      surveyId,
+      respondentId,
+      selectedShiftIds,
+    }: {
+      surveyId: number;
+      respondentId: number;
+      selectedShiftIds: number[];
+    }) => {
+      const response = await fetch(`/api/surveys/${surveyId}/responses/${respondentId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ selectedShiftIds }),
+      });
+      if (!response.ok) throw new Error("Failed to update response");
+    },
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: getGetSurveyQueryKey(variables.surveyId) });
+      queryClient.invalidateQueries({ queryKey: ["getSurveyResponses", variables.surveyId] });
+      queryClient.invalidateQueries({ queryKey: ["getSurveyStats", variables.surveyId] });
+    },
+  });
+}
