@@ -167,7 +167,7 @@ export async function runAllocation(options: AllocationOptions): Promise<{
     .select({
       respondentId: responsesTable.respondentId,
       shiftId: responsesTable.shiftId,
-      respondentName: respondentsTable.name,
+      respondentName: respondentsTable.preferredName,
       respondentCategory: respondentsTable.category,
     })
     .from(responsesTable)
@@ -180,7 +180,7 @@ export async function runAllocation(options: AllocationOptions): Promise<{
       const category = afpIdSet.has(r.respondentId) ? "AFP" : "General";
       respondentMap.set(r.respondentId, {
         id: r.respondentId,
-        name: r.respondentName,
+        name: r.respondentName || "Unknown",
         category,
         availableShiftIds: new Set(),
       });
@@ -207,6 +207,17 @@ export async function runAllocation(options: AllocationOptions): Promise<{
       .sort((a, b) => shiftMap.get(a)!.date.localeCompare(shiftMap.get(b)!.date));
 
     const allocated = allocateToTarget(10, available, assignedShiftIds, shiftMap, globalWdRatio);
+    let afpHours = calcHours(allocated, shiftMap);
+    if (afpHours < 8) {
+      for (const shiftId of available) {
+        if (allocated.includes(shiftId) || assignedShiftIds.has(shiftId)) continue;
+        const nextHours = afpHours + (shiftMap.get(shiftId)?.durationHours ?? 0);
+        if (nextHours > 10) continue;
+        allocated.push(shiftId);
+        afpHours = nextHours;
+        if (afpHours >= 8) break;
+      }
+    }
 
     for (const id of allocated) assignedShiftIds.add(id);
 

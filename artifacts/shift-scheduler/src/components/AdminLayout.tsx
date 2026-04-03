@@ -19,7 +19,7 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
             <LayoutDashboard className="w-5 h-5" />
           </div>
           <div>
-            <h1 className="font-display font-bold text-2xl text-foreground leading-tight">I-House Scheduler</h1>
+            <h1 className="font-display font-bold text-2xl text-foreground leading-tight">I-House Shift Allocator</h1>
             <p className="text-xs font-medium text-muted-foreground tracking-[0.14em] uppercase">Admin Desk</p>
           </div>
         </div>

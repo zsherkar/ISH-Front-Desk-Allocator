@@ -89,9 +89,10 @@ function formatDateHeader(dateStr: string): string {
 }
 
 const cellStyle: React.CSSProperties = {
-  border: "1px solid #999",
+  border: "1px solid #5f6b7a",
   padding: "3px 5px",
   fontSize: 11,
+  color: "#1f2937",
   textAlign: "center",
   verticalAlign: "middle",
   minWidth: 52,
@@ -108,15 +109,15 @@ const headerCellStyle: React.CSSProperties = {
 
 const timeCellStyle: React.CSSProperties = {
   ...cellStyle,
-  backgroundColor: "#ffffd9",
-  textAlign: "left",
+  backgroundColor: "#fef9c3",
+  textAlign: "center",
   minWidth: 90,
 };
 
 const durationCellStyle: React.CSSProperties = {
   ...cellStyle,
-  backgroundColor: "#ffe0a0",
-  color: "#cc5500",
+  backgroundColor: "#fde68a",
+  color: "#7c2d12",
   fontWeight: "bold",
   minWidth: 80,
 };

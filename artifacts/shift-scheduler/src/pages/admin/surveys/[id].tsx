@@ -7,6 +7,7 @@ import {
   useUpdateSurvey,
   useGetSurveyResponses,
   useGetSurveyStats,
+  useDeleteSurveyResponse,
 } from "@/hooks/use-surveys";
 import {
   useGetAllocations,
@@ -56,6 +57,8 @@ export function AdminSurveyDetail() {
   const [afpIds, setAfpIds] = useState<Set<number>>(new Set());
   const [showCalendar, setShowCalendar] = useState(false);
   const [selectedRespondentId, setSelectedRespondentId] = useState<number | null>(null);
+  const [selectedResponse, setSelectedResponse] = useState<any | null>(null);
+  const deleteResponseMutation = useDeleteSurveyResponse();
   const calendarRef = useRef<HTMLDivElement>(null);
   const { data: respondentHistory } = useGetRespondentFdHistory(selectedRespondentId ?? 0);
 
@@ -203,7 +206,14 @@ export function AdminSurveyDetail() {
                 ) : (
                   responses.map((r) => (
                     <tr key={r.respondentId} className="hover:bg-slate-50 transition-colors">
-                      <td className="px-6 py-4 font-medium text-slate-900">{r.name}</td>
+                      <td className="px-6 py-4 font-medium text-slate-900">
+                        <button
+                          className="underline decoration-dotted underline-offset-4 hover:text-indigo-700"
+                          onClick={() => setSelectedResponse(r)}
+                        >
+                          {(r as any).preferredName || r.name}
+                        </button>
+                      </td>
                       <td className="px-6 py-4 text-slate-600">{r.selectedShiftIds.length} shifts</td>
                       <td className="px-6 py-4 font-semibold text-slate-700">{r.totalAvailableHours} hrs</td>
                     </tr>
@@ -325,7 +335,7 @@ export function AdminSurveyDetail() {
                   className="bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl px-8 h-12 text-base font-medium shadow-lg shadow-indigo-600/20"
                 >
                   <BrainCircuit className="w-5 h-5 mr-2" />
-                  {runAllocMutation.isPending ? "Allocating…" : "Generate Allocation"}
+                  {runAllocMutation.isPending ? "Allocating…" : "Make Allocation"}
                 </Button>
                 {afpIds.size > 0 && (
                   <span className="text-sm text-indigo-700 font-medium">
@@ -497,8 +507,8 @@ export function AdminSurveyDetail() {
                       <th className="px-6 py-3">Name</th>
                       <th className="px-6 py-3">Category</th>
                       <th className="px-6 py-3">Total Hrs</th>
-                      <th className="px-6 py-3">Wkdy Shifts</th>
-                      <th className="px-6 py-3">Wknd Shifts</th>
+                      <th className="px-6 py-3">Weekday Shifts</th>
+                      <th className="px-6 py-3">Weekend Shifts</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
@@ -525,6 +535,50 @@ export function AdminSurveyDetail() {
           )}
 	        </TabsContent>
 	      </Tabs>
+
+      <Dialog
+        open={selectedResponse !== null}
+        onOpenChange={(open) => {
+          if (!open) setSelectedResponse(null);
+        }}
+      >
+        <DialogContent className="max-w-xl">
+          <DialogHeader>
+            <DialogTitle>Availability Details: {selectedResponse?.preferredName || selectedResponse?.name}</DialogTitle>
+          </DialogHeader>
+          {selectedResponse && (
+            <div className="space-y-4">
+              <p className="text-sm text-slate-600">
+                Selected shifts: <strong>{selectedResponse.selectedShiftIds.length}</strong> | Total available hours:{" "}
+                <strong>{selectedResponse.totalAvailableHours}</strong>
+              </p>
+              <div className="max-h-72 overflow-auto rounded-lg border border-slate-200 p-3">
+                {(survey.shifts || [])
+                  .filter((shift) => selectedResponse.selectedShiftIds.includes(shift.id))
+                  .map((shift) => (
+                    <div key={shift.id} className="text-sm py-1 border-b last:border-0">
+                      {shift.date} — {shift.label} ({shift.durationHours} hours)
+                    </div>
+                  ))}
+              </div>
+              <div className="flex justify-end">
+                <Button
+                  variant="destructive"
+                  onClick={async () => {
+                    await deleteResponseMutation.mutateAsync({
+                      surveyId,
+                      respondentId: selectedResponse.respondentId,
+                    });
+                    setSelectedResponse(null);
+                  }}
+                >
+                  Delete This Response
+                </Button>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
 
       <Dialog
         open={selectedRespondentId !== null}
@@ -565,7 +619,7 @@ export function AdminSurveyDetail() {
                   </p>
                 </div>
                 <div className="rounded-xl border border-slate-200 p-4 bg-slate-50">
-                  <p className="text-xs uppercase text-slate-500">Std Dev</p>
+                          <p className="text-xs uppercase text-slate-500">Standard Deviation</p>
                   <p className="text-xl font-bold text-slate-900">
                     {respondentHistory.summary.stdDevHours.toFixed(2)}
                   </p>

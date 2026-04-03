@@ -7,6 +7,8 @@ import {
 } from "@workspace/api-zod";
 
 const router: IRouter = Router();
+const shouldAutoClose = (survey: { status: string; closesAt: Date | string | null }) =>
+  survey.status === "open" && Boolean(survey.closesAt) && new Date(survey.closesAt as string) <= new Date();
 
 router.get("/respond/:surveyToken", async (req, res): Promise<void> => {
   const token = Array.isArray(req.params.surveyToken)
@@ -23,6 +25,11 @@ router.get("/respond/:surveyToken", async (req, res): Promise<void> => {
     res.status(410).json({ error: "This survey is closed and no longer accepting responses" });
     return;
   }
+  if (shouldAutoClose(survey)) {
+    await db.update(surveysTable).set({ status: "closed" }).where(eq(surveysTable.id, survey.id));
+    res.status(410).json({ error: "This survey is closed and no longer accepting responses" });
+    return;
+  }
 
   const shifts = await db
     .select()
@@ -36,6 +43,7 @@ router.get("/respond/:surveyToken", async (req, res): Promise<void> => {
     month: survey.month,
     year: survey.year,
     status: survey.status,
+    closesAt: survey.closesAt,
     shifts,
   });
 });
@@ -55,6 +63,11 @@ router.post("/respond/:surveyToken", async (req, res): Promise<void> => {
     res.status(410).json({ error: "This survey is closed and no longer accepting responses" });
     return;
   }
+  if (shouldAutoClose(survey)) {
+    await db.update(surveysTable).set({ status: "closed" }).where(eq(surveysTable.id, survey.id));
+    res.status(410).json({ error: "This survey is closed and no longer accepting responses" });
+    return;
+  }
 
   const parsed = SubmitResponseBody.safeParse(req.body);
   if (!parsed.success) {
@@ -63,6 +76,8 @@ router.post("/respond/:surveyToken", async (req, res): Promise<void> => {
   }
 
   const { name, email, selectedShiftIds } = parsed.data;
+  const preferredName = typeof req.body?.preferredName === "string" ? req.body.preferredName.trim() : "";
+  const category = req.body?.category === "AFP" ? "AFP" : "General";
 
   if (selectedShiftIds.length === 0) {
     res.status(400).json({ error: "Please select at least one shift" });
@@ -131,11 +146,26 @@ router.post("/respond/:surveyToken", async (req, res): Promise<void> => {
       // Create new respondent
       const [newRespondent] = await db
         .insert(respondentsTable)
-        .values({ name, email: email ?? null, category: "General" })
+        .values({
+          name,
+          preferredName: preferredName || name.split(" ")[0] || name,
+          email: email ?? null,
+          category,
+        })
         .returning();
       respondent = newRespondent;
     }
   }
+
+  await db
+    .update(respondentsTable)
+    .set({
+      name,
+      preferredName: preferredName || respondent.preferredName || name.split(" ")[0] || name,
+      email: email ?? respondent.email,
+      category,
+    })
+    .where(eq(respondentsTable.id, respondent.id));
 
   // Insert responses
   for (const shiftId of selectedShiftIds) {

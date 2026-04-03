@@ -159,8 +159,8 @@ export function AdminRespondents() {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="General">General</SelectItem>
-                  <SelectItem value="AFP">AFP</SelectItem>
+                  <SelectItem value="General">Non-Ambassador Fellow</SelectItem>
+                  <SelectItem value="AFP">Ambassador Fellow (AFP)</SelectItem>
                 </SelectContent>
               </Select>
             </div>

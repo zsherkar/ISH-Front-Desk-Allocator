@@ -1,5 +1,5 @@
 import { Router, type IRouter } from "express";
-import { eq } from "drizzle-orm";
+import { eq, ilike, or } from "drizzle-orm";
 import { db, respondentsTable, allocationsTable, surveysTable, shiftsTable } from "@workspace/db";
 import {
   CreateRespondentBody,
@@ -19,6 +19,28 @@ router.get("/respondents", async (_req, res): Promise<void> => {
   res.json(ListRespondentsResponse.parse(respondents));
 });
 
+router.get("/respondents/lookup", async (req, res): Promise<void> => {
+  const query = typeof req.query.q === "string" ? req.query.q.trim() : "";
+  if (query.length < 1) {
+    res.json([]);
+    return;
+  }
+  const respondents = await db
+    .select()
+    .from(respondentsTable)
+    .where(or(ilike(respondentsTable.name, `%${query}%`), ilike(respondentsTable.email, `%${query}%`)))
+    .limit(8);
+  res.json(
+    respondents.map((respondent) => ({
+      id: respondent.id,
+      name: respondent.name,
+      email: respondent.email,
+      preferredName: respondent.preferredName,
+      category: respondent.category,
+    })),
+  );
+});
+
 router.post("/respondents", async (req, res): Promise<void> => {
   const parsed = CreateRespondentBody.safeParse(req.body);
   if (!parsed.success) {
@@ -28,7 +50,12 @@ router.post("/respondents", async (req, res): Promise<void> => {
 
   const [respondent] = await db
     .insert(respondentsTable)
-    .values({ name: parsed.data.name, email: parsed.data.email ?? null, category: parsed.data.category })
+    .values({
+      name: parsed.data.name,
+      preferredName: req.body?.preferredName ?? parsed.data.name.split(" ")[0] ?? parsed.data.name,
+      email: parsed.data.email ?? null,
+      category: parsed.data.category,
+    })
     .returning();
 
   res.status(201).json(respondent);
@@ -52,6 +79,7 @@ router.patch("/respondents/:id", async (req, res): Promise<void> => {
   if (parsed.data.name !== null && parsed.data.name !== undefined) updateData.name = parsed.data.name;
   if (parsed.data.email !== undefined) updateData.email = parsed.data.email;
   if (parsed.data.category !== null && parsed.data.category !== undefined) updateData.category = parsed.data.category;
+  if (req.body?.preferredName !== undefined) updateData.preferredName = req.body.preferredName;
 
   const [respondent] = await db
     .update(respondentsTable)
