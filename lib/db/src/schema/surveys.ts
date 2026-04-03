@@ -8,6 +8,7 @@ export const surveysTable = pgTable("surveys", {
   month: integer("month").notNull(),
   year: integer("year").notNull(),
   status: text("status").notNull().default("open"),
+  closesAt: timestamp("closes_at", { withTimezone: true }),
   token: text("token").notNull().unique(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),

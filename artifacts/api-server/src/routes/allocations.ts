@@ -21,7 +21,7 @@ async function buildAllocationResult(surveyId: number) {
       shiftId: allocationsTable.shiftId,
       isManuallyAdjusted: allocationsTable.isManuallyAdjusted,
       penaltyNote: allocationsTable.penaltyNote,
-      respondentName: respondentsTable.name,
+      respondentName: respondentsTable.preferredName,
       respondentCategory: respondentsTable.category,
     })
     .from(allocationsTable)

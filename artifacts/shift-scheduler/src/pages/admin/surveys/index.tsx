@@ -1,9 +1,9 @@
 import { useState } from "react";
 import { Link } from "wouter";
 import { format } from "date-fns";
-import { Plus, Search, Calendar, ChevronRight, Copy, CheckCircle2 } from "lucide-react";
+import { Plus, Search, Calendar, ChevronRight, Copy, CheckCircle2, Trash2 } from "lucide-react";
 import { AdminLayout } from "@/components/AdminLayout";
-import { useListSurveys, useCreateSurvey } from "@/hooks/use-surveys";
+import { useListSurveys, useCreateSurvey, useDeleteSurvey } from "@/hooks/use-surveys";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -13,10 +13,12 @@ import { Badge } from "@/components/ui/badge";
 export function AdminSurveys() {
   const { data: surveys, isLoading } = useListSurveys();
   const createMutation = useCreateSurvey();
+  const deleteMutation = useDeleteSurvey();
   const [isCreateOpen, setIsCreateOpen] = useState(false);
   const [month, setMonth] = useState<string>(String(new Date().getMonth() + 1));
   const [year, setYear] = useState<string>(String(new Date().getFullYear()));
   const [copiedId, setCopiedId] = useState<number | null>(null);
+  const [deadline, setDeadline] = useState<string>("");
   const surveyList = Array.isArray(surveys) ? surveys : [];
   const hasUnexpectedSurveyPayload = Boolean(surveys) && !Array.isArray(surveys);
 
@@ -27,8 +29,10 @@ export function AdminSurveys() {
           month: parseInt(month, 10),
           year: parseInt(year, 10),
           title: `Shift Schedule - ${format(new Date(parseInt(year), parseInt(month)-1), 'MMMM yyyy')}`
-        }
-      });
+          ,
+          closesAt: deadline ? new Date(deadline).toISOString() : null,
+        } as any
+      } as any);
       setIsCreateOpen(false);
     } catch (err) {
       console.error(err);
@@ -40,6 +44,11 @@ export function AdminSurveys() {
     navigator.clipboard.writeText(url);
     setCopiedId(id);
     setTimeout(() => setCopiedId(null), 2000);
+  };
+
+  const handleDeleteSurvey = async (surveyId: number) => {
+    if (!confirm("Delete this survey and all associated responses and allocations?")) return;
+    await deleteMutation.mutateAsync(surveyId);
   };
 
   return (
@@ -122,6 +131,14 @@ export function AdminSurveys() {
                     {copiedId === survey.id ? <CheckCircle2 className="w-4 h-4 text-green-500 mr-2" /> : <Copy className="w-4 h-4 mr-2" />}
                     {copiedId === survey.id ? "Copied!" : "Copy Link"}
                   </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => handleDeleteSurvey(survey.id)}
+                    className="text-rose-500 hover:text-rose-700 rounded-lg"
+                  >
+                    <Trash2 className="w-4 h-4 mr-1" /> Delete
+                  </Button>
                   <Link href={`/admin/surveys/${survey.id}`} className="block">
                     <Button variant="outline" className="rounded-xl font-medium border-slate-200">
                       Manage <ChevronRight className="w-4 h-4 ml-1 opacity-50 group-hover:opacity-100" />
@@ -172,6 +189,10 @@ export function AdminSurveys() {
             </div>
             <div className="bg-blue-50 text-blue-800 p-4 rounded-xl text-sm leading-relaxed border border-blue-100">
               This will automatically generate all standard weekday and weekend shifts for <strong>{format(new Date(parseInt(year), parseInt(month)-1), 'MMMM yyyy')}</strong>.
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-slate-700">Submission Deadline (Eastern Time)</label>
+              <Input type="datetime-local" value={deadline} onChange={(e) => setDeadline(e.target.value)} className="rounded-xl" />
             </div>
           </div>
           <DialogFooter>

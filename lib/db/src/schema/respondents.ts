@@ -5,6 +5,7 @@ import { z } from "zod/v4";
 export const respondentsTable = pgTable("respondents", {
   id: serial("id").primaryKey(),
   name: text("name").notNull(),
+  preferredName: text("preferred_name").notNull().default(""),
   email: text("email"),
   category: text("category").notNull().default("General"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

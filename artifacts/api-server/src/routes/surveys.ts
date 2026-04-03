@@ -1,8 +1,7 @@
 import { Router, type IRouter } from "express";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { db, surveysTable, shiftsTable, respondentsTable, responsesTable, allocationsTable } from "@workspace/db";
 import { generateShiftsForMonth } from "../lib/shiftGenerator.js";
-import { randomUUID } from "crypto";
 import {
   CreateSurveyBody,
   UpdateSurveyBody,
@@ -16,8 +15,18 @@ import {
 const router: IRouter = Router();
 
 const MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+const TOKEN_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
+
+function shortToken(length = 12): string {
+  return Array.from({ length }).map(() => TOKEN_ALPHABET[Math.floor(Math.random() * TOKEN_ALPHABET.length)]).join("");
+}
 
 router.get("/surveys", async (_req, res): Promise<void> => {
+  const now = new Date();
+  await db
+    .update(surveysTable)
+    .set({ status: "closed" })
+    .where(and(eq(surveysTable.status, "open"), sql`${surveysTable.closesAt} <= ${now}`));
   const surveys = await db.select().from(surveysTable).orderBy(surveysTable.createdAt);
   res.json(ListSurveysResponse.parse(surveys));
 });
@@ -31,11 +40,12 @@ router.post("/surveys", async (req, res): Promise<void> => {
 
   const { month, year, title } = parsed.data;
   const surveyTitle = title || `${MONTH_NAMES[month - 1]} ${year} Shift Survey`;
-  const token = randomUUID();
+  const closesAt = req.body?.closesAt ? new Date(req.body.closesAt) : null;
+  const token = shortToken(12);
 
   const [survey] = await db
     .insert(surveysTable)
-    .values({ month, year, title: surveyTitle, status: "open", token })
+    .values({ month, year, title: surveyTitle, status: "open", token, closesAt })
     .returning();
 
   const shiftTemplates = generateShiftsForMonth(year, month);
@@ -69,6 +79,10 @@ router.get("/surveys/:id", async (req, res): Promise<void> => {
     res.status(404).json({ error: "Survey not found" });
     return;
   }
+  if (survey.status === "open" && survey.closesAt && new Date(survey.closesAt) <= new Date()) {
+    await db.update(surveysTable).set({ status: "closed" }).where(eq(surveysTable.id, id));
+    survey.status = "closed";
+  }
 
   const shifts = await db.select().from(shiftsTable).where(eq(shiftsTable.surveyId, id));
 
@@ -101,6 +115,9 @@ router.patch("/surveys/:id", async (req, res): Promise<void> => {
   const updateData: Partial<typeof surveysTable.$inferInsert> = {};
   if (parsed.data.status !== undefined) updateData.status = parsed.data.status;
   if (parsed.data.title !== undefined && parsed.data.title !== null) updateData.title = parsed.data.title;
+  if (req.body?.closesAt !== undefined) {
+    updateData.closesAt = req.body.closesAt ? new Date(req.body.closesAt) : null;
+  }
 
   const [survey] = await db
     .update(surveysTable)
@@ -114,6 +131,22 @@ router.patch("/surveys/:id", async (req, res): Promise<void> => {
   }
 
   res.json(UpdateSurveyResponse.parse(survey));
+});
+
+router.delete("/surveys/:id", async (req, res): Promise<void> => {
+  const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+  const id = parseInt(raw, 10);
+  if (isNaN(id)) {
+    res.status(400).json({ error: "Invalid id" });
+    return;
+  }
+
+  const [survey] = await db.delete(surveysTable).where(eq(surveysTable.id, id)).returning();
+  if (!survey) {
+    res.status(404).json({ error: "Survey not found" });
+    return;
+  }
+  res.sendStatus(204);
 });
 
 router.get("/surveys/:id/responses", async (req, res): Promise<void> => {
@@ -135,6 +168,7 @@ router.get("/surveys/:id/responses", async (req, res): Promise<void> => {
       respondentId: responsesTable.respondentId,
       shiftId: responsesTable.shiftId,
       respondentName: respondentsTable.name,
+      preferredName: respondentsTable.preferredName,
       respondentCategory: respondentsTable.category,
     })
     .from(responsesTable)
@@ -144,17 +178,18 @@ router.get("/surveys/:id/responses", async (req, res): Promise<void> => {
   // Group by respondent
   const respondentMap = new Map<
     number,
-    { respondentId: number; name: string; category: string; selectedShiftIds: number[] }
+    { respondentId: number; name: string; preferredName: string; category: string; selectedShiftIds: number[] }
   >();
 
   for (const r of responses) {
     if (!respondentMap.has(r.respondentId)) {
-      respondentMap.set(r.respondentId, {
-        respondentId: r.respondentId,
-        name: r.respondentName,
-        category: r.respondentCategory,
-        selectedShiftIds: [],
-      });
+        respondentMap.set(r.respondentId, {
+          respondentId: r.respondentId,
+          name: r.respondentName,
+          preferredName: r.preferredName,
+          category: r.respondentCategory,
+          selectedShiftIds: [],
+        });
     }
     respondentMap.get(r.respondentId)!.selectedShiftIds.push(r.shiftId);
   }
@@ -168,6 +203,42 @@ router.get("/surveys/:id/responses", async (req, res): Promise<void> => {
   }));
 
   res.json(result);
+});
+
+router.delete("/surveys/:id/responses/:respondentId", async (req, res): Promise<void> => {
+  const id = parseInt(Array.isArray(req.params.id) ? req.params.id[0] : req.params.id, 10);
+  const respondentId = parseInt(
+    Array.isArray(req.params.respondentId) ? req.params.respondentId[0] : req.params.respondentId,
+    10,
+  );
+  if (isNaN(id) || isNaN(respondentId)) {
+    res.status(400).json({ error: "Invalid id" });
+    return;
+  }
+
+  await db.delete(responsesTable).where(and(eq(responsesTable.surveyId, id), eq(responsesTable.respondentId, respondentId)));
+  res.sendStatus(204);
+});
+
+router.put("/surveys/:id/responses/:respondentId", async (req, res): Promise<void> => {
+  const id = parseInt(Array.isArray(req.params.id) ? req.params.id[0] : req.params.id, 10);
+  const respondentId = parseInt(
+    Array.isArray(req.params.respondentId) ? req.params.respondentId[0] : req.params.respondentId,
+    10,
+  );
+  const selectedShiftIds = Array.isArray(req.body?.selectedShiftIds)
+    ? req.body.selectedShiftIds.filter((value: unknown): value is number => typeof value === "number")
+    : [];
+  if (isNaN(id) || isNaN(respondentId)) {
+    res.status(400).json({ error: "Invalid id" });
+    return;
+  }
+
+  await db.delete(responsesTable).where(and(eq(responsesTable.surveyId, id), eq(responsesTable.respondentId, respondentId)));
+  for (const shiftId of selectedShiftIds) {
+    await db.insert(responsesTable).values({ surveyId: id, respondentId, shiftId });
+  }
+  res.sendStatus(204);
 });
 
 router.get("/surveys/:id/stats", async (req, res): Promise<void> => {
