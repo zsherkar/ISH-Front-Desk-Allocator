@@ -118,6 +118,12 @@ router.patch("/surveys/:id", async (req, res): Promise<void> => {
   if (req.body?.closesAt !== undefined) {
     updateData.closesAt = req.body.closesAt ? new Date(req.body.closesAt) : null;
   }
+  if (parsed.data.status === "open" && req.body?.closesAt === undefined) {
+    const [existingSurvey] = await db.select().from(surveysTable).where(eq(surveysTable.id, id));
+    if (existingSurvey?.closesAt && new Date(existingSurvey.closesAt) <= new Date()) {
+      updateData.closesAt = null;
+    }
+  }
 
   const [survey] = await db
     .update(surveysTable)

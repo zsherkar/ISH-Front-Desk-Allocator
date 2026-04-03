@@ -4,6 +4,7 @@ import { eq } from "drizzle-orm";
 export interface AllocationOptions {
   surveyId: number;
   afpRespondentIds: number[];
+  includedRespondentIds?: number[];
 }
 
 export interface AllocationPlan {
@@ -91,7 +92,8 @@ function allocateToTarget(
   availableShiftIds: number[],
   assignedShiftIds: Set<number>,
   shiftMap: Map<number, ShiftInfo>,
-  targetWdRatio: number
+  targetWdRatio: number,
+  maxOverHours = 1
 ): number[] {
   const candidates = availableShiftIds
     .filter((id) => !assignedShiftIds.has(id))
@@ -137,10 +139,10 @@ function allocateToTarget(
       if (allocated.includes(id)) continue;
       if (assignedShiftIds.has(id)) continue;
       const s = shiftMap.get(id)!;
-      if (totalHours + s.durationHours > targetHours + s.durationHours) continue;
+      if (totalHours + s.durationHours > targetHours + maxOverHours) continue;
       const newTotal = totalHours + s.durationHours;
       const overBy = newTotal - targetHours;
-      if (overBy <= 1) {
+      if (overBy <= maxOverHours) {
         allocated.push(id);
         totalHours = newTotal;
         break;
@@ -157,8 +159,9 @@ export async function runAllocation(options: AllocationOptions): Promise<{
   stdDev: number;
   unallocatedShiftIds: number[];
 }> {
-  const { surveyId, afpRespondentIds } = options;
+  const { surveyId, afpRespondentIds, includedRespondentIds } = options;
   const afpIdSet = new Set(afpRespondentIds);
+  const includedIdSet = includedRespondentIds?.length ? new Set(includedRespondentIds) : null;
 
   const shifts = await db.select().from(shiftsTable).where(eq(shiftsTable.surveyId, surveyId));
   const shiftMap = new Map(shifts.map((s) => [s.id, s as ShiftInfo]));
@@ -176,6 +179,9 @@ export async function runAllocation(options: AllocationOptions): Promise<{
 
   const respondentMap = new Map<number, { id: number; name: string; category: string; availableShiftIds: Set<number> }>();
   for (const r of responses) {
+    if (includedIdSet && !includedIdSet.has(r.respondentId)) {
+      continue;
+    }
     if (!respondentMap.has(r.respondentId)) {
       const category = afpIdSet.has(r.respondentId) ? "AFP" : "General";
       respondentMap.set(r.respondentId, {
@@ -206,7 +212,7 @@ export async function runAllocation(options: AllocationOptions): Promise<{
       .filter((id) => !assignedShiftIds.has(id))
       .sort((a, b) => shiftMap.get(a)!.date.localeCompare(shiftMap.get(b)!.date));
 
-    const allocated = allocateToTarget(10, available, assignedShiftIds, shiftMap, globalWdRatio);
+    const allocated = allocateToTarget(10, available, assignedShiftIds, shiftMap, globalWdRatio, 0);
     let afpHours = calcHours(allocated, shiftMap);
     if (afpHours < 8) {
       for (const shiftId of available) {
