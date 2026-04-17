@@ -1,26 +1,55 @@
 import { useState } from "react";
 import { Link } from "wouter";
 import { format } from "date-fns";
-import { Plus, Search, Calendar, ChevronRight, Copy, CheckCircle2, Trash2 } from "lucide-react";
+import { Plus, Search, Calendar, ChevronRight, Copy, CheckCircle2, Trash2, Clock } from "lucide-react";
 import { AdminLayout } from "@/components/AdminLayout";
 import { useListSurveys, useCreateSurvey, useDeleteSurvey } from "@/hooks/use-surveys";
+import { usePublicConfig } from "@/hooks/use-public-config";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 
+function formatTime12(time: string) {
+  const [h, m] = time.split(":").map(Number);
+  const suffix = h >= 12 ? "PM" : "AM";
+  const hour = h % 12 === 0 ? 12 : h % 12;
+  return `${hour}:${String(m).padStart(2, "0")} ${suffix}`;
+}
+
+const DEADLINE_TIMES = Array.from({ length: 48 }, (_, index) => {
+  const hours = Math.floor(index / 2);
+  const minutes = index % 2 === 0 ? "00" : "30";
+  const value = `${String(hours).padStart(2, "0")}:${minutes}`;
+  return { value, label: formatTime12(value) };
+});
+
 export function AdminSurveys() {
   const { data: surveys, isLoading } = useListSurveys();
+  const { data: publicConfig } = usePublicConfig();
   const createMutation = useCreateSurvey();
   const deleteMutation = useDeleteSurvey();
   const [isCreateOpen, setIsCreateOpen] = useState(false);
   const [month, setMonth] = useState<string>(String(new Date().getMonth() + 1));
   const [year, setYear] = useState<string>(String(new Date().getFullYear()));
   const [copiedId, setCopiedId] = useState<number | null>(null);
-  const [deadline, setDeadline] = useState<string>("");
+  const [deadlineDate, setDeadlineDate] = useState<string>("");
+  const [deadlineTime, setDeadlineTime] = useState<string>("17:00");
   const surveyList = Array.isArray(surveys) ? surveys : [];
   const hasUnexpectedSurveyPayload = Boolean(surveys) && !Array.isArray(surveys);
+  const deadlinePreview = deadlineDate
+    ? format(new Date(`${deadlineDate}T${deadlineTime}:00`), "EEEE, MMMM d, yyyy 'at' h:mm a")
+    : null;
+
+  const publicBaseUrl = publicConfig?.publicAppUrl?.trim() || null;
+
+  const buildSurveyUrl = (token: string) => {
+    const fallbackBase = `${window.location.origin}${import.meta.env.BASE_URL}`;
+    const base = publicBaseUrl || fallbackBase;
+    const normalizedBase = base.endsWith("/") ? base : `${base}/`;
+    return new URL(`respond/${token}`, normalizedBase).toString();
+  };
 
   const handleCreate = async () => {
     try {
@@ -28,19 +57,20 @@ export function AdminSurveys() {
         data: {
           month: parseInt(month, 10),
           year: parseInt(year, 10),
-          title: `Shift Schedule - ${format(new Date(parseInt(year), parseInt(month)-1), 'MMMM yyyy')}`
-          ,
-          closesAt: deadline ? new Date(deadline).toISOString() : null,
-        } as any
-      } as any);
+          title: `Shift Schedule - ${format(new Date(parseInt(year), parseInt(month) - 1), 'MMMM yyyy')}`,
+          closesAt: deadlineDate ? new Date(`${deadlineDate}T${deadlineTime}:00`).toISOString() : null,
+        }
+      });
       setIsCreateOpen(false);
+      setDeadlineDate("");
+      setDeadlineTime("17:00");
     } catch (err) {
       console.error(err);
     }
   };
 
   const copyLink = (token: string, id: number) => {
-    const url = `${window.location.origin}${import.meta.env.BASE_URL}respond/${token}`;
+    const url = buildSurveyUrl(token);
     navigator.clipboard.writeText(url);
     setCopiedId(id);
     setTimeout(() => setCopiedId(null), 2000);
@@ -57,6 +87,13 @@ export function AdminSurveys() {
         <div>
           <h1 className="text-3xl font-display font-bold text-slate-900">Surveys</h1>
           <p className="text-slate-500 mt-1">Manage monthly shift availability surveys.</p>
+          <p className="text-xs text-slate-500 mt-2">
+            Copied survey links use{" "}
+            <span className="font-medium text-slate-700">
+              {publicBaseUrl || "the current site URL"}
+            </span>
+            .
+          </p>
         </div>
         <Button 
           onClick={() => setIsCreateOpen(true)}
@@ -190,9 +227,38 @@ export function AdminSurveys() {
             <div className="bg-blue-50 text-blue-800 p-4 rounded-xl text-sm leading-relaxed border border-blue-100">
               This will automatically generate all standard weekday and weekend shifts for <strong>{format(new Date(parseInt(year), parseInt(month)-1), 'MMMM yyyy')}</strong>.
             </div>
-            <div className="space-y-2">
-              <label className="text-sm font-medium text-slate-700">Submission Deadline (Eastern Time)</label>
-              <Input type="datetime-local" value={deadline} onChange={(e) => setDeadline(e.target.value)} className="rounded-xl" />
+            <div className="space-y-3">
+              <div>
+                <label className="text-sm font-medium text-slate-700">Submission Deadline</label>
+                <p className="text-xs text-slate-500 mt-1">Optional. Times are shown in Eastern Time.</p>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-[1fr_160px] gap-3">
+                <div className="relative">
+                  <Calendar className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                  <Input
+                    type="date"
+                    value={deadlineDate}
+                    onChange={(e) => setDeadlineDate(e.target.value)}
+                    className="rounded-xl pl-9"
+                  />
+                </div>
+                <Select value={deadlineTime} onValueChange={setDeadlineTime}>
+                  <SelectTrigger className="rounded-xl">
+                    <SelectValue placeholder="Time" />
+                  </SelectTrigger>
+                  <SelectContent className="max-h-72">
+                    {DEADLINE_TIMES.map((time) => (
+                      <SelectItem key={time.value} value={time.value}>
+                        {time.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700 flex items-center gap-2">
+                <Clock className="w-4 h-4 text-slate-400" />
+                {deadlinePreview ? `Closes ${deadlinePreview}` : "No deadline set"}
+              </div>
             </div>
           </div>
           <DialogFooter>

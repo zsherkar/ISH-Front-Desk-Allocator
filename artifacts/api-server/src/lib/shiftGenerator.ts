@@ -1,14 +1,14 @@
 const WEEKDAY_SHIFTS = [
-  { startTime: "09:00", endTime: "11:00", durationHours: 2, label: "9:00-11:00" },
-  { startTime: "11:00", endTime: "14:00", durationHours: 3, label: "11:00-14:00" },
-  { startTime: "14:00", endTime: "17:00", durationHours: 3, label: "14:00-17:00" },
-  { startTime: "17:00", endTime: "20:00", durationHours: 3, label: "17:00-20:00" },
+  { startTime: "09:00", endTime: "11:00", durationHours: 2 },
+  { startTime: "11:00", endTime: "14:00", durationHours: 3 },
+  { startTime: "14:00", endTime: "17:00", durationHours: 3 },
+  { startTime: "17:00", endTime: "20:00", durationHours: 3 },
 ];
 
 const WEEKEND_SHIFTS = [
-  { startTime: "08:00", endTime: "12:00", durationHours: 4, label: "8:00-12:00" },
-  { startTime: "12:00", endTime: "16:00", durationHours: 4, label: "12:00-16:00" },
-  { startTime: "16:00", endTime: "20:00", durationHours: 4, label: "16:00-20:00" },
+  { startTime: "08:00", endTime: "12:00", durationHours: 4 },
+  { startTime: "12:00", endTime: "16:00", durationHours: 4 },
+  { startTime: "16:00", endTime: "20:00", durationHours: 4 },
 ];
 
 const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -21,6 +21,13 @@ export interface ShiftTemplate {
   endTime: string;
   durationHours: number;
   label: string;
+}
+
+function formatTime12(time: string): string {
+  const [h, m] = time.split(":").map(Number);
+  const suffix = h >= 12 ? "PM" : "AM";
+  const hour = h % 12 === 0 ? 12 : h % 12;
+  return `${hour}:${String(m).padStart(2, "0")} ${suffix}`;
 }
 
 export function generateShiftsForMonth(year: number, month: number): ShiftTemplate[] {
@@ -44,7 +51,7 @@ export function generateShiftsForMonth(year: number, month: number): ShiftTempla
         startTime: shift.startTime,
         endTime: shift.endTime,
         durationHours: shift.durationHours,
-        label: `${dateLabel} | ${shift.label}`,
+        label: `${dateLabel} | ${formatTime12(shift.startTime)}-${formatTime12(shift.endTime)}`,
       });
     }
   }

@@ -27,6 +27,8 @@ export interface Survey {
   year: number;
   status: SurveyStatus;
   token: string;
+  /** @nullable */
+  closesAt?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -64,6 +66,8 @@ export interface SurveyDetail {
   year: number;
   status: SurveyDetailStatus;
   token: string;
+  /** @nullable */
+  closesAt?: string | null;
   shifts: Shift[];
   responseCount: number;
   createdAt: string;
@@ -81,6 +85,7 @@ export const RespondentCategory = {
 export interface Respondent {
   id: number;
   name: string;
+  preferredName: string;
   /** @nullable */
   email?: string | null;
   category: RespondentCategory;
@@ -98,9 +103,13 @@ export const RespondentWithResponsesCategory = {
 export interface RespondentWithResponses {
   respondentId: number;
   name: string;
+  preferredName: string;
   category: RespondentWithResponsesCategory;
   selectedShiftIds: number[];
   totalAvailableHours: number;
+  hasPenalty: boolean;
+  penaltyHours: number;
+  afpHoursCap: number;
 }
 
 export type PublicSurveyStatus =
@@ -117,14 +126,26 @@ export interface PublicSurvey {
   month: number;
   year: number;
   status: PublicSurveyStatus;
+  /** @nullable */
+  closesAt: string | null;
   shifts: Shift[];
 }
 
+export type SubmitResponseBodyCategory =
+  (typeof SubmitResponseBodyCategory)[keyof typeof SubmitResponseBodyCategory];
+
+export const SubmitResponseBodyCategory = {
+  AFP: "AFP",
+  General: "General",
+} as const;
+
 export interface SubmitResponseBody {
   name: string;
-  /** @nullable */
-  email?: string | null;
+  email: string;
+  preferredName: string;
+  category: SubmitResponseBodyCategory;
   selectedShiftIds: number[];
+  waiverAccepted: boolean;
 }
 
 export interface SubmitResponseResult {
@@ -141,6 +162,8 @@ export interface CreateSurveyBody {
   year: number;
   /** @nullable */
   title?: string | null;
+  /** @nullable */
+  closesAt?: string | null;
 }
 
 export type UpdateSurveyBodyStatus =
@@ -155,6 +178,8 @@ export interface UpdateSurveyBody {
   status?: UpdateSurveyBodyStatus;
   /** @nullable */
   title?: string | null;
+  /** @nullable */
+  closesAt?: string | null;
 }
 
 export type CreateRespondentBodyCategory =
@@ -194,8 +219,10 @@ export interface UpdateRespondentBody {
 }
 
 export interface RunAllocationBody {
-  /** IDs of respondents to treat as AFP (get exactly 10 hours each) */
+  /** IDs of respondents to treat as AFP (capped at 10 hours each) */
   afpRespondentIds: number[];
+  /** IDs of respondents to include in this allocation run */
+  includedRespondentIds?: number[];
 }
 
 export type AllocatedShiftDayType =
@@ -210,6 +237,8 @@ export interface AllocatedShift {
   shiftId: number;
   date: string;
   label: string;
+  startTime: string;
+  endTime: string;
   durationHours: number;
   dayType: AllocatedShiftDayType;
 }
@@ -345,10 +374,27 @@ export interface RespondentFdHistorySummary {
   stdDevHours: number;
   maxHours: number;
   minHours: number;
+  firstFrontDeskMonth: string;
+}
+
+export type RespondentFdHistorySlotPreferenceDayType =
+  (typeof RespondentFdHistorySlotPreferenceDayType)[keyof typeof RespondentFdHistorySlotPreferenceDayType];
+
+export const RespondentFdHistorySlotPreferenceDayType = {
+  weekday: "weekday",
+  weekend: "weekend",
+} as const;
+
+export interface RespondentFdHistorySlotPreference {
+  label: string;
+  dayType: RespondentFdHistorySlotPreferenceDayType;
+  shiftCount: number;
+  totalHours: number;
 }
 
 export interface RespondentFdHistory {
   respondent: Respondent;
   summary: RespondentFdHistorySummary;
   monthlyHistory: RespondentFdHistoryMonthlyEntry[];
+  slotPreferences: RespondentFdHistorySlotPreference[];
 }

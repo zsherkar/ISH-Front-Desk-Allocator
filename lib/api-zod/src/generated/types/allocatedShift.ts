@@ -11,6 +11,8 @@ export interface AllocatedShift {
   shiftId: number;
   date: Date;
   label: string;
+  startTime: string;
+  endTime: string;
   durationHours: number;
   dayType: AllocatedShiftDayType;
 }

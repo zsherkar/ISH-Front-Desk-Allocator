@@ -19,7 +19,7 @@ function resolveMethod(input: RequestInfo | URL, explicitMethod?: string): strin
   return "GET";
 }
 
-// Use loose check for URL — some runtimes (e.g. React Native) polyfill URL
+// Use loose check for URL - some runtimes (e.g. React Native) polyfill URL
 // differently, so `instanceof URL` can fail.
 function isUrl(input: RequestInfo | URL): input is URL {
   return typeof URL !== "undefined" && input instanceof URL;
@@ -94,7 +94,7 @@ function getStringField(value: unknown, key: string): string | undefined {
 }
 
 function truncate(text: string, maxLength = 300): string {
-  return text.length > maxLength ? `${text.slice(0, maxLength - 1)}…` : text;
+  return text.length > maxLength ? `${text.slice(0, maxLength - 1)}...` : text;
 }
 
 function buildErrorMessage(response: Response, data: unknown): string {
@@ -112,7 +112,7 @@ function buildErrorMessage(response: Response, data: unknown): string {
     getStringField(data, "error_description") ??
     getStringField(data, "error");
 
-  if (title && detail) return `${prefix}: ${title} — ${detail}`;
+  if (title && detail) return `${prefix}: ${title} - ${detail}`;
   if (detail) return `${prefix}: ${detail}`;
   if (message) return `${prefix}: ${message}`;
   if (title) return `${prefix}: ${title}`;

@@ -1,4 +1,5 @@
 import { Router, type IRouter } from "express";
+import crypto from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { db, surveysTable, shiftsTable, respondentsTable, responsesTable, allocationsTable } from "@workspace/db";
 import { generateShiftsForMonth } from "../lib/shiftGenerator.js";
@@ -18,7 +19,16 @@ const MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "Ju
 const TOKEN_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
 
 function shortToken(length = 12): string {
-  return Array.from({ length }).map(() => TOKEN_ALPHABET[Math.floor(Math.random() * TOKEN_ALPHABET.length)]).join("");
+  return Array.from({ length })
+    .map(() => TOKEN_ALPHABET[crypto.randomInt(0, TOKEN_ALPHABET.length)])
+    .join("");
+}
+
+function formatTime12(time: string): string {
+  const [h, m] = time.split(":").map(Number);
+  const suffix = h >= 12 ? "PM" : "AM";
+  const hour = h % 12 === 0 ? 12 : h % 12;
+  return `${hour}:${String(m).padStart(2, "0")} ${suffix}`;
 }
 
 router.get("/surveys", async (_req, res): Promise<void> => {
@@ -38,9 +48,9 @@ router.post("/surveys", async (req, res): Promise<void> => {
     return;
   }
 
-  const { month, year, title } = parsed.data;
+  const { month, year, title, closesAt: closesAtValue } = parsed.data;
   const surveyTitle = title || `${MONTH_NAMES[month - 1]} ${year} Shift Survey`;
-  const closesAt = req.body?.closesAt ? new Date(req.body.closesAt) : null;
+  const closesAt = closesAtValue ? new Date(closesAtValue) : null;
   const token = shortToken(12);
 
   const [survey] = await db
@@ -115,10 +125,10 @@ router.patch("/surveys/:id", async (req, res): Promise<void> => {
   const updateData: Partial<typeof surveysTable.$inferInsert> = {};
   if (parsed.data.status !== undefined) updateData.status = parsed.data.status;
   if (parsed.data.title !== undefined && parsed.data.title !== null) updateData.title = parsed.data.title;
-  if (req.body?.closesAt !== undefined) {
-    updateData.closesAt = req.body.closesAt ? new Date(req.body.closesAt) : null;
+  if (parsed.data.closesAt !== undefined) {
+    updateData.closesAt = parsed.data.closesAt ? new Date(parsed.data.closesAt) : null;
   }
-  if (parsed.data.status === "open" && req.body?.closesAt === undefined) {
+  if (parsed.data.status === "open" && parsed.data.closesAt === undefined) {
     const [existingSurvey] = await db.select().from(surveysTable).where(eq(surveysTable.id, id));
     if (existingSurvey?.closesAt && new Date(existingSurvey.closesAt) <= new Date()) {
       updateData.closesAt = null;
@@ -176,6 +186,9 @@ router.get("/surveys/:id/responses", async (req, res): Promise<void> => {
       respondentName: respondentsTable.name,
       preferredName: respondentsTable.preferredName,
       respondentCategory: respondentsTable.category,
+      hasPenalty: responsesTable.hasPenalty,
+      penaltyHours: responsesTable.penaltyHours,
+      afpHoursCap: responsesTable.afpHoursCap,
     })
     .from(responsesTable)
     .innerJoin(respondentsTable, eq(responsesTable.respondentId, respondentsTable.id))
@@ -184,7 +197,16 @@ router.get("/surveys/:id/responses", async (req, res): Promise<void> => {
   // Group by respondent
   const respondentMap = new Map<
     number,
-    { respondentId: number; name: string; preferredName: string; category: string; selectedShiftIds: number[] }
+    {
+      respondentId: number;
+      name: string;
+      preferredName: string;
+      category: string;
+      selectedShiftIds: number[];
+      hasPenalty: boolean;
+      penaltyHours: number;
+      afpHoursCap: number;
+    }
   >();
 
   for (const r of responses) {
@@ -195,6 +217,9 @@ router.get("/surveys/:id/responses", async (req, res): Promise<void> => {
           preferredName: r.preferredName,
           category: r.respondentCategory,
           selectedShiftIds: [],
+          hasPenalty: r.hasPenalty,
+          penaltyHours: r.penaltyHours,
+          afpHoursCap: r.afpHoursCap,
         });
     }
     respondentMap.get(r.respondentId)!.selectedShiftIds.push(r.shiftId);
@@ -223,6 +248,7 @@ router.delete("/surveys/:id/responses/:respondentId", async (req, res): Promise<
   }
 
   await db.delete(responsesTable).where(and(eq(responsesTable.surveyId, id), eq(responsesTable.respondentId, respondentId)));
+  await db.delete(allocationsTable).where(and(eq(allocationsTable.surveyId, id), eq(allocationsTable.respondentId, respondentId)));
   res.sendStatus(204);
 });
 
@@ -232,17 +258,55 @@ router.put("/surveys/:id/responses/:respondentId", async (req, res): Promise<voi
     Array.isArray(req.params.respondentId) ? req.params.respondentId[0] : req.params.respondentId,
     10,
   );
-  const selectedShiftIds = Array.isArray(req.body?.selectedShiftIds)
+  const selectedShiftIds: number[] = Array.isArray(req.body?.selectedShiftIds)
     ? req.body.selectedShiftIds.filter((value: unknown): value is number => typeof value === "number")
     : [];
+  const incomingPenaltyHours = Number(req.body?.penaltyHours);
+  const incomingAfpHoursCap = Number(req.body?.afpHoursCap);
   if (isNaN(id) || isNaN(respondentId)) {
     res.status(400).json({ error: "Invalid id" });
     return;
   }
 
+  const shifts = await db.select().from(shiftsTable).where(eq(shiftsTable.surveyId, id));
+  const validShiftIds = new Set(shifts.map((shift) => shift.id));
+  const invalidShiftIds = selectedShiftIds.filter((shiftId: number) => !validShiftIds.has(shiftId));
+  if (invalidShiftIds.length > 0) {
+    res.status(400).json({ error: "Invalid shift IDs selected" });
+    return;
+  }
+
+  const [existingResponse] = await db
+    .select({
+      hasPenalty: responsesTable.hasPenalty,
+      penaltyHours: responsesTable.penaltyHours,
+      afpHoursCap: responsesTable.afpHoursCap,
+    })
+    .from(responsesTable)
+    .where(and(eq(responsesTable.surveyId, id), eq(responsesTable.respondentId, respondentId)))
+    .limit(1);
+
+  const hasPenalty = typeof req.body?.hasPenalty === "boolean"
+    ? req.body.hasPenalty
+    : existingResponse?.hasPenalty ?? false;
+  const penaltyHours = Number.isFinite(incomingPenaltyHours)
+    ? Math.max(0, incomingPenaltyHours)
+    : existingResponse?.penaltyHours ?? 0;
+  const afpHoursCap = Number.isFinite(incomingAfpHoursCap)
+    ? Math.max(0, incomingAfpHoursCap)
+    : existingResponse?.afpHoursCap ?? 10;
+
   await db.delete(responsesTable).where(and(eq(responsesTable.surveyId, id), eq(responsesTable.respondentId, respondentId)));
+  await db.delete(allocationsTable).where(and(eq(allocationsTable.surveyId, id), eq(allocationsTable.respondentId, respondentId)));
   for (const shiftId of selectedShiftIds) {
-    await db.insert(responsesTable).values({ surveyId: id, respondentId, shiftId });
+    await db.insert(responsesTable).values({
+      surveyId: id,
+      respondentId,
+      shiftId,
+      hasPenalty,
+      penaltyHours: hasPenalty ? penaltyHours : 0,
+      afpHoursCap,
+    });
   }
   res.sendStatus(204);
 });
@@ -314,8 +378,8 @@ router.get("/surveys/:id/stats", async (req, res): Promise<void> => {
     const timeKey = `${shift.dayType}|${shift.startTime}-${shift.endTime}`;
     if (!shiftTypeMap.has(timeKey)) {
       const timeLabel = shift.dayType === "weekday"
-        ? `Weekday ${shift.startTime}-${shift.endTime}`
-        : `Weekend ${shift.startTime}-${shift.endTime}`;
+        ? `Weekday ${formatTime12(shift.startTime)}-${formatTime12(shift.endTime)}`
+        : `Weekend ${formatTime12(shift.startTime)}-${formatTime12(shift.endTime)}`;
       shiftTypeMap.set(timeKey, { label: timeLabel, dayType: shift.dayType, count: 0 });
     }
     shiftTypeMap.get(timeKey)!.count++;

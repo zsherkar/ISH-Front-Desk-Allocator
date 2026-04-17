@@ -6,10 +6,6 @@ import { computeAverage, computeMedian, computeStdDev } from "../lib/stats.js";
 import {
   RunAllocationBody,
   AdjustAllocationBody,
-  RunAllocationResponse,
-  GetAllocationsResponse,
-  AdjustAllocationResponse,
-  GetAllocationStatsResponse,
 } from "@workspace/api-zod";
 
 const router: IRouter = Router();
@@ -22,6 +18,7 @@ async function buildAllocationResult(surveyId: number) {
       isManuallyAdjusted: allocationsTable.isManuallyAdjusted,
       penaltyNote: allocationsTable.penaltyNote,
       respondentName: respondentsTable.preferredName,
+      respondentFullName: respondentsTable.name,
       respondentCategory: respondentsTable.category,
     })
     .from(allocationsTable)
@@ -52,7 +49,7 @@ async function buildAllocationResult(surveyId: number) {
     if (!respondentMap.has(a.respondentId)) {
       respondentMap.set(a.respondentId, {
         respondentId: a.respondentId,
-        name: a.respondentName,
+        name: a.respondentName || a.respondentFullName,
         category: a.respondentCategory,
         shiftIds: [],
         isManuallyAdjusted: a.isManuallyAdjusted,
@@ -79,7 +76,7 @@ async function buildAllocationResult(surveyId: number) {
         durationHours: shift.durationHours,
         dayType: shift.dayType as "weekday" | "weekend",
       };
-    });
+    }).sort((a, b) => `${a.date}-${a.startTime}`.localeCompare(`${b.date}-${b.startTime}`));
     return {
       respondentId: r.respondentId,
       name: r.name,
@@ -89,7 +86,7 @@ async function buildAllocationResult(surveyId: number) {
       isManuallyAdjusted: r.isManuallyAdjusted,
       penaltyNote: r.penaltyNote,
     };
-  });
+  }).sort((a, b) => a.name.localeCompare(b.name));
 
   const allHours = allocationsList.map((a) => a.totalHours);
   const avg = computeAverage(allHours);
@@ -122,9 +119,21 @@ router.post("/surveys/:id/allocate", async (req, res): Promise<void> => {
     res.status(400).json({ error: parsed.error.message });
     return;
   }
-  const includedRespondentIds = Array.isArray(req.body?.includedRespondentIds)
-    ? req.body.includedRespondentIds.filter((value: unknown): value is number => typeof value === "number")
-    : undefined;
+  const includedRespondentIds = parsed.data.includedRespondentIds;
+
+  if (includedRespondentIds?.length) {
+    await db
+      .update(respondentsTable)
+      .set({ category: "General" })
+      .where(inArray(respondentsTable.id, includedRespondentIds));
+  }
+
+  if (parsed.data.afpRespondentIds.length > 0) {
+    await db
+      .update(respondentsTable)
+      .set({ category: "AFP" })
+      .where(inArray(respondentsTable.id, parsed.data.afpRespondentIds));
+  }
 
   // Clear existing allocations
   await db.delete(allocationsTable).where(eq(allocationsTable.surveyId, id));
@@ -207,8 +216,17 @@ router.patch("/surveys/:id/allocations/adjust", async (req, res): Promise<void> 
 
   // Add specified shifts
   for (const shiftId of shiftIdsToAdd) {
-    // Check if already allocated
-    const existing = await db
+    // A shift can only have one owner in the final calendar.
+    await db
+      .delete(allocationsTable)
+      .where(
+        and(
+          eq(allocationsTable.surveyId, id),
+          eq(allocationsTable.shiftId, shiftId)
+        )
+      );
+
+    const existingForTarget = await db
       .select()
       .from(allocationsTable)
       .where(
@@ -218,7 +236,7 @@ router.patch("/surveys/:id/allocations/adjust", async (req, res): Promise<void> 
           eq(allocationsTable.shiftId, shiftId)
         )
       );
-    if (existing.length === 0) {
+    if (existingForTarget.length === 0) {
       await db.insert(allocationsTable).values({
         surveyId: id,
         respondentId,

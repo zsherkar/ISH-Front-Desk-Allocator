@@ -5,10 +5,13 @@
  * Shift Scheduler API
  * OpenAPI spec version: 0.1.0
  */
+import type { SubmitResponseBodyCategory } from "./submitResponseBodyCategory";
 
 export interface SubmitResponseBody {
   name: string;
-  /** @nullable */
-  email?: string | null;
+  email: string;
+  preferredName: string;
+  category: SubmitResponseBodyCategory;
   selectedShiftIds: number[];
+  waiverAccepted: boolean;
 }

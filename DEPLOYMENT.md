@@ -1,0 +1,177 @@
+# Deployment Guide
+
+This app is ready to run behind a permanent HTTPS URL. The temporary `loca.lt` link failed because tunnel services are disposable and can go away at any time.
+
+## Recommended production path
+
+Use a hosted app platform with a built-in public URL and PostgreSQL database.
+
+Recommended:
+
+1. Railway for the most reliable setup here
+2. Render if you want a simple dashboard-managed deployment and are comfortable with its plan limits
+
+## Stable URL options
+
+You have two practical choices:
+
+1. Provider subdomain
+   Example shapes:
+   - `front-desk-allocator.up.railway.app`
+   - `ihouse-front-desk.onrender.com`
+
+2. Custom domain
+   Example:
+   - `frontdesk.ihousewashington.org`
+   - `ihousefrontdesk.org`
+
+Provider subdomains are the cheapest way to get a stable public link. A truly branded permanent domain requires buying a domain name.
+
+## True no-cost option
+
+If you want a stable public deployment with full functionality and no monthly hosting bill, the practical path is:
+
+1. self-host the app on a computer you control
+2. use a free Duck DNS hostname
+3. put Caddy in front of the app for HTTPS
+
+Duck DNS describes itself as free dynamic DNS, and Caddy automatically provisions and renews HTTPS certificates for public hostnames.
+
+- Duck DNS: https://www.duckdns.org/
+- Caddy automatic HTTPS: https://caddyserver.com/docs/automatic-https
+- Caddy reverse proxy: https://caddyserver.com/docs/caddyfile/directives/reverse_proxy
+
+This option keeps ownership in your hands, but it does require:
+
+- a machine that stays on
+- router port forwarding for `80` and `443`
+- a public Duck DNS hostname pointing at your home or office IP
+
+This is the best match for "no-cost" if you want the full app, PostgreSQL, admin login, and public survey form all working continuously.
+
+## Admin login setup
+
+Admin access now requires:
+
+- `SESSION_SECRET`
+- `ADMIN_USERS_JSON`
+
+Generate a password hash:
+
+```bash
+pnpm run hash:admin-password "replace-with-a-strong-password"
+```
+
+That command prints:
+
+- a secure password hash
+- an example `ADMIN_USERS_JSON` value
+
+Example:
+
+```json
+[{"email":"admin@example.com","name":"Front Desk Admin","passwordHash":"scrypt$..."}]
+```
+
+You can include multiple admins in the same JSON array.
+
+## Required environment variables
+
+Set these in your hosting platform:
+
+```bash
+NODE_ENV=production
+PORT=3000
+DATABASE_URL=postgresql://...
+SESSION_SECRET=replace-with-a-long-random-secret
+ADMIN_USERS_JSON=[{"email":"admin@example.com","name":"Front Desk Admin","passwordHash":"scrypt$..."}]
+PUBLIC_APP_URL=https://your-public-app-url
+```
+
+Optional for local HTTP-only testing:
+
+```bash
+COOKIE_SECURE=false
+```
+
+Leave `COOKIE_SECURE` unset in production so the admin session cookie stays HTTPS-only.
+
+If you deploy behind a managed reverse proxy, also set:
+
+```bash
+TRUST_PROXY=true
+```
+
+`PUBLIC_APP_URL` should be the full public base URL where the app is reachable. The admin desk uses it when you click `Copy Link`, so copied survey links stay externally shareable even if you are managing surveys from a different local address.
+
+## Railway steps
+
+1. Push this repo to GitHub.
+2. Create a Railway project from the repo.
+3. Add a PostgreSQL service.
+4. Add these variables to the app service:
+   - `NODE_ENV=production`
+   - `PORT=3000`
+   - `DATABASE_URL`
+   - `SESSION_SECRET`
+   - `ADMIN_USERS_JSON`
+   - `PUBLIC_APP_URL`
+5. Deploy using the existing `Dockerfile`.
+6. Open the service settings and use `Generate Domain`.
+7. Choose a service name close to your preferred keywords so the generated URL is close to your final name.
+
+Important: Railway is convenient, but it is not a permanent zero-cost production host. Their current pricing docs show the stable always-on route is paid.
+
+## Render steps
+
+1. Push this repo to GitHub.
+2. Create a new Web Service from the repo.
+3. Deploy from the existing `Dockerfile`.
+4. Create a PostgreSQL database in Render.
+5. Add these variables to the service:
+   - `NODE_ENV=production`
+   - `PORT=3000`
+   - `DATABASE_URL`
+   - `SESSION_SECRET`
+   - `ADMIN_USERS_JSON`
+   - `PUBLIC_APP_URL`
+6. Use the generated `onrender.com` URL or attach a custom domain.
+
+Important: Render is convenient, but it is not the true no-cost ownership path. Use it if you prefer managed hosting over full control.
+
+## Self-hosted path
+
+Use the existing Docker stack in this repo, then place Caddy in front of it.
+
+1. Point your Duck DNS hostname to your network IP.
+2. Forward ports `80` and `443` from your router to the machine running Docker.
+3. Start this app with Docker Compose.
+4. Run Caddy with a site block that reverse proxies your Duck DNS hostname to this app on port `3000`.
+
+Example Caddyfile:
+
+```caddyfile
+your-subdomain.duckdns.org {
+  reverse_proxy 127.0.0.1:3000
+}
+```
+
+With that setup, your permanent admin URL becomes:
+
+```text
+https://your-subdomain.duckdns.org/admin/login
+```
+
+and your public survey links become:
+
+```text
+https://your-subdomain.duckdns.org/respond/<token>
+```
+
+## First login
+
+Once deployed:
+
+1. Open `/admin/login`
+2. Sign in with one of the configured admin emails and passwords
+3. The rest of the admin desk stays protected behind that login

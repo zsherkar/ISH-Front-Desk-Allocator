@@ -14,5 +14,7 @@ export interface PublicSurvey {
   month: number;
   year: number;
   status: PublicSurveyStatus;
+  /** @nullable */
+  closesAt: Date | null;
   shifts: Shift[];
 }

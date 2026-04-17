@@ -5,12 +5,14 @@ import {
   useUpdateSurvey as useGeneratedUpdateSurvey,
   getListSurveysQueryKey,
   getGetSurveyQueryKey,
+  getGetSurveyResponsesQueryKey,
+  getGetSurveyStatsQueryKey,
+  getGetAllocationsQueryKey,
+  getGetAllocationStatsQueryKey,
   useListSurveys,
   useGetSurvey,
   useGetSurveyResponses,
   useGetSurveyStats,
-  CreateSurveyBody,
-  UpdateSurveyBody
 } from "@workspace/api-client-react";
 
 export { 
@@ -65,7 +67,10 @@ export function useDeleteSurveyResponse() {
     },
     onSuccess: (_, variables) => {
       queryClient.invalidateQueries({ queryKey: getGetSurveyQueryKey(variables.surveyId) });
-      queryClient.invalidateQueries({ queryKey: ["getSurveyResponses", variables.surveyId] });
+      queryClient.invalidateQueries({ queryKey: getGetSurveyResponsesQueryKey(variables.surveyId) });
+      queryClient.invalidateQueries({ queryKey: getGetSurveyStatsQueryKey(variables.surveyId) });
+      queryClient.invalidateQueries({ queryKey: getGetAllocationsQueryKey(variables.surveyId) });
+      queryClient.invalidateQueries({ queryKey: getGetAllocationStatsQueryKey(variables.surveyId) });
     },
   });
 }
@@ -77,22 +82,30 @@ export function useUpdateSurveyResponse() {
       surveyId,
       respondentId,
       selectedShiftIds,
+      hasPenalty,
+      penaltyHours,
+      afpHoursCap,
     }: {
       surveyId: number;
       respondentId: number;
       selectedShiftIds: number[];
+      hasPenalty?: boolean;
+      penaltyHours?: number;
+      afpHoursCap?: number;
     }) => {
       const response = await fetch(`/api/surveys/${surveyId}/responses/${respondentId}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ selectedShiftIds }),
+        body: JSON.stringify({ selectedShiftIds, hasPenalty, penaltyHours, afpHoursCap }),
       });
       if (!response.ok) throw new Error("Failed to update response");
     },
     onSuccess: (_, variables) => {
       queryClient.invalidateQueries({ queryKey: getGetSurveyQueryKey(variables.surveyId) });
-      queryClient.invalidateQueries({ queryKey: ["getSurveyResponses", variables.surveyId] });
-      queryClient.invalidateQueries({ queryKey: ["getSurveyStats", variables.surveyId] });
+      queryClient.invalidateQueries({ queryKey: getGetSurveyResponsesQueryKey(variables.surveyId) });
+      queryClient.invalidateQueries({ queryKey: getGetSurveyStatsQueryKey(variables.surveyId) });
+      queryClient.invalidateQueries({ queryKey: getGetAllocationsQueryKey(variables.surveyId) });
+      queryClient.invalidateQueries({ queryKey: getGetAllocationStatsQueryKey(variables.surveyId) });
     },
   });
 }

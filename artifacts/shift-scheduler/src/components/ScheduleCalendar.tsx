@@ -36,19 +36,34 @@ interface ScheduleCalendarProps {
 }
 
 const WEEKDAY_SLOTS = [
-  { startTime: "09:00", endTime: "11:00", label: "9am - 11am", duration: "2 hours" },
-  { startTime: "11:00", endTime: "14:00", label: "11am - 2pm", duration: "3 hours" },
-  { startTime: "14:00", endTime: "17:00", label: "2pm - 5pm", duration: "3 hours" },
-  { startTime: "17:00", endTime: "20:00", label: "5pm - 8pm", duration: "3 hours" },
+  { startTime: "09:00", endTime: "11:00", label: "9:00 AM - 11:00 AM", duration: "2 hours" },
+  { startTime: "11:00", endTime: "14:00", label: "11:00 AM - 2:00 PM", duration: "3 hours" },
+  { startTime: "14:00", endTime: "17:00", label: "2:00 PM - 5:00 PM", duration: "3 hours" },
+  { startTime: "17:00", endTime: "20:00", label: "5:00 PM - 8:00 PM", duration: "3 hours" },
 ];
 
 const WEEKEND_SLOTS = [
-  { startTime: "08:00", endTime: "12:00", label: "8 am - 12 pm", duration: "4 hours" },
-  { startTime: "12:00", endTime: "16:00", label: "12 pm - 4 pm", duration: "4 hours" },
-  { startTime: "16:00", endTime: "20:00", label: "4 pm - 8 pm", duration: "4 hours" },
+  { startTime: "08:00", endTime: "12:00", label: "8:00 AM - 12:00 PM", duration: "4 hours" },
+  { startTime: "12:00", endTime: "16:00", label: "12:00 PM - 4:00 PM", duration: "4 hours" },
+  { startTime: "16:00", endTime: "20:00", label: "4:00 PM - 8:00 PM", duration: "4 hours" },
 ];
 
-const DOW_ABBR = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const DOW_FULL = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+const PALETTE = {
+  canvas: "#edf5f1",
+  paper: "#ffffff",
+  grid: "#31514d",
+  ink: "#17211f",
+  accent: "#31514d",
+  week: "#d7e6df",
+  weekInk: "#17211f",
+  weekday: "#23675f",
+  weekend: "#5a568f",
+  nameCell: "#ffffff",
+  time: "#e0f0eb",
+  duration: "#eceefa",
+  headerInk: "#ffffff",
+};
 
 function getCalendarWeeks(year: number, month: number): Array<{ weekNum: number; weekdays: string[]; weekends: string[] }> {
   const weeks: Array<{ weekNum: number; weekdays: string[]; weekends: string[] }> = [];
@@ -89,38 +104,88 @@ function formatDateHeader(dateStr: string): string {
 }
 
 const cellStyle: React.CSSProperties = {
-  border: "1px solid #5f6b7a",
-  padding: "3px 5px",
-  fontSize: 11,
-  color: "#1f2937",
+  border: `1px solid ${PALETTE.grid}`,
+  padding: 0,
+  fontSize: 12,
+  color: PALETTE.ink,
   textAlign: "center",
   verticalAlign: "middle",
-  minWidth: 52,
-  height: 22,
-  whiteSpace: "nowrap",
-  overflow: "hidden",
-  textOverflow: "ellipsis",
+  minWidth: 82,
+  height: 46,
+  whiteSpace: "normal",
+  overflow: "visible",
+  fontWeight: 600,
+  boxSizing: "border-box",
 };
 
 const headerCellStyle: React.CSSProperties = {
   ...cellStyle,
-  fontWeight: "bold",
+  fontWeight: 700,
 };
 
 const timeCellStyle: React.CSSProperties = {
   ...cellStyle,
-  backgroundColor: "#fef9c3",
-  textAlign: "center",
-  minWidth: 90,
+  backgroundColor: PALETTE.time,
+  minWidth: 144,
 };
 
 const durationCellStyle: React.CSSProperties = {
   ...cellStyle,
-  backgroundColor: "#fde68a",
-  color: "#7c2d12",
-  fontWeight: "bold",
-  minWidth: 80,
+  backgroundColor: PALETTE.duration,
+  color: PALETTE.ink,
+  fontWeight: 700,
+  minWidth: 112,
 };
+
+const centeredCellContentStyle: React.CSSProperties = {
+  minHeight: 46,
+  height: "100%",
+  padding: "7px 8px",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  textAlign: "center",
+  lineHeight: 1.18,
+  fontWeight: 600,
+  color: PALETTE.ink,
+  boxSizing: "border-box",
+  wordBreak: "break-word",
+};
+
+const headerContentStyle: React.CSSProperties = {
+  ...centeredCellContentStyle,
+  minHeight: 50,
+  fontWeight: 800,
+  color: PALETTE.headerInk,
+};
+
+const weekHeaderContentStyle: React.CSSProperties = {
+  ...centeredCellContentStyle,
+  minHeight: 42,
+  fontWeight: 800,
+  color: PALETTE.weekInk,
+};
+
+function TimeLabel({ label }: { label: string }) {
+  const [start, end] = label.split(" - ");
+  return (
+    <div style={{ display: "grid", gap: 2, lineHeight: 1.12 }}>
+      <span>{start}</span>
+      {end ? <span>- {end}</span> : null}
+    </div>
+  );
+}
+
+function DateHeader({ date }: { date: string }) {
+  const parsed = parseISO(date);
+  const dow = getDay(parsed);
+  return (
+    <div style={{ display: "grid", gap: 3, lineHeight: 1.1 }}>
+      <span style={{ fontSize: 11.5, fontWeight: 800 }}>{DOW_FULL[dow]}</span>
+      <span style={{ fontSize: 10.5, fontWeight: 700 }}>{formatDateHeader(date)}</span>
+    </div>
+  );
+}
 
 export const ScheduleCalendar = forwardRef<HTMLDivElement, ScheduleCalendarProps>(
   ({ title, month, year, allocations, shifts }, ref) => {
@@ -143,33 +208,49 @@ export const ScheduleCalendar = forwardRef<HTMLDivElement, ScheduleCalendarProps
       <div
         ref={ref}
         style={{
-          backgroundColor: "#ffffff",
-          padding: 24,
-          fontFamily: "Arial, Helvetica, sans-serif",
+          backgroundColor: PALETTE.canvas,
+          padding: 28,
+          fontFamily: "'Segoe UI', Aptos, Verdana, sans-serif",
           display: "inline-block",
-          minWidth: 860,
+          minWidth: 980,
+          color: PALETTE.ink,
         }}
       >
-        <h2 style={{ textAlign: "center", textDecoration: "underline", marginBottom: 20, fontSize: 18, fontWeight: "bold" }}>
-          Front Desk Schedule: {MONTH_NAMES[month - 1]} {year}
-        </h2>
+        <div style={{ textAlign: "center", marginBottom: 24 }}>
+          <h2
+            style={{
+              display: "inline-block",
+              borderBottom: `2px solid ${PALETTE.accent}`,
+              margin: 0,
+              paddingBottom: 7,
+              fontSize: 23,
+              fontWeight: 800,
+              color: PALETTE.ink,
+              letterSpacing: 0,
+              whiteSpace: "nowrap",
+            }}
+          >
+            Front Desk Schedule: {MONTH_NAMES[month - 1]} {year}
+          </h2>
+        </div>
 
         {weeks.map((week) => (
-          <div key={week.weekNum} style={{ marginBottom: 18 }}>
-            <table style={{ borderCollapse: "collapse", width: "100%" }}>
+          <div key={week.weekNum} style={{ marginBottom: 20 }}>
+            <table style={{ borderCollapse: "collapse", width: "auto", tableLayout: "auto" }}>
               <thead>
                 <tr>
                   <td
                     colSpan={2 + week.weekdays.length + (week.weekends.length > 0 ? 2 + week.weekends.length : 0)}
                     style={{
                       ...headerCellStyle,
-                      backgroundColor: "#aed6f1",
+                      backgroundColor: PALETTE.week,
                       textAlign: "center",
                       fontSize: 13,
-                      padding: "5px 8px",
                     }}
                   >
-                    Week {week.weekNum}
+                    <div style={weekHeaderContentStyle}>
+                      Week {week.weekNum}
+                    </div>
                   </td>
                 </tr>
                 <tr>
@@ -177,54 +258,64 @@ export const ScheduleCalendar = forwardRef<HTMLDivElement, ScheduleCalendarProps
                     colSpan={2 + week.weekdays.length}
                     style={{
                       ...headerCellStyle,
-                      backgroundColor: "#f39c12",
-                      color: "#fff",
+                      backgroundColor: PALETTE.weekday,
+                      color: PALETTE.headerInk,
                       textAlign: "center",
-                      padding: "3px 6px",
                       fontStyle: "italic",
                     }}
                   >
-                    Weekday
+                    <div style={headerContentStyle}>Weekday</div>
                   </td>
                   {week.weekends.length > 0 && (
                     <td
                       colSpan={2 + week.weekends.length}
                       style={{
                         ...headerCellStyle,
-                        backgroundColor: "#27ae60",
-                        color: "#fff",
+                        backgroundColor: PALETTE.weekend,
+                        color: PALETTE.headerInk,
                         textAlign: "center",
-                        padding: "3px 6px",
                         fontStyle: "italic",
                       }}
                     >
-                      Weekend
+                      <div style={headerContentStyle}>Weekend</div>
                     </td>
                   )}
                 </tr>
                 <tr>
-                  <td style={{ ...headerCellStyle, backgroundColor: "#f39c12", color: "#fff", minWidth: 90, textAlign: "left" }}>Time</td>
-                  <td style={{ ...headerCellStyle, backgroundColor: "#f39c12", color: "#fff", minWidth: 80 }}>Duration per shift</td>
+                  <td style={{ ...headerCellStyle, backgroundColor: PALETTE.weekday, color: PALETTE.headerInk, minWidth: 144 }}>
+                    <div style={headerContentStyle}>Time</div>
+                  </td>
+                  <td style={{ ...headerCellStyle, backgroundColor: PALETTE.weekday, color: PALETTE.headerInk, minWidth: 112 }}>
+                    <div style={headerContentStyle}>Duration</div>
+                  </td>
                   {week.weekdays.map((date) => {
-                    const dow = getDay(parseISO(date));
                     return (
-                      <td key={date} style={{ ...headerCellStyle, backgroundColor: "#f39c12", color: "#fff" }}>
-                        <div>{DOW_ABBR[dow]}</div>
-                        <div style={{ fontSize: 10, fontWeight: "normal" }}>{formatDateHeader(date)}</div>
+                      <td key={date} style={{ ...headerCellStyle, backgroundColor: PALETTE.weekday, color: PALETTE.headerInk }}>
+                        <div style={headerContentStyle}>
+                          <DateHeader date={date} />
+                        </div>
                       </td>
                     );
                   })}
-                  {week.weekdays.length === 0 && <td colSpan={5} style={{ ...cellStyle, backgroundColor: "#f39c12" }} />}
+                  {week.weekdays.length === 0 && (
+                    <td colSpan={5} style={{ ...cellStyle, backgroundColor: PALETTE.weekday }}>
+                      <div style={headerContentStyle}>&nbsp;</div>
+                    </td>
+                  )}
                   {week.weekends.length > 0 && (
                     <>
-                      <td style={{ ...headerCellStyle, backgroundColor: "#27ae60", color: "#fff", minWidth: 90, textAlign: "left" }}>Time</td>
-                      <td style={{ ...headerCellStyle, backgroundColor: "#27ae60", color: "#fff", minWidth: 80 }}>Duration per shift</td>
+                      <td style={{ ...headerCellStyle, backgroundColor: PALETTE.weekend, color: PALETTE.headerInk, minWidth: 144 }}>
+                        <div style={headerContentStyle}>Time</div>
+                      </td>
+                      <td style={{ ...headerCellStyle, backgroundColor: PALETTE.weekend, color: PALETTE.headerInk, minWidth: 112 }}>
+                        <div style={headerContentStyle}>Duration</div>
+                      </td>
                       {week.weekends.map((date) => {
-                        const dow = getDay(parseISO(date));
                         return (
-                          <td key={date} style={{ ...headerCellStyle, backgroundColor: "#27ae60", color: "#fff" }}>
-                            <div>{DOW_ABBR[dow]}</div>
-                            <div style={{ fontSize: 10, fontWeight: "normal" }}>{formatDateHeader(date)}</div>
+                          <td key={date} style={{ ...headerCellStyle, backgroundColor: PALETTE.weekend, color: PALETTE.headerInk }}>
+                            <div style={headerContentStyle}>
+                              <DateHeader date={date} />
+                            </div>
                           </td>
                         );
                       })}
@@ -235,36 +326,48 @@ export const ScheduleCalendar = forwardRef<HTMLDivElement, ScheduleCalendarProps
               <tbody>
                 {WEEKDAY_SLOTS.map((slot, idx) => (
                   <tr key={slot.startTime}>
-                    <td style={timeCellStyle}>{slot.label}</td>
-                    <td style={durationCellStyle}>{slot.duration}</td>
+                    <td style={timeCellStyle}>
+                      <div style={centeredCellContentStyle}><TimeLabel label={slot.label} /></div>
+                    </td>
+                    <td style={durationCellStyle}>
+                      <div style={centeredCellContentStyle}>{slot.duration}</div>
+                    </td>
                     {week.weekdays.map((date) => {
                       const person = personMap.get(`${date}|${slot.startTime}`) ?? "";
                       return (
-                        <td key={date} style={{ ...cellStyle, backgroundColor: "#fff" }}>
-                          {person}
+                        <td key={date} style={{ ...cellStyle, backgroundColor: PALETTE.nameCell }}>
+                          <div style={centeredCellContentStyle}>{person || "\u00A0"}</div>
                         </td>
                       );
                     })}
                     {week.weekdays.length === 0 && (
                       Array.from({ length: 5 }).map((_, i) => (
-                        <td key={i} style={{ ...cellStyle }} />
+                        <td key={i} style={{ ...cellStyle, backgroundColor: PALETTE.nameCell }}>
+                          <div style={centeredCellContentStyle}>&nbsp;</div>
+                        </td>
                       ))
                     )}
                     {week.weekends.length > 0 && idx < WEEKEND_SLOTS.length ? (
                       <>
-                        <td style={timeCellStyle}>{WEEKEND_SLOTS[idx].label}</td>
-                        <td style={durationCellStyle}>{WEEKEND_SLOTS[idx].duration}</td>
+                        <td style={timeCellStyle}>
+                          <div style={centeredCellContentStyle}><TimeLabel label={WEEKEND_SLOTS[idx].label} /></div>
+                        </td>
+                        <td style={durationCellStyle}>
+                          <div style={centeredCellContentStyle}>{WEEKEND_SLOTS[idx].duration}</div>
+                        </td>
                         {week.weekends.map((date) => {
                           const person = personMap.get(`${date}|${WEEKEND_SLOTS[idx].startTime}`) ?? "";
                           return (
-                            <td key={date} style={{ ...cellStyle, backgroundColor: "#fff8ee" }}>
-                              {person}
+                            <td key={date} style={{ ...cellStyle, backgroundColor: PALETTE.nameCell }}>
+                              <div style={centeredCellContentStyle}>{person || "\u00A0"}</div>
                             </td>
                           );
                         })}
                       </>
                     ) : week.weekends.length > 0 ? (
-                      <td colSpan={2 + week.weekends.length} style={{ ...cellStyle }} />
+                      <td colSpan={2 + week.weekends.length} style={{ ...cellStyle, backgroundColor: PALETTE.nameCell }}>
+                        <div style={centeredCellContentStyle}>&nbsp;</div>
+                      </td>
                     ) : null}
                   </tr>
                 ))}

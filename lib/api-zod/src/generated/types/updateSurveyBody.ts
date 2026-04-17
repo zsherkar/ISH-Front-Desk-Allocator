@@ -11,4 +11,6 @@ export interface UpdateSurveyBody {
   status?: UpdateSurveyBodyStatus;
   /** @nullable */
   title?: string | null;
+  /** @nullable */
+  closesAt?: string | null;
 }

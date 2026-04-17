@@ -14,6 +14,8 @@ export interface Survey {
   year: number;
   status: SurveyStatus;
   token: string;
+  /** @nullable */
+  closesAt?: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }

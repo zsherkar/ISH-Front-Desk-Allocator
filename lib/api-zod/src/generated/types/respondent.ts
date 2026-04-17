@@ -10,6 +10,7 @@ import type { RespondentCategory } from "./respondentCategory";
 export interface Respondent {
   id: number;
   name: string;
+  preferredName: string;
   /** @nullable */
   email?: string | null;
   category: RespondentCategory;

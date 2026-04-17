@@ -7,6 +7,8 @@
  */
 
 export interface RunAllocationBody {
-  /** IDs of respondents to treat as AFP (get exactly 10 hours each) */
+  /** IDs of respondents to treat as AFP (capped at 10 hours each) */
   afpRespondentIds: number[];
+  /** IDs of respondents to include in this allocation run */
+  includedRespondentIds?: number[];
 }

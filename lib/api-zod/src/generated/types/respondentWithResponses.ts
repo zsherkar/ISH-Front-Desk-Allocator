@@ -10,7 +10,11 @@ import type { RespondentWithResponsesCategory } from "./respondentWithResponsesC
 export interface RespondentWithResponses {
   respondentId: number;
   name: string;
+  preferredName: string;
   category: RespondentWithResponsesCategory;
   selectedShiftIds: number[];
   totalAvailableHours: number;
+  hasPenalty: boolean;
+  penaltyHours: number;
+  afpHoursCap: number;
 }

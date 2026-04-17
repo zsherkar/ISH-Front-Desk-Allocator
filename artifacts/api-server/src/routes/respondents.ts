@@ -8,8 +8,18 @@ import {
   UpdateRespondentResponse,
 } from "@workspace/api-zod";
 import { computeAverage, computeMedian, computeStdDev } from "../lib/stats.js";
+import { requireAdmin } from "../lib/adminAuth.js";
 
 const router: IRouter = Router();
+
+router.use(requireAdmin);
+
+function formatTime12(time: string): string {
+  const [h, m] = time.split(":").map(Number);
+  const suffix = h >= 12 ? "PM" : "AM";
+  const hour = h % 12 === 0 ? 12 : h % 12;
+  return `${hour}:${String(m).padStart(2, "0")} ${suffix}`;
+}
 
 router.get("/respondents", async (_req, res): Promise<void> => {
   const respondents = await db
@@ -28,7 +38,13 @@ router.get("/respondents/lookup", async (req, res): Promise<void> => {
   const respondents = await db
     .select()
     .from(respondentsTable)
-    .where(or(ilike(respondentsTable.name, `%${query}%`), ilike(respondentsTable.email, `%${query}%`)))
+    .where(
+      or(
+        ilike(respondentsTable.name, `%${query}%`),
+        ilike(respondentsTable.preferredName, `%${query}%`),
+        ilike(respondentsTable.email, `%${query}%`)
+      )
+    )
     .limit(8);
   res.json(
     respondents.map((respondent) => ({
@@ -144,6 +160,8 @@ router.get("/respondents/:id/fd-history", async (req, res): Promise<void> => {
       surveyTitle: surveysTable.title,
       dayType: shiftsTable.dayType,
       durationHours: shiftsTable.durationHours,
+      startTime: shiftsTable.startTime,
+      endTime: shiftsTable.endTime,
       shiftDate: shiftsTable.date,
     })
     .from(allocationsTable)
@@ -202,16 +220,47 @@ router.get("/respondents/:id/fd-history", async (req, res): Promise<void> => {
   const monthlyHistory = Array.from(historyBySurvey.values()).sort(
     (a, b) => a.year - b.year || a.month - b.month,
   );
+  const slotPreferenceMap = new Map<
+    string,
+    { label: string; dayType: "weekday" | "weekend"; shiftCount: number; totalHours: number }
+  >();
+
+  for (const row of rows) {
+    const start = formatTime12(row.startTime).replace(":00", "");
+    const end = formatTime12(row.endTime).replace(":00", "");
+    const label = `${row.dayType === "weekday" ? "Weekday" : "Weekend"} ${start} - ${end}`;
+    const key = `${row.dayType}|${row.startTime}-${row.endTime}`;
+    if (!slotPreferenceMap.has(key)) {
+      slotPreferenceMap.set(key, {
+        label,
+        dayType: row.dayType as "weekday" | "weekend",
+        shiftCount: 0,
+        totalHours: 0,
+      });
+    }
+    const bucket = slotPreferenceMap.get(key)!;
+    bucket.shiftCount += 1;
+    bucket.totalHours += row.durationHours;
+  }
+
+  const slotPreferences = Array.from(slotPreferenceMap.values()).sort(
+    (a, b) => b.shiftCount - a.shiftCount || b.totalHours - a.totalHours || a.label.localeCompare(b.label),
+  );
 
   const hourValues = monthlyHistory.map((entry) => entry.totalHours);
   const meanHours = computeAverage(hourValues);
   const medianHours = computeMedian(hourValues);
   const stdDevHours = computeStdDev(hourValues, meanHours);
+  const firstHistoryEntry = monthlyHistory[0];
+  const firstFrontDeskMonth = firstHistoryEntry
+    ? `${String(firstHistoryEntry.month).padStart(2, "0")}/${firstHistoryEntry.year}`
+    : "05/2026";
 
   res.json({
     respondent: {
       id: respondent.id,
       name: respondent.name,
+      preferredName: respondent.preferredName,
       email: respondent.email,
       category: respondent.category,
     },
@@ -224,8 +273,10 @@ router.get("/respondents/:id/fd-history", async (req, res): Promise<void> => {
       stdDevHours,
       maxHours: hourValues.length > 0 ? Math.max(...hourValues) : 0,
       minHours: hourValues.length > 0 ? Math.min(...hourValues) : 0,
+      firstFrontDeskMonth,
     },
     monthlyHistory,
+    slotPreferences,
   });
 });
 
