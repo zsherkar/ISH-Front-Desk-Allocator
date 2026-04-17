@@ -44,6 +44,15 @@ Thumbs.db
 .cursor/rules/nx-rules.mdc
 .github/instructions/nx.instructions.md
 
-# Replit
 .cache/
 .local/
+
+# local tunnel/debug artifacts
+*.log
+_tmp_*
+tmp-admin-cookie.txt
+debug-admin-json.txt
+tools/
+
+# local prompt/image scratch files
+attached_assets/

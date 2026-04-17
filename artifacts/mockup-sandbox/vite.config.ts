@@ -5,6 +5,7 @@ import path from "path";
 import { mockupPreviewPlugin } from "./mockupPreviewPlugin";
 
 const rawPort = process.env.PORT ?? "3001";
+const host = process.env.VITE_HOST?.trim() || "127.0.0.1";
 
 const port = Number(rawPort);
 
@@ -33,8 +34,7 @@ export default defineConfig({
   },
   server: {
     port,
-    host: "0.0.0.0",
-    allowedHosts: true,
+    host,
     fs: {
       strict: true,
       deny: ["**/.*"],
@@ -42,7 +42,6 @@ export default defineConfig({
   },
   preview: {
     port,
-    host: "0.0.0.0",
-    allowedHosts: true,
+    host,
   },
 });
