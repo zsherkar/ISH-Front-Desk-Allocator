@@ -47,3 +47,13 @@ Thumbs.db
 # Replit
 .cache/
 .local/
+
+# local tunnel/debug artifacts
+*.log
+_tmp_*
+tmp-admin-cookie.txt
+debug-admin-json.txt
+tools/
+
+# local prompt/image scratch files
+attached_assets/
