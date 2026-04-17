@@ -15,4 +15,6 @@ export interface CreateSurveyBody {
   year: number;
   /** @nullable */
   title?: string | null;
+  /** @nullable */
+  closesAt?: string | null;
 }

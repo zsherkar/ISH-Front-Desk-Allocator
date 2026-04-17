@@ -15,4 +15,5 @@ export interface RespondentFdHistorySummary {
   stdDevHours: number;
   maxHours: number;
   minHours: number;
+  firstFrontDeskMonth: string;
 }

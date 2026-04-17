@@ -518,6 +518,9 @@ components:
           enum: [open, closed]
         token:
           type: string
+        closesAt:
+          type: ["string", "null"]
+          format: date-time
         createdAt:
           type: string
           format: date-time
@@ -581,6 +584,9 @@ components:
           enum: [open, closed]
         token:
           type: string
+        closesAt:
+          type: ["string", "null"]
+          format: date-time
         shifts:
           type: array
           items:
@@ -612,6 +618,8 @@ components:
           type: integer
         name:
           type: string
+        preferredName:
+          type: string
         email:
           type: ["string", "null"]
         category:
@@ -623,6 +631,7 @@ components:
       required:
         - id
         - name
+        - preferredName
         - category
         - createdAt
 
@@ -633,6 +642,8 @@ components:
           type: integer
         name:
           type: string
+        preferredName:
+          type: string
         category:
           type: string
           enum: [AFP, General]
@@ -642,12 +653,22 @@ components:
             type: integer
         totalAvailableHours:
           type: number
+        hasPenalty:
+          type: boolean
+        penaltyHours:
+          type: number
+        afpHoursCap:
+          type: number
       required:
         - respondentId
         - name
+        - preferredName
         - category
         - selectedShiftIds
         - totalAvailableHours
+        - hasPenalty
+        - penaltyHours
+        - afpHoursCap
 
     PublicSurvey:
       type: object
@@ -663,6 +684,9 @@ components:
         status:
           type: string
           enum: [open, closed]
+        closesAt:
+          type: ["string", "null"]
+          format: date-time
         shifts:
           type: array
           items:
@@ -673,6 +697,7 @@ components:
         - month
         - year
         - status
+        - closesAt
         - shifts
 
     SubmitResponseBody:
@@ -681,14 +706,25 @@ components:
         name:
           type: string
         email:
-          type: ["string", "null"]
+          type: string
+        preferredName:
+          type: string
+        category:
+          type: string
+          enum: [AFP, General]
         selectedShiftIds:
           type: array
           items:
             type: integer
+        waiverAccepted:
+          type: boolean
       required:
         - name
+        - email
+        - preferredName
+        - category
         - selectedShiftIds
+        - waiverAccepted
 
     SubmitResponseResult:
       type: object
@@ -712,6 +748,8 @@ components:
           type: integer
         title:
           type: ["string", "null"]
+        closesAt:
+          type: ["string", "null"]
       required:
         - month
         - year
@@ -723,6 +761,8 @@ components:
           type: string
           enum: [open, closed]
         title:
+          type: ["string", "null"]
+        closesAt:
           type: ["string", "null"]
 
     CreateRespondentBody:
@@ -757,7 +797,12 @@ components:
           type: array
           items:
             type: integer
-          description: IDs of respondents to treat as AFP (get exactly 10 hours each)
+          description: IDs of respondents to treat as AFP (capped at 10 hours each)
+        includedRespondentIds:
+          type: array
+          items:
+            type: integer
+          description: IDs of respondents to include in this allocation run
       required:
         - afpRespondentIds
 
@@ -771,6 +816,10 @@ components:
           format: date
         label:
           type: string
+        startTime:
+          type: string
+        endTime:
+          type: string
         durationHours:
           type: number
         dayType:
@@ -780,6 +829,8 @@ components:
         - shiftId
         - date
         - label
+        - startTime
+        - endTime
         - durationHours
         - dayType
 
@@ -1052,6 +1103,8 @@ components:
           type: number
         minHours:
           type: number
+        firstFrontDeskMonth:
+          type: string
       required:
         - monthsWithAllocations
         - totalAllocatedHours
@@ -1061,6 +1114,25 @@ components:
         - stdDevHours
         - maxHours
         - minHours
+        - firstFrontDeskMonth
+
+    RespondentFdHistorySlotPreference:
+      type: object
+      properties:
+        label:
+          type: string
+        dayType:
+          type: string
+          enum: [weekday, weekend]
+        shiftCount:
+          type: integer
+        totalHours:
+          type: number
+      required:
+        - label
+        - dayType
+        - shiftCount
+        - totalHours
 
     RespondentFdHistory:
       type: object
@@ -1073,7 +1145,12 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/RespondentFdHistoryMonthlyEntry"
+        slotPreferences:
+          type: array
+          items:
+            $ref: "#/components/schemas/RespondentFdHistorySlotPreference"
       required:
         - respondent
         - summary
         - monthlyHistory
+        - slotPreferences

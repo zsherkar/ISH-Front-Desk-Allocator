@@ -7,10 +7,12 @@
  */
 import type { Respondent } from "./respondent";
 import type { RespondentFdHistoryMonthlyEntry } from "./respondentFdHistoryMonthlyEntry";
+import type { RespondentFdHistorySlotPreference } from "./respondentFdHistorySlotPreference";
 import type { RespondentFdHistorySummary } from "./respondentFdHistorySummary";
 
 export interface RespondentFdHistory {
   respondent: Respondent;
   summary: RespondentFdHistorySummary;
   monthlyHistory: RespondentFdHistoryMonthlyEntry[];
+  slotPreferences: RespondentFdHistorySlotPreference[];
 }

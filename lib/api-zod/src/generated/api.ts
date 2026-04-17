@@ -24,6 +24,7 @@ export const ListSurveysResponseItem = zod.object({
   year: zod.number(),
   status: zod.enum(["open", "closed"]),
   token: zod.string(),
+  closesAt: zod.date().nullish(),
   createdAt: zod.date(),
   updatedAt: zod.date(),
 });
@@ -38,6 +39,7 @@ export const CreateSurveyBody = zod.object({
   month: zod.number().min(1).max(createSurveyBodyMonthMax),
   year: zod.number(),
   title: zod.string().nullish(),
+  closesAt: zod.string().nullish(),
 });
 
 /**
@@ -54,6 +56,7 @@ export const GetSurveyResponse = zod.object({
   year: zod.number(),
   status: zod.enum(["open", "closed"]),
   token: zod.string(),
+  closesAt: zod.date().nullish(),
   shifts: zod.array(
     zod.object({
       id: zod.number(),
@@ -81,6 +84,7 @@ export const UpdateSurveyParams = zod.object({
 export const UpdateSurveyBody = zod.object({
   status: zod.enum(["open", "closed"]).optional(),
   title: zod.string().nullish(),
+  closesAt: zod.string().nullish(),
 });
 
 export const UpdateSurveyResponse = zod.object({
@@ -90,6 +94,7 @@ export const UpdateSurveyResponse = zod.object({
   year: zod.number(),
   status: zod.enum(["open", "closed"]),
   token: zod.string(),
+  closesAt: zod.date().nullish(),
   createdAt: zod.date(),
   updatedAt: zod.date(),
 });
@@ -104,9 +109,13 @@ export const GetSurveyResponsesParams = zod.object({
 export const GetSurveyResponsesResponseItem = zod.object({
   respondentId: zod.number(),
   name: zod.string(),
+  preferredName: zod.string(),
   category: zod.enum(["AFP", "General"]),
   selectedShiftIds: zod.array(zod.number()),
   totalAvailableHours: zod.number(),
+  hasPenalty: zod.boolean(),
+  penaltyHours: zod.number(),
+  afpHoursCap: zod.number(),
 });
 export const GetSurveyResponsesResponse = zod.array(
   GetSurveyResponsesResponseItem,
@@ -154,7 +163,11 @@ export const RunAllocationParams = zod.object({
 export const RunAllocationBody = zod.object({
   afpRespondentIds: zod
     .array(zod.number())
-    .describe("IDs of respondents to treat as AFP (get exactly 10 hours each)"),
+    .describe("IDs of respondents to treat as AFP (capped at 10 hours each)"),
+  includedRespondentIds: zod
+    .array(zod.number())
+    .optional()
+    .describe("IDs of respondents to include in this allocation run"),
 });
 
 export const RunAllocationResponse = zod.object({
@@ -169,6 +182,8 @@ export const RunAllocationResponse = zod.object({
           shiftId: zod.number(),
           date: zod.date(),
           label: zod.string(),
+          startTime: zod.string(),
+          endTime: zod.string(),
           durationHours: zod.number(),
           dayType: zod.enum(["weekday", "weekend"]),
         }),
@@ -202,6 +217,8 @@ export const GetAllocationsResponse = zod.object({
           shiftId: zod.number(),
           date: zod.date(),
           label: zod.string(),
+          startTime: zod.string(),
+          endTime: zod.string(),
           durationHours: zod.number(),
           dayType: zod.enum(["weekday", "weekend"]),
         }),
@@ -242,6 +259,8 @@ export const AdjustAllocationResponse = zod.object({
           shiftId: zod.number(),
           date: zod.date(),
           label: zod.string(),
+          startTime: zod.string(),
+          endTime: zod.string(),
           durationHours: zod.number(),
           dayType: zod.enum(["weekday", "weekend"]),
         }),
@@ -322,6 +341,7 @@ export const GetPublicSurveyResponse = zod.object({
   month: zod.number(),
   year: zod.number(),
   status: zod.enum(["open", "closed"]),
+  closesAt: zod.date().nullable(),
   shifts: zod.array(
     zod.object({
       id: zod.number(),
@@ -345,8 +365,11 @@ export const SubmitResponseParams = zod.object({
 
 export const SubmitResponseBody = zod.object({
   name: zod.string(),
-  email: zod.string().nullish(),
+  email: zod.string(),
+  preferredName: zod.string(),
+  category: zod.enum(["AFP", "General"]),
   selectedShiftIds: zod.array(zod.number()),
+  waiverAccepted: zod.boolean(),
 });
 
 /**
@@ -355,6 +378,7 @@ export const SubmitResponseBody = zod.object({
 export const ListRespondentsResponseItem = zod.object({
   id: zod.number(),
   name: zod.string(),
+  preferredName: zod.string(),
   email: zod.string().nullish(),
   category: zod.enum(["AFP", "General"]),
   createdAt: zod.date(),
@@ -388,6 +412,7 @@ export const UpdateRespondentBody = zod.object({
 export const UpdateRespondentResponse = zod.object({
   id: zod.number(),
   name: zod.string(),
+  preferredName: zod.string(),
   email: zod.string().nullish(),
   category: zod.enum(["AFP", "General"]),
   createdAt: zod.date(),
@@ -411,6 +436,7 @@ export const GetRespondentFdHistoryResponse = zod.object({
   respondent: zod.object({
     id: zod.number(),
     name: zod.string(),
+    preferredName: zod.string(),
     email: zod.string().nullish(),
     category: zod.enum(["AFP", "General"]),
     createdAt: zod.date(),
@@ -424,6 +450,7 @@ export const GetRespondentFdHistoryResponse = zod.object({
     stdDevHours: zod.number(),
     maxHours: zod.number(),
     minHours: zod.number(),
+    firstFrontDeskMonth: zod.string(),
   }),
   monthlyHistory: zod.array(
     zod.object({
@@ -438,6 +465,14 @@ export const GetRespondentFdHistoryResponse = zod.object({
       manualAdjustmentsCount: zod.number(),
       firstShiftDate: zod.string().nullable(),
       lastShiftDate: zod.string().nullable(),
+    }),
+  ),
+  slotPreferences: zod.array(
+    zod.object({
+      label: zod.string(),
+      dayType: zod.enum(["weekday", "weekend"]),
+      shiftCount: zod.number(),
+      totalHours: zod.number(),
     }),
   ),
 });

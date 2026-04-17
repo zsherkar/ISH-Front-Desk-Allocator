@@ -1,16 +1,51 @@
 import { Router, type IRouter } from "express";
-import { eq, and } from "drizzle-orm";
+import { eq, and, ilike, or } from "drizzle-orm";
 import { db, surveysTable, shiftsTable, respondentsTable, responsesTable } from "@workspace/db";
 import {
   SubmitResponseBody,
   GetPublicSurveyResponse,
 } from "@workspace/api-zod";
+import { createRateLimit, requireSameOriginForBrowser } from "../lib/security.js";
 
 const router: IRouter = Router();
 const shouldAutoClose = (survey: { status: string; closesAt: Date | string | null }) =>
   survey.status === "open" && Boolean(survey.closesAt) && new Date(survey.closesAt as string) <= new Date();
+const surveyReadRateLimit = createRateLimit({
+  keyPrefix: "public-survey-read",
+  windowMs: 5 * 60 * 1000,
+  max: 120,
+  message: "Too many survey requests. Please try again shortly.",
+});
+const surveySubmitRateLimit = createRateLimit({
+  keyPrefix: "public-survey-submit",
+  windowMs: 15 * 60 * 1000,
+  max: 12,
+  message: "Too many submission attempts. Please wait and try again.",
+});
+const respondentLookupRateLimit = createRateLimit({
+  keyPrefix: "public-respondent-lookup",
+  windowMs: 5 * 60 * 1000,
+  max: 40,
+  message: "Too many lookup requests. Please try again shortly.",
+});
 
-router.get("/respond/:surveyToken", async (req, res): Promise<void> => {
+function normalizeText(value: string): string {
+  return value.trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+function splitName(name: string): { firstName: string; lastName: string } {
+  const parts = name.trim().replace(/\s+/g, " ").split(" ");
+  return {
+    firstName: parts[0] ?? "",
+    lastName: parts.slice(1).join(" "),
+  };
+}
+
+router.get("/respond/:surveyToken", surveyReadRateLimit, async (req, res): Promise<void> => {
+  res.set("Cache-Control", "no-store, no-cache, must-revalidate");
+  res.set("Pragma", "no-cache");
+  res.set("Expires", "0");
+
   const token = Array.isArray(req.params.surveyToken)
     ? req.params.surveyToken[0]
     : req.params.surveyToken;
@@ -48,7 +83,66 @@ router.get("/respond/:surveyToken", async (req, res): Promise<void> => {
   });
 });
 
-router.post("/respond/:surveyToken", async (req, res): Promise<void> => {
+router.get(
+  "/respond/:surveyToken/respondents/lookup",
+  respondentLookupRateLimit,
+  async (req, res): Promise<void> => {
+    const token = Array.isArray(req.params.surveyToken)
+      ? req.params.surveyToken[0]
+      : req.params.surveyToken;
+    const query = typeof req.query.q === "string" ? req.query.q.trim() : "";
+
+    if (query.length < 3) {
+      res.json([]);
+      return;
+    }
+
+    const [survey] = await db.select().from(surveysTable).where(eq(surveysTable.token, token));
+    if (!survey || survey.status === "closed" || shouldAutoClose(survey)) {
+      res.json([]);
+      return;
+    }
+
+    const respondents = await db
+      .select({
+        name: respondentsTable.name,
+        preferredName: respondentsTable.preferredName,
+        email: respondentsTable.email,
+        category: respondentsTable.category,
+      })
+      .from(respondentsTable)
+      .where(
+        or(
+          ilike(respondentsTable.name, `%${query}%`),
+          ilike(respondentsTable.preferredName, `%${query}%`),
+          ilike(respondentsTable.email, `%${query}%`),
+        ),
+      )
+      .limit(5);
+
+    res.json(
+      respondents
+        .filter((respondent) => respondent.email)
+        .map((respondent) => {
+          const { firstName, lastName } = splitName(respondent.name);
+          return {
+            firstName,
+            lastName,
+            email: respondent.email,
+            preferredName: respondent.preferredName,
+            category: respondent.category === "AFP" ? "AFP" : "General",
+            updatedAt: new Date().toISOString(),
+          };
+        }),
+    );
+  },
+);
+
+router.post(
+  "/respond/:surveyToken",
+  requireSameOriginForBrowser,
+  surveySubmitRateLimit,
+  async (req, res): Promise<void> => {
   const token = Array.isArray(req.params.surveyToken)
     ? req.params.surveyToken[0]
     : req.params.surveyToken;
@@ -76,8 +170,11 @@ router.post("/respond/:surveyToken", async (req, res): Promise<void> => {
   }
 
   const { name, email, selectedShiftIds } = parsed.data;
-  const preferredName = typeof req.body?.preferredName === "string" ? req.body.preferredName.trim() : "";
-  const category = req.body?.category === "AFP" ? "AFP" : "General";
+  const preferredName = parsed.data.preferredName.trim();
+  const category = parsed.data.category === "AFP" ? "AFP" : "General";
+  const normalizedEmail = email.trim().toLowerCase();
+  const normalizedName = normalizeText(name);
+  const normalizedPreferredName = normalizeText(preferredName);
 
   if (selectedShiftIds.length === 0) {
     res.status(400).json({ error: "Please select at least one shift" });
@@ -97,75 +194,48 @@ router.post("/respond/:surveyToken", async (req, res): Promise<void> => {
     return;
   }
 
-  // Find or create respondent by name (within this survey context)
+  // Use email as the canonical public identifier to avoid cross-respondent collisions.
   let respondent = null;
 
-  // Check if this respondent already submitted for this survey
-  if (email) {
-    const existing = await db
-      .select()
-      .from(respondentsTable)
-      .where(eq(respondentsTable.email, email));
+  const existing = await db
+    .select()
+    .from(respondentsTable)
+    .where(eq(respondentsTable.email, normalizedEmail));
 
-    if (existing.length > 0) {
-      respondent = existing[0];
-      // Delete their existing responses for this survey
-      await db
-        .delete(responsesTable)
-        .where(
-          and(
-            eq(responsesTable.surveyId, survey.id),
-            eq(responsesTable.respondentId, respondent.id)
-          )
-        );
+  if (existing.length > 0) {
+    respondent = existing[0];
+
+    if (
+      normalizeText(respondent.name) !== normalizedName ||
+      normalizeText(respondent.preferredName) !== normalizedPreferredName
+    ) {
+      res.status(409).json({
+        error:
+          "These details do not match the saved record for this email. Use the same name details as previous surveys or contact an admin.",
+      });
+      return;
     }
+
+    await db
+      .delete(responsesTable)
+      .where(
+        and(
+          eq(responsesTable.surveyId, survey.id),
+          eq(responsesTable.respondentId, respondent.id),
+        ),
+      );
+  } else {
+    const [newRespondent] = await db
+      .insert(respondentsTable)
+      .values({
+        name: name.trim(),
+        preferredName,
+        email: normalizedEmail,
+        category,
+      })
+      .returning();
+    respondent = newRespondent;
   }
-
-  if (!respondent) {
-    // Look for a respondent with the same name (case insensitive) who hasn't responded to this survey
-    const existingByName = await db
-      .select()
-      .from(respondentsTable);
-
-    const matchByName = existingByName.find(
-      (r) => r.name.toLowerCase() === name.toLowerCase()
-    );
-
-    if (matchByName) {
-      respondent = matchByName;
-      // Delete their existing responses for this survey (re-submission)
-      await db
-        .delete(responsesTable)
-        .where(
-          and(
-            eq(responsesTable.surveyId, survey.id),
-            eq(responsesTable.respondentId, respondent.id)
-          )
-        );
-    } else {
-      // Create new respondent
-      const [newRespondent] = await db
-        .insert(respondentsTable)
-        .values({
-          name,
-          preferredName: preferredName || name.split(" ")[0] || name,
-          email: email ?? null,
-          category,
-        })
-        .returning();
-      respondent = newRespondent;
-    }
-  }
-
-  await db
-    .update(respondentsTable)
-    .set({
-      name,
-      preferredName: preferredName || respondent.preferredName || name.split(" ")[0] || name,
-      email: email ?? respondent.email,
-      category,
-    })
-    .where(eq(respondentsTable.id, respondent.id));
 
   // Insert responses
   for (const shiftId of selectedShiftIds) {
@@ -178,7 +248,7 @@ router.post("/respond/:surveyToken", async (req, res): Promise<void> => {
 
   res.status(201).json({
     success: true,
-    message: `Thank you ${name}! Your availability has been recorded for ${selectedShiftIds.length} shift(s).`,
+    message: `Thank you ${respondent.preferredName || respondent.name}! Your availability has been recorded for ${selectedShiftIds.length} shift(s).`,
   });
 });
 

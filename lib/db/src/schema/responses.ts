@@ -1,4 +1,4 @@
-import { pgTable, serial, timestamp, integer } from "drizzle-orm/pg-core";
+import { boolean, integer, pgTable, real, serial, timestamp } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
 import { surveysTable } from "./surveys";
@@ -10,6 +10,9 @@ export const responsesTable = pgTable("responses", {
   surveyId: integer("survey_id").notNull().references(() => surveysTable.id, { onDelete: "cascade" }),
   respondentId: integer("respondent_id").notNull().references(() => respondentsTable.id, { onDelete: "cascade" }),
   shiftId: integer("shift_id").notNull().references(() => shiftsTable.id, { onDelete: "cascade" }),
+  hasPenalty: boolean("has_penalty").notNull().default(false),
+  penaltyHours: real("penalty_hours").notNull().default(0),
+  afpHoursCap: real("afp_hours_cap").notNull().default(10),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 

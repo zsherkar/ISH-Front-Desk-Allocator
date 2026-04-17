@@ -5,6 +5,7 @@
   "scripts": {
     "preinstall": "node ./scripts/preinstall-check.cjs",
     "build": "pnpm run typecheck && pnpm -r --if-present run build",
+    "hash:admin-password": "node ./scripts/hash-admin-password.mjs",
     "typecheck:libs": "tsc --build",
     "typecheck": "pnpm run typecheck:libs && pnpm -r --filter \"./artifacts/**\" --filter \"./scripts\" --if-present run typecheck",
     "smoke:deploy-local": "node ./scripts/smoke-deploy-local.mjs",
@@ -12,7 +13,7 @@
   },
   "private": true,
   "devDependencies": {
-    "typescript": "~5.9.2",
-    "prettier": "^3.8.1"
+    "prettier": "^3.8.1",
+    "typescript": "~5.9.2"
   }
 }

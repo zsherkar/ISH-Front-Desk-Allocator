@@ -13,13 +13,11 @@
     "@workspace/api-zod": "workspace:*",
     "drizzle-orm": "catalog:",
     "express": "^5",
-    "cookie-parser": "^1.4.7",
-    "cors": "^2"
+    "cookie-parser": "^1.4.7"
   },
   "devDependencies": {
     "@types/node": "catalog:",
     "@types/express": "^5.0.6",
-    "@types/cors": "^2.8.19",
     "@types/cookie-parser": "^1.4.10",
     "esbuild": "^0.27.3",
     "tsx": "catalog:"

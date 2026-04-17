@@ -171,27 +171,49 @@ export async function runAllocation(options: AllocationOptions): Promise<{
       respondentId: responsesTable.respondentId,
       shiftId: responsesTable.shiftId,
       respondentName: respondentsTable.preferredName,
+      respondentFullName: respondentsTable.name,
       respondentCategory: respondentsTable.category,
+      hasPenalty: responsesTable.hasPenalty,
+      penaltyHours: responsesTable.penaltyHours,
+      afpHoursCap: responsesTable.afpHoursCap,
     })
     .from(responsesTable)
     .innerJoin(respondentsTable, eq(responsesTable.respondentId, respondentsTable.id))
     .where(eq(responsesTable.surveyId, surveyId));
 
-  const respondentMap = new Map<number, { id: number; name: string; category: string; availableShiftIds: Set<number> }>();
+  const respondentMap = new Map<number, {
+    id: number;
+    name: string;
+    category: string;
+    availableShiftIds: Set<number>;
+    hasPenalty: boolean;
+    penaltyHours: number;
+    afpHoursCap: number;
+  }>();
   for (const r of responses) {
     if (includedIdSet && !includedIdSet.has(r.respondentId)) {
       continue;
     }
+    const category = afpIdSet.has(r.respondentId) || r.respondentCategory === "AFP" ? "AFP" : "General";
+    const hasPenalty = Boolean(r.hasPenalty);
+    const penaltyHours = hasPenalty ? Math.max(0, r.penaltyHours ?? 0) : 0;
+    const afpHoursCap = Math.max(0, r.afpHoursCap ?? 10);
     if (!respondentMap.has(r.respondentId)) {
-      const category = afpIdSet.has(r.respondentId) ? "AFP" : "General";
       respondentMap.set(r.respondentId, {
         id: r.respondentId,
-        name: r.respondentName || "Unknown",
+        name: r.respondentName || r.respondentFullName || "Unknown",
         category,
         availableShiftIds: new Set(),
+        hasPenalty,
+        penaltyHours,
+        afpHoursCap,
       });
     } else {
-      respondentMap.get(r.respondentId)!.category = afpIdSet.has(r.respondentId) ? "AFP" : "General";
+      const respondent = respondentMap.get(r.respondentId)!;
+      respondent.category = category;
+      respondent.hasPenalty = respondent.hasPenalty || hasPenalty;
+      respondent.penaltyHours = Math.max(respondent.penaltyHours, penaltyHours);
+      respondent.afpHoursCap = Math.max(0, afpHoursCap);
     }
     respondentMap.get(r.respondentId)!.availableShiftIds.add(r.shiftId);
   }
@@ -208,20 +230,22 @@ export async function runAllocation(options: AllocationOptions): Promise<{
   const globalWdRatio = totalShiftHours > 0 ? weekdayHours / totalShiftHours : 0.5;
 
   for (const afp of afpRespondents) {
+    const afpTargetHours = Math.max(0, afp.afpHoursCap || 10);
     const available = Array.from(afp.availableShiftIds)
       .filter((id) => !assignedShiftIds.has(id))
       .sort((a, b) => shiftMap.get(a)!.date.localeCompare(shiftMap.get(b)!.date));
 
-    const allocated = allocateToTarget(10, available, assignedShiftIds, shiftMap, globalWdRatio, 0);
+    const allocated = allocateToTarget(afpTargetHours, available, assignedShiftIds, shiftMap, globalWdRatio, 0);
     let afpHours = calcHours(allocated, shiftMap);
-    if (afpHours < 8) {
+    const minimumAfpTarget = Math.max(0, afpTargetHours - 2);
+    if (afpHours < minimumAfpTarget) {
       for (const shiftId of available) {
         if (allocated.includes(shiftId) || assignedShiftIds.has(shiftId)) continue;
         const nextHours = afpHours + (shiftMap.get(shiftId)?.durationHours ?? 0);
-        if (nextHours > 10) continue;
+        if (nextHours > afpTargetHours) continue;
         allocated.push(shiftId);
         afpHours = nextHours;
-        if (afpHours >= 8) break;
+        if (afpHours >= minimumAfpTarget) break;
       }
     }
 
@@ -247,7 +271,26 @@ export async function runAllocation(options: AllocationOptions): Promise<{
 
   const remainingShifts = shifts.filter((s) => !assignedShiftIds.has(s.id));
   const totalRemainingHours = remainingShifts.reduce((s, sh) => s + sh.durationHours, 0);
-  const targetPerGeneral = totalRemainingHours / generalRespondents.length;
+  const baseTargetPerGeneral = totalRemainingHours / generalRespondents.length;
+  const penalizedGeneralRespondents = generalRespondents.filter((r) => r.hasPenalty && r.penaltyHours > 0);
+  const regularGeneralRespondents = generalRespondents.filter((r) => !(r.hasPenalty && r.penaltyHours > 0));
+  const penalizedTargets = new Map(
+    penalizedGeneralRespondents.map((r) => [r.id, Math.max(0, baseTargetPerGeneral - r.penaltyHours)]),
+  );
+  const regularTargetHours = regularGeneralRespondents.length > 0
+    ? Math.max(
+      0,
+      (totalRemainingHours - Array.from(penalizedTargets.values()).reduce((sum, value) => sum + value, 0)) /
+        regularGeneralRespondents.length,
+    )
+    : baseTargetPerGeneral;
+  const targetByRespondentId = new Map<number, number>();
+  for (const respondent of generalRespondents) {
+    targetByRespondentId.set(
+      respondent.id,
+      penalizedTargets.get(respondent.id) ?? regularTargetHours,
+    );
+  }
 
   const generalAllocations = new Map<number, number[]>();
   for (const r of generalRespondents) generalAllocations.set(r.id, []);
@@ -257,101 +300,135 @@ export async function runAllocation(options: AllocationOptions): Promise<{
       .reduce((s, id) => s + (shiftMap.get(id)?.durationHours ?? 0), 0);
     const bHrs = Array.from(b.availableShiftIds).filter((id) => !assignedShiftIds.has(id))
       .reduce((s, id) => s + (shiftMap.get(id)?.durationHours ?? 0), 0);
-    return aHrs - bHrs;
+    return aHrs - bHrs || a.name.localeCompare(b.name);
   });
 
-  const unassigned = remainingShifts
+  const eligibleGeneralCount = (shiftId: number) =>
+    sortedByAvailability.filter((r) => r.availableShiftIds.has(shiftId)).length;
+
+  const remainingShiftIds = remainingShifts
     .map((s) => s.id)
-    .sort((a, b) => shiftMap.get(a)!.date.localeCompare(shiftMap.get(b)!.date));
+    .sort((a, b) => {
+      const eligibleDiff = eligibleGeneralCount(a) - eligibleGeneralCount(b);
+      if (eligibleDiff !== 0) return eligibleDiff;
+      const durationDiff = shiftMap.get(b)!.durationHours - shiftMap.get(a)!.durationHours;
+      if (durationDiff !== 0) return durationDiff;
+      return `${shiftMap.get(a)!.date}-${shiftMap.get(a)!.startTime}`.localeCompare(
+        `${shiftMap.get(b)!.date}-${shiftMap.get(b)!.startTime}`,
+      );
+    });
 
-  let passes = 0;
-  const maxPasses = unassigned.length * 2;
+  for (const shiftId of remainingShiftIds) {
+    if (assignedShiftIds.has(shiftId)) continue;
 
-  while (passes < maxPasses) {
-    passes++;
-
+    const shift = shiftMap.get(shiftId)!;
     let bestRespondent: typeof sortedByAvailability[0] | null = null;
-    let bestHours = Infinity;
+    let bestScore = Infinity;
 
-    for (const r of sortedByAvailability) {
-      const hrs = calcHours(generalAllocations.get(r.id)!, shiftMap);
-      if (hrs < targetPerGeneral && hrs < bestHours) {
-        const canTake = unassigned.some((id) => !assignedShiftIds.has(id) && r.availableShiftIds.has(id));
-        if (canTake) {
-          bestHours = hrs;
-          bestRespondent = r;
+    for (const respondent of sortedByAvailability) {
+      if (!respondent.availableShiftIds.has(shiftId)) continue;
+
+      const current = generalAllocations.get(respondent.id)!;
+      const currentHours = calcHours(current, shiftMap);
+      const afterHours = currentHours + shift.durationHours;
+      const respondentTargetHours = targetByRespondentId.get(respondent.id) ?? baseTargetPerGeneral;
+      const currentLoadPenalty = currentHours * 100;
+      const overTargetPenalty = Math.max(0, afterHours - respondentTargetHours) * 140;
+      const targetDistancePenalty = Math.abs(afterHours - respondentTargetHours) * 5;
+      const backToBackPenalty = addsBackToBack(shiftId, current, shiftMap) ? 25 : 0;
+      const ratioBonus = scoreShiftForPerson(shiftId, current, shiftMap, globalWdRatio);
+      const score = currentLoadPenalty + overTargetPenalty + targetDistancePenalty + backToBackPenalty - ratioBonus;
+
+      if (score < bestScore) {
+        bestScore = score;
+        bestRespondent = respondent;
+      }
+    }
+
+    if (bestRespondent) {
+      generalAllocations.get(bestRespondent.id)!.push(shiftId);
+      assignedShiftIds.add(shiftId);
+    }
+  }
+
+  const trackedRespondents = regularGeneralRespondents.length > 0
+    ? sortedByAvailability.filter((r) => !(r.hasPenalty && r.penaltyHours > 0))
+    : sortedByAvailability;
+
+  const generalHours = () =>
+    trackedRespondents.map((r) => calcHours(generalAllocations.get(r.id)!, shiftMap));
+
+  const getMoveAdjustedHours = (fromId: number, toId: number, shiftId: number) =>
+    trackedRespondents.map((r) => {
+      const current = calcHours(generalAllocations.get(r.id)!, shiftMap);
+      if (r.id === fromId) return current - shiftMap.get(shiftId)!.durationHours;
+      if (r.id === toId) return current + shiftMap.get(shiftId)!.durationHours;
+      return current;
+    });
+
+  let improved = true;
+  let rebalancePasses = 0;
+  const maxRebalancePasses = Math.max(100, remainingShiftIds.length * generalRespondents.length);
+
+  while (improved && rebalancePasses < maxRebalancePasses) {
+    improved = false;
+    rebalancePasses++;
+
+    const currentHours = generalHours();
+    const currentStdDev = stdDev(currentHours);
+    let bestMove: { fromId: number; toId: number; shiftId: number; nextStdDev: number } | null = null;
+
+    for (const from of sortedByAvailability) {
+      const fromShiftIds = generalAllocations.get(from.id)!;
+      const fromHours = calcHours(fromShiftIds, shiftMap);
+
+      for (const shiftId of fromShiftIds) {
+        const shift = shiftMap.get(shiftId)!;
+
+        for (const to of sortedByAvailability) {
+          if (to.id === from.id) continue;
+          if (!to.availableShiftIds.has(shiftId)) continue;
+
+          const toShiftIds = generalAllocations.get(to.id)!;
+          const toHours = calcHours(toShiftIds, shiftMap);
+          if (fromHours <= toHours) continue;
+          if (addsBackToBack(shiftId, toShiftIds, shiftMap)) continue;
+
+          const nextStdDev = stdDev(getMoveAdjustedHours(from.id, to.id, shiftId));
+          if (nextStdDev < currentStdDev - 0.01) {
+            const existingBest = bestMove?.nextStdDev ?? Infinity;
+            const fromTarget = targetByRespondentId.get(from.id) ?? baseTargetPerGeneral;
+            const toTarget = targetByRespondentId.get(to.id) ?? baseTargetPerGeneral;
+            const targetImprovement =
+              Math.abs(fromHours - fromTarget) + Math.abs(toHours - toTarget) -
+              (Math.abs(fromHours - shift.durationHours - fromTarget) +
+                Math.abs(toHours + shift.durationHours - toTarget));
+
+            if (nextStdDev < existingBest - 0.01 || (Math.abs(nextStdDev - existingBest) <= 0.01 && targetImprovement > 0)) {
+              bestMove = { fromId: from.id, toId: to.id, shiftId, nextStdDev };
+            }
+          }
         }
       }
     }
 
-    if (!bestRespondent) break;
-
-    const current = generalAllocations.get(bestRespondent.id)!;
-
-    let bestShift: number | null = null;
-    let bestScore = -Infinity;
-
-    for (const id of unassigned) {
-      if (assignedShiftIds.has(id)) continue;
-      if (!bestRespondent.availableShiftIds.has(id)) continue;
-      const s = shiftMap.get(id)!;
-      if (calcHours(current, shiftMap) + s.durationHours > targetPerGeneral * 1.6) continue;
-
-      const score = scoreShiftForPerson(id, current, shiftMap, globalWdRatio);
-      if (score > bestScore) {
-        bestScore = score;
-        bestShift = id;
-      }
-    }
-
-    if (bestShift === null) break;
-
-    current.push(bestShift);
-    assignedShiftIds.add(bestShift);
-  }
-
-  const leftoverShifts = shifts.filter((s) => !assignedShiftIds.has(s.id));
-  leftoverShifts.sort((a, b) => a.date.localeCompare(b.date));
-
-  for (const shift of leftoverShifts) {
-    let bestR: typeof sortedByAvailability[0] | null = null;
-    let lowestHrs = Infinity;
-
-    for (const r of sortedByAvailability) {
-      if (!r.availableShiftIds.has(shift.id)) continue;
-      const hrs = calcHours(generalAllocations.get(r.id)!, shiftMap);
-      if (hrs < lowestHrs) {
-        lowestHrs = hrs;
-        bestR = r;
-      }
-    }
-
-    if (bestR) {
-      generalAllocations.get(bestR.id)!.push(shift.id);
-      assignedShiftIds.add(shift.id);
+    if (bestMove) {
+      const fromShiftIds = generalAllocations.get(bestMove.fromId)!;
+      generalAllocations.set(
+        bestMove.fromId,
+        fromShiftIds.filter((id) => id !== bestMove.shiftId),
+      );
+      generalAllocations.get(bestMove.toId)!.push(bestMove.shiftId);
+      improved = true;
     }
   }
-
-  const generalHours = sortedByAvailability.map((r) => calcHours(generalAllocations.get(r.id)!, shiftMap));
-  const generalMean = generalHours.length > 0 ? generalHours.reduce((a, b) => a + b, 0) / generalHours.length : 0;
-  const generalSD = stdDev(generalHours);
-  const upperBound = generalMean + generalSD;
 
   for (const r of sortedByAvailability) {
-    const shiftIds = generalAllocations.get(r.id)!;
-    let hrs = calcHours(shiftIds, shiftMap);
-    if (hrs > upperBound && generalSD > 0) {
-      shiftIds.sort((a, b) => {
-        const ba = addsBackToBack(a, shiftIds.filter((id) => id !== a), shiftMap) ? 1 : 0;
-        const bb = addsBackToBack(b, shiftIds.filter((id) => id !== b), shiftMap) ? 1 : 0;
-        return bb - ba;
-      });
-      while (hrs > upperBound + 1 && shiftIds.length > 0) {
-        const removed = shiftIds.pop()!;
-        assignedShiftIds.delete(removed);
-        hrs = calcHours(shiftIds, shiftMap);
-      }
-    }
+    const shiftIds = generalAllocations.get(r.id)!.sort((a, b) =>
+      `${shiftMap.get(a)!.date}-${shiftMap.get(a)!.startTime}`.localeCompare(
+        `${shiftMap.get(b)!.date}-${shiftMap.get(b)!.startTime}`,
+      ),
+    );
 
     plans.push({
       respondentId: r.id,

@@ -3,6 +3,7 @@ import { Plus, Search, Trash2, Edit } from "lucide-react";
 import { AdminLayout } from "@/components/AdminLayout";
 import { 
   useListRespondents, 
+  useGetRespondentFdHistory,
   useCreateRespondent, 
   useDeleteRespondent,
   useUpdateRespondent
@@ -13,6 +14,8 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { clsx } from "clsx";
+import type { Respondent } from "@workspace/api-client-react";
+import { RespondentHistoryPanel } from "@/components/RespondentHistoryPanel";
 
 export function AdminRespondents() {
   const { data: respondents, isLoading } = useListRespondents();
@@ -26,6 +29,8 @@ export function AdminRespondents() {
   const [email, setEmail] = useState("");
   const [category, setCategory] = useState<"AFP" | "General">("General");
   const [search, setSearch] = useState("");
+  const [selectedRespondentId, setSelectedRespondentId] = useState<number | null>(null);
+  const { data: respondentHistory } = useGetRespondentFdHistory(selectedRespondentId ?? 0);
 
   const openCreate = () => {
     setEditingId(null);
@@ -35,7 +40,7 @@ export function AdminRespondents() {
     setIsModalOpen(true);
   };
 
-  const openEdit = (r: any) => {
+  const openEdit = (r: Respondent) => {
     setEditingId(r.id);
     setName(r.name);
     setEmail(r.email || "");
@@ -109,8 +114,15 @@ export function AdminRespondents() {
             <tbody className="divide-y divide-slate-100">
               {filtered?.map(r => (
                 <tr key={r.id} className="hover:bg-slate-50 transition-colors group">
-                  <td className="px-6 py-4 font-medium text-slate-900">{r.name}</td>
-                  <td className="px-6 py-4 text-slate-500">{r.email || '—'}</td>
+                  <td className="px-6 py-4 font-medium text-slate-900">
+                    <button
+                      className="underline decoration-dotted underline-offset-4 hover:text-indigo-700"
+                      onClick={() => setSelectedRespondentId(r.id)}
+                    >
+                      {r.name}
+                    </button>
+                  </td>
+                  <td className="px-6 py-4 text-slate-500">{r.email || "-"}</td>
                   <td className="px-6 py-4">
                     <Badge variant="outline" className={clsx("rounded-md", r.category === 'AFP' ? 'border-indigo-200 text-indigo-700 bg-indigo-50' : 'border-slate-200 text-slate-600 bg-slate-50')}>
                       {r.category}
@@ -171,6 +183,29 @@ export function AdminRespondents() {
               {createMutation.isPending || updateMutation.isPending ? "Saving..." : "Save"}
             </Button>
           </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={selectedRespondentId !== null}
+        onOpenChange={(open) => {
+          if (!open) setSelectedRespondentId(null);
+        }}
+      >
+        <DialogContent className="max-h-[86vh] max-w-4xl overflow-y-auto rounded-2xl">
+          <DialogHeader>
+            <DialogTitle className="font-display text-xl">
+              {respondentHistory
+                ? `${respondentHistory.respondent.name} - Front Desk History`
+                : "Respondent history"}
+            </DialogTitle>
+          </DialogHeader>
+
+          {!respondentHistory ? (
+            <div className="py-8 text-center text-slate-500">Loading history...</div>
+          ) : (
+            <RespondentHistoryPanel history={respondentHistory} />
+          )}
         </DialogContent>
       </Dialog>
     </AdminLayout>
