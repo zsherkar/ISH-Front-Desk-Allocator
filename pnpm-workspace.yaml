@@ -7,7 +7,7 @@ packages:
 autoInstallPeers: false
 
 catalog:
-  '@tailwindcss/vite': ^4.1.14
+  '@tailwindcss/vite': ^4.2.2
   '@tanstack/react-query': ^5.90.21
   '@types/node': ^25.3.3
   '@types/react': ^19.2.0
@@ -22,9 +22,9 @@ catalog:
   react-dom: 19.1.0
   react-is: 19.1.0
   tailwind-merge: 3.5.0
-  tailwindcss: ^4.1.14
+  tailwindcss: ^4.2.2
   tsx: ^4.21.0
-  vite: ^7.3.0
+  vite: ^7.3.2
   zod: ^3.25.76
 
 minimumReleaseAge: 1440
@@ -56,6 +56,8 @@ overrides:
   '@tailwindcss/oxide>@tailwindcss/oxide-linux-arm64-musl': '-'
   '@tailwindcss/oxide>@tailwindcss/oxide-linux-x64-musl': '-'
   '@tailwindcss/oxide>@tailwindcss/oxide-win32-arm64-msvc': '-'
+  brace-expansion: ^2.0.3
+  dompurify: ^3.4.0
   esbuild: 0.27.3
   esbuild>@esbuild/aix-ppc64: '-'
   esbuild>@esbuild/android-arm: '-'
@@ -81,6 +83,7 @@ overrides:
   esbuild>@esbuild/sunos-x64: '-'
   esbuild>@esbuild/win32-arm64: '-'
   esbuild>@esbuild/win32-ia32: '-'
+  fdir>picomatch: ^4.0.4
   path-to-regexp: ^8.4.0
   lightningcss>lightningcss-android-arm64: '-'
   lightningcss>lightningcss-darwin-arm64: '-'
@@ -91,6 +94,7 @@ overrides:
   lightningcss>lightningcss-linux-arm64-musl: '-'
   lightningcss>lightningcss-linux-x64-musl: '-'
   lightningcss>lightningcss-win32-arm64-msvc: '-'
+  micromatch>picomatch: ^2.3.2
   rollup>@rollup/rollup-android-arm-eabi: '-'
   rollup>@rollup/rollup-android-arm64: '-'
   rollup>@rollup/rollup-darwin-arm64: '-'
@@ -114,3 +118,5 @@ overrides:
   rollup>@rollup/rollup-win32-arm64-msvc: '-'
   rollup>@rollup/rollup-win32-ia32-msvc: '-'
   rollup>@rollup/rollup-win32-x64-gnu: '-'
+  vite>picomatch: ^4.0.4
+  yaml: ^2.8.3
