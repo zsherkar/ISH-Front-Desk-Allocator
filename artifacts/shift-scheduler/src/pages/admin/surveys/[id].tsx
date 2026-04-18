@@ -320,9 +320,18 @@ export function AdminSurveyDetail() {
     [selectedShiftIds, survey?.shifts]
   );
 
+  const renderCalendarCanvas = async () => {
+    if (!calendarRef.current) return null;
+    return html2canvas(calendarRef.current, {
+      backgroundColor: "#ffffff",
+      scale: 3,
+      useCORS: true,
+    });
+  };
+
   const downloadPNG = async () => {
-    if (!calendarRef.current) return;
-    const canvas = await html2canvas(calendarRef.current, { scale: 2, useCORS: true });
+    const canvas = await renderCalendarCanvas();
+    if (!canvas) return;
     const link = document.createElement("a");
     link.download = `${survey?.title ?? "schedule"}.png`;
     link.href = canvas.toDataURL("image/png");
@@ -330,29 +339,66 @@ export function AdminSurveyDetail() {
   };
 
   const downloadPDF = async () => {
-    if (!calendarRef.current) return;
-    const canvas = await html2canvas(calendarRef.current, { scale: 2, useCORS: true });
-    const imgData = canvas.toDataURL("image/png");
-    const orientation = canvas.height >= canvas.width ? "portrait" : "landscape";
+    const canvas = await renderCalendarCanvas();
+    if (!canvas) return;
     const pdf = new jsPDF({
-      orientation,
+      orientation: "landscape",
       unit: "pt",
       format: "a4",
     });
     const pageWidth = pdf.internal.pageSize.getWidth();
     const pageHeight = pdf.internal.pageSize.getHeight();
-    const margin = 18;
-    const scale = Math.min((pageWidth - margin * 2) / canvas.width, (pageHeight - margin * 2) / canvas.height);
-    const imageWidth = canvas.width * scale;
-    const imageHeight = canvas.height * scale;
-    pdf.addImage(
-      imgData,
-      "PNG",
-      (pageWidth - imageWidth) / 2,
-      (pageHeight - imageHeight) / 2,
-      imageWidth,
-      imageHeight,
-    );
+    const margin = 20;
+    const printableWidth = pageWidth - margin * 2;
+    const printableHeight = pageHeight - margin * 2;
+    const pageScale = printableWidth / canvas.width;
+    const sliceHeight = Math.max(1, Math.floor(printableHeight / pageScale));
+
+    let offsetY = 0;
+    let pageIndex = 0;
+
+    while (offsetY < canvas.height) {
+      const currentSliceHeight = Math.min(sliceHeight, canvas.height - offsetY);
+      const pageCanvas = document.createElement("canvas");
+      pageCanvas.width = canvas.width;
+      pageCanvas.height = currentSliceHeight;
+
+      const context = pageCanvas.getContext("2d");
+      if (!context) return;
+
+      context.fillStyle = "#ffffff";
+      context.fillRect(0, 0, pageCanvas.width, pageCanvas.height);
+      context.drawImage(
+        canvas,
+        0,
+        offsetY,
+        canvas.width,
+        currentSliceHeight,
+        0,
+        0,
+        pageCanvas.width,
+        pageCanvas.height,
+      );
+
+      if (pageIndex > 0) {
+        pdf.addPage("a4", "landscape");
+      }
+
+      pdf.addImage(
+        pageCanvas.toDataURL("image/png"),
+        "PNG",
+        margin,
+        margin,
+        printableWidth,
+        currentSliceHeight * pageScale,
+        undefined,
+        "FAST",
+      );
+
+      offsetY += currentSliceHeight;
+      pageIndex += 1;
+    }
+
     pdf.save(`${survey?.title ?? "schedule"}.pdf`);
   };
 

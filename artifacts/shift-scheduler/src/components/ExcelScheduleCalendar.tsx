@@ -81,6 +81,9 @@ const PALETTE = {
   white: "#ffffff",
 };
 
+const TITLE_FONT = "'Segoe UI', Calibri, Arial, sans-serif";
+const BODY_FONT = "Calibri, 'Segoe UI', Arial, sans-serif";
+
 function toDateString(date: Date): string {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
@@ -126,34 +129,34 @@ function getPerson(personMap: Map<string, string>, date: string | null, startTim
   return date ? personMap.get(`${date}|${startTime}`) ?? "" : "";
 }
 
-const scheduleWidth = 1130;
+const scheduleWidth = 1252;
 
 const baseCellStyle: React.CSSProperties = {
   border: `1.25px solid ${PALETTE.border}`,
   color: PALETTE.ink,
   backgroundColor: PALETTE.white,
   boxSizing: "border-box",
-  height: 28,
-  padding: "0 5px",
+  height: 36,
+  padding: "4px 8px",
   textAlign: "center",
   verticalAlign: "middle",
   whiteSpace: "nowrap",
   overflow: "hidden",
-  fontSize: 12.5,
-  lineHeight: "28px",
+  fontSize: 14,
+  lineHeight: "1.2",
 };
 
 const titleCellStyle: React.CSSProperties = {
   ...baseCellStyle,
-  fontFamily: "Arial, Helvetica, sans-serif",
-  fontSize: 12,
+  fontFamily: TITLE_FONT,
+  fontSize: 13.5,
 };
 
 const nameCellStyle: React.CSSProperties = {
   ...baseCellStyle,
-  fontFamily: "'Aptos', 'Aptos Semibold', Arial, sans-serif",
-  fontSize: 12.5,
-  fontWeight: 600,
+  fontFamily: BODY_FONT,
+  fontSize: 15,
+  fontWeight: 500,
 };
 
 const categoryCellStyle: React.CSSProperties = {
@@ -161,7 +164,7 @@ const categoryCellStyle: React.CSSProperties = {
   color: "#ff0000",
   fontStyle: "italic",
   fontWeight: 700,
-  height: 28,
+  height: 32,
   backgroundColor: PALETTE.white,
 };
 
@@ -169,13 +172,13 @@ const weekCellStyle: React.CSSProperties = {
   ...titleCellStyle,
   backgroundColor: PALETTE.week,
   fontWeight: 700,
-  height: 30,
+  height: 34,
 };
 
 const dateCellStyle: React.CSSProperties = {
   ...titleCellStyle,
   backgroundColor: PALETTE.date,
-  fontWeight: 400,
+  fontWeight: 500,
 };
 
 const dayCellStyle: React.CSSProperties = {
@@ -192,7 +195,8 @@ const sideHeaderStyle: React.CSSProperties = {
 
 const bodyLabelStyle: React.CSSProperties = {
   ...titleCellStyle,
-  fontFamily: "'Aptos', Arial, sans-serif",
+  fontFamily: BODY_FONT,
+  fontSize: 14,
 };
 
 export const ExcelScheduleCalendar = forwardRef<HTMLDivElement, ScheduleCalendarProps>(
@@ -217,8 +221,8 @@ export const ExcelScheduleCalendar = forwardRef<HTMLDivElement, ScheduleCalendar
           width: scheduleWidth,
           backgroundColor: PALETTE.white,
           color: PALETTE.ink,
-          padding: "6px 0 10px",
-          fontFamily: "Arial, Helvetica, sans-serif",
+          padding: "8px 0 12px",
+          fontFamily: BODY_FONT,
           boxSizing: "border-box",
         }}
       >
@@ -227,9 +231,9 @@ export const ExcelScheduleCalendar = forwardRef<HTMLDivElement, ScheduleCalendar
             margin: "0 0 10px",
             textAlign: "center",
             textDecoration: "underline",
-            fontFamily: "Arial, Helvetica, sans-serif",
-            fontSize: 22,
-            lineHeight: "28px",
+            fontFamily: TITLE_FONT,
+            fontSize: 28,
+            lineHeight: "34px",
             fontWeight: 700,
           }}
         >
@@ -247,15 +251,15 @@ export const ExcelScheduleCalendar = forwardRef<HTMLDivElement, ScheduleCalendar
             }}
           >
             <colgroup>
-              <col style={{ width: 110 }} />
-              <col style={{ width: 140 }} />
+              <col style={{ width: 126 }} />
+              <col style={{ width: 150 }} />
               {WEEKDAY_NAMES.map((day) => (
-                <col key={day} style={{ width: 90 }} />
+                <col key={day} style={{ width: 100 }} />
               ))}
-              <col style={{ width: 110 }} />
-              <col style={{ width: 140 }} />
+              <col style={{ width: 126 }} />
+              <col style={{ width: 150 }} />
               {WEEKEND_NAMES.map((day) => (
-                <col key={day} style={{ width: 90 }} />
+                <col key={day} style={{ width: 100 }} />
               ))}
             </colgroup>
             <thead>
