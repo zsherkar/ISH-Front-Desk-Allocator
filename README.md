@@ -1,7 +1,3 @@
-<div align="center">
-  <img src="docs/readme-banner.svg" alt="ISH Front Desk Allocator banner" width="100%" />
-</div>
-
 <h1 align="center">ISH Front Desk Allocator</h1>
 
 <p align="center">
