@@ -5,7 +5,7 @@ services:
     plan: free
     region: virginia
     healthCheckPath: /api/healthz
-    autoDeploy: false
+    autoDeployTrigger: off
     envVars:
       - key: NODE_ENV
         value: production
