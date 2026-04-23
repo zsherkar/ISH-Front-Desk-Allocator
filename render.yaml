@@ -3,6 +3,7 @@ services:
     name: ish-front-desk-allocator
     runtime: docker
     plan: free
+    region: virginia
     healthCheckPath: /api/healthz
     autoDeploy: false
     envVars:
@@ -20,11 +21,10 @@ services:
         generateValue: true
       - key: ADMIN_USERS_JSON
         sync: false
-      - key: PUBLIC_APP_URL
-        sync: false
 
 databases:
   - name: ish-front-desk-db
     plan: free
+    region: virginia
     databaseName: fd_allocator
     user: fd_admin
