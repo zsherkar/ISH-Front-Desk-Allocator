@@ -35,8 +35,8 @@ const MONTHLY_WALL_QUOTES = [
   { quote: "When I'm no longer rapping, I want to open up an ice cream parlor and call myself Scoop Dogg.", by: "Snoop Dogg" },
   { quote: "Congratulations, you played yourself.", by: "DJ Khaled" },
   { quote: "If you stop at general math, you're only going to make general math money.", by: "Snoop Dogg" },
-  { quote: "I can't believe my grandmothers making me take out the garbage I'm rich f*** this I'm going home I don't need this s***.", by: "50 Cent" },
   { quote: "Sometimes I get emotional over fonts.", by: "Kanye West" },
+  { quote: "I can't believe my grandmothers making me take out the garbage I'm rich f*** this I'm going home I don't need this s***.", by: "50 Cent" },
   { quote: "Real Gs move in silence like lasagna.", by: "Lil Wayne" },
   { quote: "I don't cook, I don't clean... but let me tell you how I got this ring.", by: "Cardi B" },
   { quote: "I hate when I'm on a flight and I wake up with a water bottle next to me like oh great now I gotta be responsible for this water bottle.", by: "Kanye West" },
@@ -44,6 +44,7 @@ const MONTHLY_WALL_QUOTES = [
   { quote: "I wear my pants so tight I can't even put my phone in my pocket. If I get a text, my leg vibrates.", by: "Danny Brown" },
   { quote: "Knock me down 9 times but I get up 10.", by: "Cardi B" },
 ];
+const MAY_KANYE_FONTS_QUOTE = MONTHLY_WALL_QUOTES[4];
 const FIELD_HELP = {
   firstName: "If you do not remember this, you might be in need of medical help.",
   lastName: "Loud and Proud.",
@@ -58,6 +59,19 @@ function normalizeSearch(value: string) {
 
 function hasUsefulEmail(value: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
+}
+
+function chooseWallQuote(month: number, seed: string) {
+  if (month === 5) {
+    return MAY_KANYE_FONTS_QUOTE;
+  }
+
+  let hash = 0;
+  for (let index = 0; index < seed.length; index += 1) {
+    hash = (hash * 31 + seed.charCodeAt(index)) >>> 0;
+  }
+
+  return MONTHLY_WALL_QUOTES[hash % MONTHLY_WALL_QUOTES.length];
 }
 
 function FieldHelp({ label, text }: { label: string; text: string }) {
@@ -408,7 +422,10 @@ export function PublicSurveyPage() {
   const deadlineText = survey.closesAt
     ? format(new Date(survey.closesAt), "EEEE, MMMM d, yyyy 'at' h:mm a")
     : null;
-  const wallQuote = MONTHLY_WALL_QUOTES[(survey.month - 1) % MONTHLY_WALL_QUOTES.length];
+  const wallQuote = chooseWallQuote(
+    survey.month,
+    `${survey.year}-${survey.month}-${token || survey.title}`,
+  );
   const weekdays = Object.keys(groupedShifts.weekday).sort();
   const weekends = Object.keys(groupedShifts.weekend).sort();
   const showSuggestions =
