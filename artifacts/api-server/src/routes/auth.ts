@@ -2,7 +2,7 @@ import { Router, type IRouter } from "express";
 import {
   authenticateAdmin,
   clearAdminSessionCookie,
-  getAdminAuthConfigurationError,
+  getAdminAuthPublicError,
   getAuthenticatedAdmin,
   setAdminSessionCookie,
 } from "../lib/adminAuth.js";
@@ -17,9 +17,10 @@ const loginRateLimit = createRateLimit({
 });
 
 router.get("/auth/session", (req, res): void => {
-  res.set("Cache-Control", "no-store");
+  res.set("Cache-Control", "no-store, private");
+  res.set("Pragma", "no-cache");
 
-  const configurationError = getAdminAuthConfigurationError();
+  const configurationError = getAdminAuthPublicError();
   if (configurationError) {
     res.status(503).json({
       error: configurationError,
@@ -40,7 +41,10 @@ router.get("/auth/session", (req, res): void => {
 });
 
 router.post("/auth/login", requireSameOriginForBrowser, loginRateLimit, (req, res): void => {
-  const configurationError = getAdminAuthConfigurationError();
+  res.set("Cache-Control", "no-store, private");
+  res.set("Pragma", "no-cache");
+
+  const configurationError = getAdminAuthPublicError();
   if (configurationError) {
     res.status(503).json({
       error: configurationError,
@@ -72,6 +76,8 @@ router.post("/auth/login", requireSameOriginForBrowser, loginRateLimit, (req, re
 });
 
 router.post("/auth/logout", requireSameOriginForBrowser, (_req, res): void => {
+  res.set("Cache-Control", "no-store, private");
+  res.set("Pragma", "no-cache");
   clearAdminSessionCookie(res);
   res.sendStatus(204);
 });

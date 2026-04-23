@@ -23,17 +23,22 @@ You still need electricity and internet access, but there is no vendor usage cap
 ## Quick start
 
 1. Clone the repo and open the folder.
-2. Update credentials in `docker-compose.yml`, especially the Postgres password.
-3. Set your public base URL before you start:
+2. Copy `.env.production.example` to `.env.production`.
+3. Fill in every placeholder in `.env.production`, especially:
+   - `POSTGRES_PASSWORD`
+   - `SESSION_SECRET`
+   - `ADMIN_USERS_JSON`
+   - `PUBLIC_APP_URL`
+4. Start the stack with the env file:
 
    ```bash
-   PUBLIC_APP_URL=https://your-subdomain.duckdns.org
+   docker compose --env-file .env.production up --build -d
    ```
 
-4. Start the stack:
+5. Apply the current database schema once the database is up:
 
    ```bash
-   docker compose up --build -d
+   docker compose --env-file .env.production exec app pnpm --filter @workspace/db run push
    ```
 
 The admin desk uses `PUBLIC_APP_URL` when you click `Copy Link`, so copied survey links stay externally shareable.
@@ -51,3 +56,4 @@ Once you point Duck DNS at your machine and put Caddy in front of the app, your 
 - Forward ports `80` and `443` to the machine running the app.
 - Leave `COOKIE_SECURE` unset in production.
 - Set `TRUST_PROXY=true` when running behind Caddy or another reverse proxy.
+- `.env.production` is intentionally git-ignored. Keep it local.

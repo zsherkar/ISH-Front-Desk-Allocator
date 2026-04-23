@@ -1,13 +1,73 @@
 import crypto from "node:crypto";
+import readline from "node:readline";
+import process from "node:process";
 
-const password = process.argv[2];
+function cleanupHiddenPrompt(stdin, listener, wasRawModeEnabled) {
+  stdin.removeListener("keypress", listener);
+  if (typeof stdin.setRawMode === "function") {
+    stdin.setRawMode(Boolean(wasRawModeEnabled));
+  }
+  stdin.pause();
+}
 
-if (!password) {
-  console.error('Usage: node ./scripts/hash-admin-password.mjs "your-password"');
-  process.exit(1);
+async function promptForHiddenInput(label) {
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    throw new Error(
+      'Interactive password prompt is unavailable here. Pass the password as an argument only on a trusted local machine.',
+    );
+  }
+
+  readline.emitKeypressEvents(process.stdin);
+  const wasRawModeEnabled = process.stdin.isRaw;
+  if (typeof process.stdin.setRawMode === "function") {
+    process.stdin.setRawMode(true);
+  }
+  process.stdin.resume();
+  process.stdout.write(label);
+
+  return await new Promise((resolve, reject) => {
+    let value = "";
+
+    const onKeypress = (character, key) => {
+      if (key?.ctrl && key.name === "c") {
+        cleanupHiddenPrompt(process.stdin, onKeypress, wasRawModeEnabled);
+        process.stdout.write("\n");
+        reject(new Error("Password entry cancelled."));
+        return;
+      }
+
+      if (key?.name === "return" || key?.name === "enter") {
+        cleanupHiddenPrompt(process.stdin, onKeypress, wasRawModeEnabled);
+        process.stdout.write("\n");
+        resolve(value);
+        return;
+      }
+
+      if (key?.name === "backspace") {
+        value = value.slice(0, -1);
+        return;
+      }
+
+      if (typeof character === "string" && !key?.meta && !key?.ctrl) {
+        value += character;
+      }
+    };
+
+    process.stdin.on("keypress", onKeypress);
+  });
 }
 
 try {
+  let password = process.argv[2];
+  if (!password) {
+    const enteredPassword = await promptForHiddenInput("Admin password: ");
+    const confirmedPassword = await promptForHiddenInput("Confirm password: ");
+    if (enteredPassword !== confirmedPassword) {
+      throw new Error("Passwords did not match.");
+    }
+    password = enteredPassword;
+  }
+
   const normalizedPassword = password.trim();
   if (normalizedPassword.length < 8) {
     throw new Error("Admin passwords must be at least 8 characters long.");

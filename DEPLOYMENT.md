@@ -2,6 +2,34 @@
 
 This app is ready to run behind a permanent HTTPS URL. The temporary `loca.lt` link failed because tunnel services are disposable and can go away at any time.
 
+## Temporary verified test link
+
+If you want a short-lived public link just for checking the app, use the repo-owned command below:
+
+```bash
+pnpm run deploy:test-link
+```
+
+What it does:
+
+1. builds the production frontend and API
+2. starts the real production app locally
+3. creates a Cloudflare quick tunnel to that app
+4. verifies `/api/healthz`, `/admin/login`, and `/api/public-config` on the public URL
+5. prints the URL only after those checks pass
+
+If any stage fails, the command stops immediately and prints the failing step plus the log file paths under `artifacts/deploy-link/` instead of hanging for hours.
+
+Optional survey-route check:
+
+```bash
+pnpm run deploy:test-link -- --survey-token YOUR_SURVEY_TOKEN
+```
+
+That adds a public verification request for `/respond/YOUR_SURVEY_TOKEN`.
+
+Press `Ctrl+C` when you are done so the local server and tunnel shut down cleanly.
+
 ## Recommended production path
 
 Use a hosted app platform with a built-in public URL and PostgreSQL database.
@@ -55,11 +83,12 @@ Admin access now requires:
 
 - `SESSION_SECRET`
 - `ADMIN_USERS_JSON`
+- a local `.env.production` or equivalent secret store that stays out of Git
 
 Generate a password hash:
 
 ```bash
-pnpm run hash:admin-password "replace-with-a-strong-password"
+pnpm run hash:admin-password
 ```
 
 That command prints:
@@ -74,6 +103,8 @@ Example:
 ```
 
 You can include multiple admins in the same JSON array.
+
+For self-hosting from this repo, copy `.env.production.example` to `.env.production`, fill in the real values, and keep that file local.
 
 ## Required environment variables
 
@@ -145,8 +176,20 @@ Use the existing Docker stack in this repo, then place Caddy in front of it.
 
 1. Point your Duck DNS hostname to your network IP.
 2. Forward ports `80` and `443` from your router to the machine running Docker.
-3. Start this app with Docker Compose.
-4. Run Caddy with a site block that reverse proxies your Duck DNS hostname to this app on port `3000`.
+3. Copy `.env.production.example` to `.env.production` and fill in the real secrets.
+4. Start this app with Docker Compose:
+
+```bash
+docker compose --env-file .env.production up --build -d
+```
+
+5. Apply the current schema:
+
+```bash
+docker compose --env-file .env.production exec app pnpm --filter @workspace/db run push
+```
+
+6. Run Caddy with a site block that reverse proxies your Duck DNS hostname to this app on port `3000`.
 
 Example Caddyfile:
 

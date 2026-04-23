@@ -28,7 +28,8 @@ type StoredRespondentDetails = {
   updatedAt: string;
 };
 
-const STORED_RESPONDENT_DETAILS_KEY = "fd-respondent-details";
+const LEGACY_STORED_RESPONDENT_DETAILS_KEY = "fd-respondent-details";
+const STORED_RESPONDENT_DETAILS_KEY = "fd-respondent-details-opt-in";
 const MONTHLY_WALL_QUOTES = [
   { quote: "I put cocoa butter all over my face and my iconic belly and my arms and legs. Why live rough? Live smooth.", by: "DJ Khaled" },
   { quote: "When I'm no longer rapping, I want to open up an ice cream parlor and call myself Scoop Dogg.", by: "Snoop Dogg" },
@@ -163,6 +164,11 @@ function loadStoredRespondentDetails(): StoredRespondentDetails[] {
   }
 }
 
+function purgeLegacyStoredRespondentDetails() {
+  if (typeof window === "undefined") return;
+  window.localStorage.removeItem(LEGACY_STORED_RESPONDENT_DETAILS_KEY);
+}
+
 function saveStoredRespondentDetails(entry: StoredRespondentDetails) {
   if (typeof window === "undefined") return;
 
@@ -173,6 +179,25 @@ function saveStoredRespondentDetails(entry: StoredRespondentDetails) {
       (item) => item.email.trim().toLowerCase() !== emailKey,
     ),
   ].slice(0, 8);
+
+  window.localStorage.setItem(
+    STORED_RESPONDENT_DETAILS_KEY,
+    JSON.stringify(next),
+  );
+}
+
+function removeStoredRespondentDetails(email: string) {
+  if (typeof window === "undefined") return;
+
+  const emailKey = email.trim().toLowerCase();
+  const next = loadStoredRespondentDetails().filter(
+    (item) => item.email.trim().toLowerCase() !== emailKey,
+  );
+
+  if (next.length === 0) {
+    window.localStorage.removeItem(STORED_RESPONDENT_DETAILS_KEY);
+    return;
+  }
 
   window.localStorage.setItem(
     STORED_RESPONDENT_DETAILS_KEY,
@@ -195,12 +220,13 @@ export function PublicSurveyPage() {
   const [step, setStep] = useState<1 | 2>(1);
   const [selectedSuggestionEmail, setSelectedSuggestionEmail] = useState<string | null>(null);
   const [storedRespondents, setStoredRespondents] = useState<StoredRespondentDetails[]>([]);
-  const [databaseRespondents, setDatabaseRespondents] = useState<StoredRespondentDetails[]>([]);
   const [validationAttempted, setValidationAttempted] = useState(false);
   const [waiverAccepted, setWaiverAccepted] = useState(false);
+  const [rememberDetails, setRememberDetails] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
 
   useEffect(() => {
+    purgeLegacyStoredRespondentDetails();
     setStoredRespondents(loadStoredRespondentDetails());
   }, []);
 
@@ -228,36 +254,6 @@ export function PublicSurveyPage() {
   }, [email, firstName, lastName, preferredName]);
   const hasFieldErrors = Object.values(fieldErrors).some(Boolean);
 
-  useEffect(() => {
-    const query = normalizeSearch(lookupQuery);
-    if (!token || query.length < 3 || selectedSuggestionEmail !== null) {
-      setDatabaseRespondents([]);
-      return;
-    }
-
-    const controller = new AbortController();
-    const timeout = window.setTimeout(() => {
-      fetch(`/api/respond/${token}/respondents/lookup?q=${encodeURIComponent(lookupQuery)}`, {
-        cache: "no-store",
-        signal: controller.signal,
-        headers: { "cache-control": "no-cache" },
-      })
-        .then((response) => (response.ok ? response.json() : []))
-        .then((data: unknown) => {
-          setDatabaseRespondents(Array.isArray(data) ? data as StoredRespondentDetails[] : []);
-        })
-        .catch((err: unknown) => {
-          if (err instanceof DOMException && err.name === "AbortError") return;
-          setDatabaseRespondents([]);
-        });
-    }, 180);
-
-    return () => {
-      window.clearTimeout(timeout);
-      controller.abort();
-    };
-  }, [lookupQuery, selectedSuggestionEmail, token]);
-
   const respondentMatches = useMemo(() => {
     const query = normalizeSearch(lookupQuery);
     if (query.length < 2) return [];
@@ -277,9 +273,8 @@ export function PublicSurveyPage() {
     };
 
     storedRespondents.forEach(addIfMatch);
-    databaseRespondents.forEach(addIfMatch);
     return Array.from(matches.values());
-  }, [databaseRespondents, lookupQuery, storedRespondents]);
+  }, [lookupQuery, storedRespondents]);
 
   const toggleShift = (id: number) => {
     const newSet = new Set(selectedShifts);
@@ -326,6 +321,7 @@ export function PublicSurveyPage() {
     setPreferredName(match.preferredName);
     setCategory(match.category);
     setSelectedSuggestionEmail(match.email);
+    setRememberDetails(true);
   };
 
   const handleNext = () => {
@@ -370,7 +366,11 @@ export function PublicSurveyPage() {
         category,
         updatedAt: new Date().toISOString(),
       };
-      saveStoredRespondentDetails(savedEntry);
+      if (rememberDetails) {
+        saveStoredRespondentDetails(savedEntry);
+      } else {
+        removeStoredRespondentDetails(savedEntry.email);
+      }
       setStoredRespondents(loadStoredRespondentDetails());
       setSubmitted(true);
     } catch (err) {
@@ -503,7 +503,7 @@ export function PublicSurveyPage() {
                     <div className="sm:col-span-2 rounded-2xl border border-slate-200 overflow-hidden">
                       <div className="flex items-center gap-2 px-4 py-3 bg-slate-50 text-sm font-medium text-slate-700 border-b border-slate-200">
                         <Search className="w-4 h-4" />
-                        Saved details
+                        Saved on this device
                       </div>
                       <div className="divide-y divide-slate-200">
                         {respondentMatches.slice(0, 5).map((match) => (
@@ -527,7 +527,7 @@ export function PublicSurveyPage() {
 
                   {selectedSuggestionEmail !== null && (
                     <div className="sm:col-span-2 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
-                      Saved details loaded. Review them and continue.
+                      Saved on-device details loaded. Review them and continue.
                     </div>
                   )}
                   <div className="space-y-1.5 sm:col-span-2">
@@ -547,6 +547,16 @@ export function PublicSurveyPage() {
                   <div className="sm:col-span-2 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm leading-relaxed text-slate-700">
                     All fields are required. First name means first name only; last name gets the rest. Preferred name is what appears on the schedule. Use the same email every month so your Front Desk history stays connected.
                   </div>
+                  <label className="sm:col-span-2 flex items-start gap-3 rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-700">
+                    <Checkbox
+                      checked={rememberDetails}
+                      onCheckedChange={(checked) => setRememberDetails(checked === true)}
+                    />
+                    <span>
+                      Remember these details on this device for next time.
+                      Leave this off on shared or public computers.
+                    </span>
+                  </label>
                 </div>
 
               <Button

@@ -136,27 +136,27 @@ const baseCellStyle: React.CSSProperties = {
   color: PALETTE.ink,
   backgroundColor: PALETTE.white,
   boxSizing: "border-box",
-  height: 36,
-  padding: "4px 8px",
+  height: 44,
+  padding: 0,
   textAlign: "center",
   verticalAlign: "middle",
   whiteSpace: "nowrap",
   overflow: "hidden",
-  fontSize: 14,
-  lineHeight: "1.2",
+  fontSize: 16,
+  lineHeight: "1.3",
 };
 
 const titleCellStyle: React.CSSProperties = {
   ...baseCellStyle,
   fontFamily: TITLE_FONT,
-  fontSize: 13.5,
+  fontSize: 16,
 };
 
 const nameCellStyle: React.CSSProperties = {
   ...baseCellStyle,
   fontFamily: BODY_FONT,
-  fontSize: 15,
-  fontWeight: 500,
+  fontSize: 17,
+  fontWeight: 600,
 };
 
 const categoryCellStyle: React.CSSProperties = {
@@ -164,7 +164,7 @@ const categoryCellStyle: React.CSSProperties = {
   color: "#ff0000",
   fontStyle: "italic",
   fontWeight: 700,
-  height: 32,
+  height: 38,
   backgroundColor: PALETTE.white,
 };
 
@@ -172,7 +172,7 @@ const weekCellStyle: React.CSSProperties = {
   ...titleCellStyle,
   backgroundColor: PALETTE.week,
   fontWeight: 700,
-  height: 34,
+  height: 40,
 };
 
 const dateCellStyle: React.CSSProperties = {
@@ -196,8 +196,44 @@ const sideHeaderStyle: React.CSSProperties = {
 const bodyLabelStyle: React.CSSProperties = {
   ...titleCellStyle,
   fontFamily: BODY_FONT,
-  fontSize: 14,
+  fontSize: 15.5,
 };
+
+function getCellContentStyle(
+  cellStyle: React.CSSProperties,
+  overrides?: React.CSSProperties,
+): React.CSSProperties {
+  const minHeight =
+    typeof cellStyle.height === "number"
+      ? `${cellStyle.height}px`
+      : typeof cellStyle.height === "string"
+        ? cellStyle.height
+        : undefined;
+
+  return {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    width: "100%",
+    minHeight,
+    padding: "6px 10px",
+    boxSizing: "border-box",
+    textAlign: "center",
+    ...overrides,
+  };
+}
+
+function renderCellText(
+  value: string | null | undefined,
+  cellStyle: React.CSSProperties,
+  overrides?: React.CSSProperties,
+) {
+  return (
+    <div style={getCellContentStyle(cellStyle, overrides)}>
+      {value?.trim() ? value : "\u00A0"}
+    </div>
+  );
+}
 
 export const ExcelScheduleCalendar = forwardRef<HTMLDivElement, ScheduleCalendarProps>(
   ({ month, year, allocations, shifts }, ref) => {
@@ -221,19 +257,19 @@ export const ExcelScheduleCalendar = forwardRef<HTMLDivElement, ScheduleCalendar
           width: scheduleWidth,
           backgroundColor: PALETTE.white,
           color: PALETTE.ink,
-          padding: "8px 0 12px",
+          padding: "10px 0 16px",
           fontFamily: BODY_FONT,
           boxSizing: "border-box",
         }}
       >
         <h2
           style={{
-            margin: "0 0 10px",
+            margin: "0 0 14px",
             textAlign: "center",
             textDecoration: "underline",
             fontFamily: TITLE_FONT,
-            fontSize: 28,
-            lineHeight: "34px",
+            fontSize: 32,
+            lineHeight: "40px",
             fontWeight: 700,
           }}
         >
@@ -264,35 +300,53 @@ export const ExcelScheduleCalendar = forwardRef<HTMLDivElement, ScheduleCalendar
             </colgroup>
             <thead>
               <tr>
-                <td colSpan={11} style={weekCellStyle}>Week {week.weekNum}</td>
+                <td colSpan={11} style={weekCellStyle}>
+                  {renderCellText(`Week ${week.weekNum}`, weekCellStyle)}
+                </td>
               </tr>
               <tr>
                 <td colSpan={2} style={{ ...titleCellStyle, borderBottom: 0 }} />
-                <td colSpan={5} style={categoryCellStyle}>Weekday</td>
-                <td colSpan={4} style={categoryCellStyle}>Weekend</td>
+                <td colSpan={5} style={categoryCellStyle}>
+                  {renderCellText("Weekday", categoryCellStyle)}
+                </td>
+                <td colSpan={4} style={categoryCellStyle}>
+                  {renderCellText("Weekend", categoryCellStyle)}
+                </td>
               </tr>
               <tr>
-                <td rowSpan={2} style={sideHeaderStyle}>Time</td>
-                <td rowSpan={2} style={sideHeaderStyle}>Duration per shift</td>
+                <td rowSpan={2} style={sideHeaderStyle}>
+                  {renderCellText("Time", sideHeaderStyle)}
+                </td>
+                <td rowSpan={2} style={sideHeaderStyle}>
+                  {renderCellText("Duration per shift", sideHeaderStyle)}
+                </td>
                 {week.weekdays.map((date, index) => (
                   <td key={`weekday-date-${index}`} style={dateCellStyle}>
-                    {formatDateHeader(date)}
+                    {renderCellText(formatDateHeader(date), dateCellStyle)}
                   </td>
                 ))}
-                <td rowSpan={2} style={sideHeaderStyle}>Time</td>
-                <td rowSpan={2} style={sideHeaderStyle}>Duration per shift</td>
+                <td rowSpan={2} style={sideHeaderStyle}>
+                  {renderCellText("Time", sideHeaderStyle)}
+                </td>
+                <td rowSpan={2} style={sideHeaderStyle}>
+                  {renderCellText("Duration per shift", sideHeaderStyle)}
+                </td>
                 {week.weekends.map((date, index) => (
                   <td key={`weekend-date-${index}`} style={dateCellStyle}>
-                    {formatDateHeader(date)}
+                    {renderCellText(formatDateHeader(date), dateCellStyle)}
                   </td>
                 ))}
               </tr>
               <tr>
                 {WEEKDAY_NAMES.map((day) => (
-                  <td key={day} style={dayCellStyle}>{day}</td>
+                  <td key={day} style={dayCellStyle}>
+                    {renderCellText(day, dayCellStyle)}
+                  </td>
                 ))}
                 {WEEKEND_NAMES.map((day) => (
-                  <td key={day} style={dayCellStyle}>{day}</td>
+                  <td key={day} style={dayCellStyle}>
+                    {renderCellText(day, dayCellStyle)}
+                  </td>
                 ))}
               </tr>
             </thead>
@@ -301,18 +355,34 @@ export const ExcelScheduleCalendar = forwardRef<HTMLDivElement, ScheduleCalendar
                 const weekendSlot = WEEKEND_SLOTS[index] ?? null;
                 return (
                   <tr key={slot.startTime}>
-                    <td style={bodyLabelStyle}>{slot.label}</td>
-                    <td style={bodyLabelStyle}>{slot.duration}</td>
+                    <td style={bodyLabelStyle}>
+                      {renderCellText(slot.label, bodyLabelStyle)}
+                    </td>
+                    <td style={bodyLabelStyle}>
+                      {renderCellText(slot.duration, bodyLabelStyle)}
+                    </td>
                     {week.weekdays.map((date, dayIndex) => (
                       <td key={`weekday-person-${dayIndex}`} style={nameCellStyle}>
-                        {getPerson(personMap, date, slot.startTime)}
+                        {renderCellText(
+                          getPerson(personMap, date, slot.startTime),
+                          nameCellStyle,
+                        )}
                       </td>
                     ))}
-                    <td style={bodyLabelStyle}>{weekendSlot?.label ?? ""}</td>
-                    <td style={bodyLabelStyle}>{weekendSlot?.duration ?? ""}</td>
+                    <td style={bodyLabelStyle}>
+                      {renderCellText(weekendSlot?.label ?? "", bodyLabelStyle)}
+                    </td>
+                    <td style={bodyLabelStyle}>
+                      {renderCellText(weekendSlot?.duration ?? "", bodyLabelStyle)}
+                    </td>
                     {week.weekends.map((date, dayIndex) => (
                       <td key={`weekend-person-${dayIndex}`} style={nameCellStyle}>
-                        {weekendSlot ? getPerson(personMap, date, weekendSlot.startTime) : ""}
+                        {renderCellText(
+                          weekendSlot
+                            ? getPerson(personMap, date, weekendSlot.startTime)
+                            : "",
+                          nameCellStyle,
+                        )}
                       </td>
                     ))}
                   </tr>

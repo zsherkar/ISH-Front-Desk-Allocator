@@ -2,14 +2,16 @@ services:
   postgres:
     image: postgres:17
     restart: unless-stopped
+    env_file:
+      - .env.production
     environment:
-      POSTGRES_USER: fd_admin
-      POSTGRES_PASSWORD: fd_password_change_me
-      POSTGRES_DB: fd_allocator
+      POSTGRES_USER: ${POSTGRES_USER:-fd_admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-fd_allocator}
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U fd_admin -d fd_allocator"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-fd_admin} -d ${POSTGRES_DB:-fd_allocator}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -19,15 +21,19 @@ services:
       context: .
       dockerfile: Dockerfile
     restart: unless-stopped
+    env_file:
+      - .env.production
     depends_on:
       postgres:
         condition: service_healthy
     environment:
       NODE_ENV: production
-      PORT: 3000
-      DATABASE_URL: postgresql://fd_admin:fd_password_change_me@postgres:5432/fd_allocator
+      PORT: ${PORT:-3000}
+      TRUST_PROXY: ${TRUST_PROXY:-true}
     ports:
-      - "3000:3000"
+      - "${PORT:-3000}:${PORT:-3000}"
+    security_opt:
+      - no-new-privileges:true
 
 volumes:
   postgres_data:
