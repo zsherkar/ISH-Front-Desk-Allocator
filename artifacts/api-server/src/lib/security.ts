@@ -71,8 +71,11 @@ export function applySecurityHeaders(
   res: Response,
   next: NextFunction,
 ): void {
+  res.set("Origin-Agent-Cluster", "?1");
   res.set("X-Content-Type-Options", "nosniff");
+  res.set("X-DNS-Prefetch-Control", "off");
   res.set("X-Frame-Options", "DENY");
+  res.set("X-Permitted-Cross-Domain-Policies", "none");
   res.set("Referrer-Policy", "strict-origin-when-cross-origin");
   res.set(
     "Permissions-Policy",

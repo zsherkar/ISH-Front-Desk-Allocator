@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import type { NextFunction, Request, Response } from "express";
 
-const COOKIE_NAME = "fd_admin_session";
+const LEGACY_COOKIE_NAME = "fd_admin_session";
 const SESSION_DURATION_MS = 1000 * 60 * 60 * 24 * 7;
 
 type ConfiguredAdmin = {
@@ -31,6 +31,12 @@ function shouldUseSecureCookies(): boolean {
   if (process.env.COOKIE_SECURE === "false") return false;
   if (process.env.COOKIE_SECURE === "true") return true;
   return process.env.NODE_ENV === "production";
+}
+
+function getSessionCookieName(): string {
+  return shouldUseSecureCookies()
+    ? "__Host-fd_admin_session"
+    : LEGACY_COOKIE_NAME;
 }
 
 function normalizeEmail(email: string): string {
@@ -121,6 +127,12 @@ export function getAdminAuthConfigurationError(): string | null {
   }
 
   return null;
+}
+
+export function getAdminAuthPublicError(): string | null {
+  return getAdminAuthConfigurationError()
+    ? "Admin access is not configured yet."
+    : null;
 }
 
 function getConfiguredAdminByEmail(email: string): ConfiguredAdmin | null {
@@ -219,14 +231,14 @@ export function authenticateAdmin(email: string, password: string) {
 
 export function setAdminSessionCookie(res: Response, email: string): void {
   res.cookie(
-    COOKIE_NAME,
+    getSessionCookieName(),
     encodeSession({
       email: normalizeEmail(email),
       exp: Date.now() + SESSION_DURATION_MS,
     }),
     {
       httpOnly: true,
-      sameSite: "lax",
+      sameSite: "strict",
       secure: shouldUseSecureCookies(),
       maxAge: SESSION_DURATION_MS,
       path: "/",
@@ -235,19 +247,25 @@ export function setAdminSessionCookie(res: Response, email: string): void {
 }
 
 export function clearAdminSessionCookie(res: Response): void {
-  res.clearCookie(COOKIE_NAME, {
-    httpOnly: true,
-    sameSite: "lax",
-    secure: shouldUseSecureCookies(),
-    path: "/",
-  });
+  for (const cookieName of new Set([getSessionCookieName(), LEGACY_COOKIE_NAME])) {
+    res.clearCookie(cookieName, {
+      httpOnly: true,
+      sameSite: "strict",
+      secure: shouldUseSecureCookies(),
+      path: "/",
+    });
+  }
 }
 
 export function getAuthenticatedAdmin(req: Request) {
   if (!isAdminAuthConfigured()) return null;
 
   const token =
-    typeof req.cookies?.[COOKIE_NAME] === "string" ? req.cookies[COOKIE_NAME] : null;
+    typeof req.cookies?.[getSessionCookieName()] === "string"
+      ? req.cookies[getSessionCookieName()]
+      : typeof req.cookies?.[LEGACY_COOKIE_NAME] === "string"
+        ? req.cookies[LEGACY_COOKIE_NAME]
+        : null;
   if (!token) return null;
 
   const payload = decodeSession(token);
@@ -263,7 +281,10 @@ export function getAuthenticatedAdmin(req: Request) {
 }
 
 export function requireAdmin(req: Request, res: Response, next: NextFunction): void {
-  const configurationError = getAdminAuthConfigurationError();
+  res.set("Cache-Control", "no-store, private");
+  res.set("Pragma", "no-cache");
+
+  const configurationError = getAdminAuthPublicError();
   if (configurationError) {
     res.status(503).json({
       error: configurationError,

@@ -1,5 +1,6 @@
 import { db, shiftsTable, respondentsTable, responsesTable, allocationsTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
+import { safeDisplayName } from "./inputValidation.js";
 
 export interface AllocationOptions {
   surveyId: number;
@@ -31,6 +32,10 @@ function calcHours(shiftIds: number[], shiftMap: Map<number, ShiftInfo>): number
   return shiftIds.reduce((sum, id) => sum + (shiftMap.get(id)?.durationHours ?? 0), 0);
 }
 
+function isBackToBack(a: ShiftInfo, b: ShiftInfo): boolean {
+  return a.date === b.date && (a.endTime === b.startTime || b.endTime === a.startTime);
+}
+
 function stdDev(values: number[]): number {
   if (values.length === 0) return 0;
   const mean = values.reduce((a, b) => a + b, 0) / values.length;
@@ -44,7 +49,7 @@ function countBackToBack(shiftIds: number[], shiftMap: Map<number, ShiftInfo>): 
     const a = shiftMap.get(shiftIds[i])!;
     for (let j = i + 1; j < shiftIds.length; j++) {
       const b = shiftMap.get(shiftIds[j])!;
-      if (a.date === b.date && (a.endTime === b.startTime || b.endTime === a.startTime)) {
+      if (isBackToBack(a, b)) {
         count++;
       }
     }
@@ -56,11 +61,41 @@ function addsBackToBack(newShiftId: number, existing: number[], shiftMap: Map<nu
   const ns = shiftMap.get(newShiftId)!;
   for (const id of existing) {
     const s = shiftMap.get(id)!;
-    if (s.date === ns.date && (s.endTime === ns.startTime || ns.endTime === s.startTime)) {
+    if (isBackToBack(ns, s)) {
       return true;
     }
   }
   return false;
+}
+
+function sameDayAllocationTier(
+  newShiftId: number,
+  existing: number[],
+  shiftMap: Map<number, ShiftInfo>,
+): 0 | 1 | 2 {
+  const nextShift = shiftMap.get(newShiftId)!;
+  const sameDayShiftIds = existing.filter((id) => shiftMap.get(id)?.date === nextShift.date);
+
+  if (sameDayShiftIds.length === 0) {
+    return 0;
+  }
+
+  if (
+    sameDayShiftIds.length === 1 &&
+    isBackToBack(nextShift, shiftMap.get(sameDayShiftIds[0])!)
+  ) {
+    return 1;
+  }
+
+  return 2;
+}
+
+function canAddShiftOnDay(
+  newShiftId: number,
+  existing: number[],
+  shiftMap: Map<number, ShiftInfo>,
+): boolean {
+  return sameDayAllocationTier(newShiftId, existing, shiftMap) < 2;
 }
 
 function weekdayWeekendRatio(shiftIds: number[], shiftMap: Map<number, ShiftInfo>): number {
@@ -78,6 +113,7 @@ function scoreShiftForPerson(
 ): number {
   let score = 0;
   if (addsBackToBack(shiftId, allocated, shiftMap)) score -= 80;
+  if (sameDayAllocationTier(shiftId, allocated, shiftMap) === 1) score -= 120;
   const shift = shiftMap.get(shiftId)!;
   const currentRatio = weekdayWeekendRatio(allocated, shiftMap);
   const afterRatio = weekdayWeekendRatio([...allocated, shiftId], shiftMap);
@@ -102,7 +138,7 @@ function allocateToTarget(
   const allocated: number[] = [];
   let totalHours = 0;
 
-  const addBestShift = (allowBackToBack: boolean): boolean => {
+  const addBestShift = (dayTier: 0 | 1): boolean => {
     let best: number | null = null;
     let bestScore = -Infinity;
 
@@ -111,7 +147,7 @@ function allocateToTarget(
       if (assignedShiftIds.has(id)) continue;
       const s = shiftMap.get(id)!;
       if (totalHours + s.durationHours > targetHours) continue;
-      if (!allowBackToBack && addsBackToBack(id, allocated, shiftMap)) continue;
+      if (sameDayAllocationTier(id, allocated, shiftMap) !== dayTier) continue;
 
       const score = scoreShiftForPerson(id, allocated, shiftMap, targetWdRatio);
       if (score > bestScore) {
@@ -129,24 +165,30 @@ function allocateToTarget(
   };
 
   while (totalHours < targetHours) {
-    if (!addBestShift(false)) {
-      if (!addBestShift(true)) break;
+    if (!addBestShift(0)) {
+      if (!addBestShift(1)) break;
     }
   }
 
   if (totalHours < targetHours) {
-    for (const id of candidates) {
-      if (allocated.includes(id)) continue;
-      if (assignedShiftIds.has(id)) continue;
-      const s = shiftMap.get(id)!;
-      if (totalHours + s.durationHours > targetHours + maxOverHours) continue;
-      const newTotal = totalHours + s.durationHours;
-      const overBy = newTotal - targetHours;
-      if (overBy <= maxOverHours) {
-        allocated.push(id);
-        totalHours = newTotal;
-        break;
+    for (const dayTier of [0, 1] as const) {
+      let didAdd = false;
+      for (const id of candidates) {
+        if (allocated.includes(id)) continue;
+        if (assignedShiftIds.has(id)) continue;
+        if (sameDayAllocationTier(id, allocated, shiftMap) !== dayTier) continue;
+        const s = shiftMap.get(id)!;
+        if (totalHours + s.durationHours > targetHours + maxOverHours) continue;
+        const newTotal = totalHours + s.durationHours;
+        const overBy = newTotal - targetHours;
+        if (overBy <= maxOverHours) {
+          allocated.push(id);
+          totalHours = newTotal;
+          didAdd = true;
+          break;
+        }
       }
+      if (didAdd) break;
     }
   }
 
@@ -201,7 +243,7 @@ export async function runAllocation(options: AllocationOptions): Promise<{
     if (!respondentMap.has(r.respondentId)) {
       respondentMap.set(r.respondentId, {
         id: r.respondentId,
-        name: r.respondentName || r.respondentFullName || "Unknown",
+        name: safeDisplayName(r.respondentName, r.respondentFullName),
         category,
         availableShiftIds: new Set(),
         hasPenalty,
@@ -241,6 +283,7 @@ export async function runAllocation(options: AllocationOptions): Promise<{
     if (afpHours < minimumAfpTarget) {
       for (const shiftId of available) {
         if (allocated.includes(shiftId) || assignedShiftIds.has(shiftId)) continue;
+        if (!canAddShiftOnDay(shiftId, allocated, shiftMap)) continue;
         const nextHours = afpHours + (shiftMap.get(shiftId)?.durationHours ?? 0);
         if (nextHours > afpTargetHours) continue;
         allocated.push(shiftId);
@@ -275,7 +318,7 @@ export async function runAllocation(options: AllocationOptions): Promise<{
   const penalizedGeneralRespondents = generalRespondents.filter((r) => r.hasPenalty && r.penaltyHours > 0);
   const regularGeneralRespondents = generalRespondents.filter((r) => !(r.hasPenalty && r.penaltyHours > 0));
   const penalizedTargets = new Map(
-    penalizedGeneralRespondents.map((r) => [r.id, Math.max(0, baseTargetPerGeneral - r.penaltyHours)]),
+    penalizedGeneralRespondents.map((r) => [r.id, Math.max(0, baseTargetPerGeneral - (r.penaltyHours / 2))]),
   );
   const regularTargetHours = regularGeneralRespondents.length > 0
     ? Math.max(
@@ -324,24 +367,62 @@ export async function runAllocation(options: AllocationOptions): Promise<{
     const shift = shiftMap.get(shiftId)!;
     let bestRespondent: typeof sortedByAvailability[0] | null = null;
     let bestScore = Infinity;
+    const eligibleCandidates = sortedByAvailability
+      .filter((respondent) => respondent.availableShiftIds.has(shiftId))
+      .map((respondent) => {
+        const current = generalAllocations.get(respondent.id)!;
+        const currentHours = calcHours(current, shiftMap);
+        const afterHours = currentHours + shift.durationHours;
+        const respondentTargetHours = targetByRespondentId.get(respondent.id) ?? baseTargetPerGeneral;
+        return {
+          respondent,
+          current,
+          currentHours,
+          afterHours,
+          respondentTargetHours,
+          dayTier: sameDayAllocationTier(shiftId, current, shiftMap),
+          isPenalized: respondent.hasPenalty && respondent.penaltyHours > 0,
+        };
+      })
+      .filter((candidate) => candidate.dayTier < 2);
 
-    for (const respondent of sortedByAvailability) {
-      if (!respondent.availableShiftIds.has(shiftId)) continue;
+    if (eligibleCandidates.length === 0) continue;
 
-      const current = generalAllocations.get(respondent.id)!;
-      const currentHours = calcHours(current, shiftMap);
-      const afterHours = currentHours + shift.durationHours;
-      const respondentTargetHours = targetByRespondentId.get(respondent.id) ?? baseTargetPerGeneral;
-      const currentLoadPenalty = currentHours * 100;
-      const overTargetPenalty = Math.max(0, afterHours - respondentTargetHours) * 140;
-      const targetDistancePenalty = Math.abs(afterHours - respondentTargetHours) * 5;
-      const backToBackPenalty = addsBackToBack(shiftId, current, shiftMap) ? 25 : 0;
-      const ratioBonus = scoreShiftForPerson(shiftId, current, shiftMap, globalWdRatio);
-      const score = currentLoadPenalty + overTargetPenalty + targetDistancePenalty + backToBackPenalty - ratioBonus;
+    const bestDayTier = Math.min(...eligibleCandidates.map((candidate) => candidate.dayTier));
+    let candidatePool = eligibleCandidates.filter((candidate) => candidate.dayTier === bestDayTier);
+    const underTargetCandidates = candidatePool.filter(
+      (candidate) => candidate.afterHours <= candidate.respondentTargetHours + 0.01,
+    );
+    if (underTargetCandidates.length > 0) {
+      candidatePool = underTargetCandidates;
+    } else {
+      const regularCandidates = candidatePool.filter((candidate) => !candidate.isPenalized);
+      if (regularCandidates.length > 0) {
+        candidatePool = regularCandidates;
+      }
+    }
+
+    for (const candidate of candidatePool) {
+      const currentLoadPenalty = candidate.currentHours * 10;
+      const overTargetPenalty = Math.max(0, candidate.afterHours - candidate.respondentTargetHours) * 500;
+      const targetDistancePenalty = Math.abs(candidate.afterHours - candidate.respondentTargetHours) * 40;
+      const sameDayPenalty = candidate.dayTier * 1000;
+      const backToBackPenalty = addsBackToBack(shiftId, candidate.current, shiftMap) ? 200 : 0;
+      const penalizedOverTargetPenalty =
+        candidate.isPenalized && candidate.afterHours > candidate.respondentTargetHours + 0.01 ? 3000 : 0;
+      const ratioBonus = scoreShiftForPerson(shiftId, candidate.current, shiftMap, globalWdRatio);
+      const score =
+        currentLoadPenalty +
+        overTargetPenalty +
+        targetDistancePenalty +
+        sameDayPenalty +
+        backToBackPenalty +
+        penalizedOverTargetPenalty -
+        ratioBonus;
 
       if (score < bestScore) {
         bestScore = score;
-        bestRespondent = respondent;
+        bestRespondent = candidate.respondent;
       }
     }
 
@@ -384,6 +465,11 @@ export async function runAllocation(options: AllocationOptions): Promise<{
 
       for (const shiftId of fromShiftIds) {
         const shift = shiftMap.get(shiftId)!;
+        const hasNoSameDayRecipient = sortedByAvailability.some((candidate) => {
+          if (candidate.id === from.id) return false;
+          if (!candidate.availableShiftIds.has(shiftId)) return false;
+          return sameDayAllocationTier(shiftId, generalAllocations.get(candidate.id)!, shiftMap) === 0;
+        });
 
         for (const to of sortedByAvailability) {
           if (to.id === from.id) continue;
@@ -392,13 +478,23 @@ export async function runAllocation(options: AllocationOptions): Promise<{
           const toShiftIds = generalAllocations.get(to.id)!;
           const toHours = calcHours(toShiftIds, shiftMap);
           if (fromHours <= toHours) continue;
-          if (addsBackToBack(shiftId, toShiftIds, shiftMap)) continue;
+          const toDayTier = sameDayAllocationTier(shiftId, toShiftIds, shiftMap);
+          if (toDayTier >= 2) continue;
+          if (toDayTier === 1 && hasNoSameDayRecipient) continue;
+          const toTarget = targetByRespondentId.get(to.id) ?? baseTargetPerGeneral;
+          if (
+            regularGeneralRespondents.length > 0 &&
+            to.hasPenalty &&
+            to.penaltyHours > 0 &&
+            toHours + shift.durationHours > toTarget + 0.01
+          ) {
+            continue;
+          }
 
           const nextStdDev = stdDev(getMoveAdjustedHours(from.id, to.id, shiftId));
           if (nextStdDev < currentStdDev - 0.01) {
             const existingBest = bestMove?.nextStdDev ?? Infinity;
             const fromTarget = targetByRespondentId.get(from.id) ?? baseTargetPerGeneral;
-            const toTarget = targetByRespondentId.get(to.id) ?? baseTargetPerGeneral;
             const targetImprovement =
               Math.abs(fromHours - fromTarget) + Math.abs(toHours - toTarget) -
               (Math.abs(fromHours - shift.durationHours - fromTarget) +

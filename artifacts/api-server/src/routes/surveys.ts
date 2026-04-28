@@ -12,6 +12,11 @@ import {
   GetSurveyStatsResponse,
   GetSurveyResponsesResponse,
 } from "@workspace/api-zod";
+import {
+  dedupePositiveIntegerIds,
+  FIELD_LIMITS,
+  normalizeRequiredText,
+} from "../lib/inputValidation.js";
 
 const router: IRouter = Router();
 
@@ -29,6 +34,38 @@ function formatTime12(time: string): string {
   const suffix = h >= 12 ? "PM" : "AM";
   const hour = h % 12 === 0 ? 12 : h % 12;
   return `${hour}:${String(m).padStart(2, "0")} ${suffix}`;
+}
+
+function isPgUniqueViolation(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    error.code === "23505"
+  );
+}
+
+async function createSurveyWithUniqueToken(values: {
+  month: number;
+  year: number;
+  title: string;
+  closesAt: Date | null;
+}) {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      const [survey] = await db
+        .insert(surveysTable)
+        .values({ ...values, status: "open", token: shortToken(12) })
+        .returning();
+      return survey;
+    } catch (error) {
+      if (!isPgUniqueViolation(error)) {
+        throw error;
+      }
+    }
+  }
+
+  throw new Error("Unable to create a unique survey link right now. Please try again.");
 }
 
 router.get("/surveys", async (_req, res): Promise<void> => {
@@ -49,14 +86,37 @@ router.post("/surveys", async (req, res): Promise<void> => {
   }
 
   const { month, year, title, closesAt: closesAtValue } = parsed.data;
-  const surveyTitle = title || `${MONTH_NAMES[month - 1]} ${year} Shift Survey`;
-  const closesAt = closesAtValue ? new Date(closesAtValue) : null;
-  const token = shortToken(12);
+  const titleResult = title
+    ? normalizeRequiredText(title, "Survey title", FIELD_LIMITS.surveyTitle)
+    : {
+        ok: true as const,
+        value: `${MONTH_NAMES[month - 1]} ${year} Shift Survey`,
+      };
+  if (!titleResult.ok) {
+    res.status(400).json({ error: titleResult.error });
+    return;
+  }
 
-  const [survey] = await db
-    .insert(surveysTable)
-    .values({ month, year, title: surveyTitle, status: "open", token, closesAt })
-    .returning();
+  const surveyTitle = titleResult.value;
+  const closesAt = closesAtValue ? new Date(closesAtValue) : null;
+  let survey;
+
+  try {
+    survey = await createSurveyWithUniqueToken({
+      month,
+      year,
+      title: surveyTitle,
+      closesAt,
+    });
+  } catch (error) {
+    res.status(500).json({
+      error:
+        error instanceof Error
+          ? error.message
+          : "Unable to create the survey right now.",
+    });
+    return;
+  }
 
   const shiftTemplates = generateShiftsForMonth(year, month);
   if (shiftTemplates.length > 0) {
@@ -124,7 +184,18 @@ router.patch("/surveys/:id", async (req, res): Promise<void> => {
 
   const updateData: Partial<typeof surveysTable.$inferInsert> = {};
   if (parsed.data.status !== undefined) updateData.status = parsed.data.status;
-  if (parsed.data.title !== undefined && parsed.data.title !== null) updateData.title = parsed.data.title;
+  if (parsed.data.title !== undefined && parsed.data.title !== null) {
+    const titleResult = normalizeRequiredText(
+      parsed.data.title,
+      "Survey title",
+      FIELD_LIMITS.surveyTitle,
+    );
+    if (!titleResult.ok) {
+      res.status(400).json({ error: titleResult.error });
+      return;
+    }
+    updateData.title = titleResult.value;
+  }
   if (parsed.data.closesAt !== undefined) {
     updateData.closesAt = parsed.data.closesAt ? new Date(parsed.data.closesAt) : null;
   }
@@ -185,6 +256,7 @@ router.get("/surveys/:id/responses", async (req, res): Promise<void> => {
       shiftId: responsesTable.shiftId,
       respondentName: respondentsTable.name,
       preferredName: respondentsTable.preferredName,
+      respondentEmail: respondentsTable.email,
       respondentCategory: respondentsTable.category,
       hasPenalty: responsesTable.hasPenalty,
       penaltyHours: responsesTable.penaltyHours,
@@ -201,6 +273,7 @@ router.get("/surveys/:id/responses", async (req, res): Promise<void> => {
       respondentId: number;
       name: string;
       preferredName: string;
+      email: string | null;
       category: string;
       selectedShiftIds: number[];
       hasPenalty: boolean;
@@ -215,6 +288,7 @@ router.get("/surveys/:id/responses", async (req, res): Promise<void> => {
           respondentId: r.respondentId,
           name: r.respondentName,
           preferredName: r.preferredName,
+          email: r.respondentEmail,
           category: r.respondentCategory,
           selectedShiftIds: [],
           hasPenalty: r.hasPenalty,
@@ -258,9 +332,7 @@ router.put("/surveys/:id/responses/:respondentId", async (req, res): Promise<voi
     Array.isArray(req.params.respondentId) ? req.params.respondentId[0] : req.params.respondentId,
     10,
   );
-  const selectedShiftIds: number[] = Array.isArray(req.body?.selectedShiftIds)
-    ? req.body.selectedShiftIds.filter((value: unknown): value is number => typeof value === "number")
-    : [];
+  const selectedShiftIds = dedupePositiveIntegerIds(req.body?.selectedShiftIds);
   const incomingPenaltyHours = Number(req.body?.penaltyHours);
   const incomingAfpHoursCap = Number(req.body?.afpHoursCap);
   if (isNaN(id) || isNaN(respondentId)) {
@@ -296,18 +368,25 @@ router.put("/surveys/:id/responses/:respondentId", async (req, res): Promise<voi
     ? Math.max(0, incomingAfpHoursCap)
     : existingResponse?.afpHoursCap ?? 10;
 
-  await db.delete(responsesTable).where(and(eq(responsesTable.surveyId, id), eq(responsesTable.respondentId, respondentId)));
-  await db.delete(allocationsTable).where(and(eq(allocationsTable.surveyId, id), eq(allocationsTable.respondentId, respondentId)));
-  for (const shiftId of selectedShiftIds) {
-    await db.insert(responsesTable).values({
-      surveyId: id,
-      respondentId,
-      shiftId,
-      hasPenalty,
-      penaltyHours: hasPenalty ? penaltyHours : 0,
-      afpHoursCap,
-    });
-  }
+  await db.transaction(async (tx) => {
+    await tx
+      .delete(responsesTable)
+      .where(and(eq(responsesTable.surveyId, id), eq(responsesTable.respondentId, respondentId)));
+    await tx
+      .delete(allocationsTable)
+      .where(and(eq(allocationsTable.surveyId, id), eq(allocationsTable.respondentId, respondentId)));
+
+    for (const shiftId of selectedShiftIds) {
+      await tx.insert(responsesTable).values({
+        surveyId: id,
+        respondentId,
+        shiftId,
+        hasPenalty,
+        penaltyHours: hasPenalty ? penaltyHours : 0,
+        afpHoursCap,
+      });
+    }
+  });
   res.sendStatus(204);
 });
 

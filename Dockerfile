@@ -18,6 +18,9 @@ RUN pnpm --filter @workspace/api-server run build
 ENV NODE_ENV=production
 ENV PORT=3000
 
+RUN chown -R node:node /app
+USER node
+
 EXPOSE 3000
 
-CMD ["node", "artifacts/api-server/dist/index.cjs"]
+CMD ["sh", "./scripts/start-production.sh"]

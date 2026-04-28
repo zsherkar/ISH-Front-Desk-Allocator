@@ -5,6 +5,7 @@
   "scripts": {
     "preinstall": "node ./scripts/preinstall-check.cjs",
     "build": "pnpm run typecheck && pnpm -r --if-present run build",
+    "deploy:test-link": "node ./scripts/deploy-test-link.mjs",
     "hash:admin-password": "node ./scripts/hash-admin-password.mjs",
     "typecheck:libs": "tsc --build",
     "typecheck": "pnpm run typecheck:libs && pnpm -r --filter \"./artifacts/**\" --filter \"./scripts\" --if-present run typecheck",

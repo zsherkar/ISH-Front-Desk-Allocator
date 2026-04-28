@@ -10,6 +10,8 @@ import type { CreateRespondentBodyCategory } from "./createRespondentBodyCategor
 export interface CreateRespondentBody {
   name: string;
   /** @nullable */
+  preferredName?: string | null;
+  /** @nullable */
   email?: string | null;
   category: CreateRespondentBodyCategory;
 }

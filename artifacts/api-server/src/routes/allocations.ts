@@ -7,6 +7,12 @@ import {
   RunAllocationBody,
   AdjustAllocationBody,
 } from "@workspace/api-zod";
+import {
+  dedupePositiveIntegerIds,
+  FIELD_LIMITS,
+  normalizeOptionalText,
+  safeDisplayName,
+} from "../lib/inputValidation.js";
 
 const router: IRouter = Router();
 
@@ -49,7 +55,7 @@ async function buildAllocationResult(surveyId: number) {
     if (!respondentMap.has(a.respondentId)) {
       respondentMap.set(a.respondentId, {
         respondentId: a.respondentId,
-        name: a.respondentName || a.respondentFullName,
+        name: safeDisplayName(a.respondentName, a.respondentFullName),
         category: a.respondentCategory,
         shiftIds: [],
         isManuallyAdjusted: a.isManuallyAdjusted,
@@ -119,7 +125,41 @@ router.post("/surveys/:id/allocate", async (req, res): Promise<void> => {
     res.status(400).json({ error: parsed.error.message });
     return;
   }
-  const includedRespondentIds = parsed.data.includedRespondentIds;
+  const surveyRespondents = await db
+    .select({ respondentId: responsesTable.respondentId })
+    .from(responsesTable)
+    .where(eq(responsesTable.surveyId, id));
+  const surveyRespondentIdSet = new Set(
+    surveyRespondents.map((entry) => entry.respondentId),
+  );
+  const includedRespondentIds = dedupePositiveIntegerIds(
+    parsed.data.includedRespondentIds,
+  );
+  const afpRespondentIds = dedupePositiveIntegerIds(parsed.data.afpRespondentIds);
+
+  const invalidIncludedRespondentIds = includedRespondentIds.filter(
+    (respondentId) => !surveyRespondentIdSet.has(respondentId),
+  );
+  if (invalidIncludedRespondentIds.length > 0) {
+    res.status(400).json({ error: "Included respondents must belong to this survey." });
+    return;
+  }
+
+  const invalidAfpRespondentIds = afpRespondentIds.filter(
+    (respondentId) => !surveyRespondentIdSet.has(respondentId),
+  );
+  if (invalidAfpRespondentIds.length > 0) {
+    res.status(400).json({ error: "AFP respondents must belong to this survey." });
+    return;
+  }
+
+  if (
+    includedRespondentIds.length > 0 &&
+    afpRespondentIds.some((respondentId) => !includedRespondentIds.includes(respondentId))
+  ) {
+    res.status(400).json({ error: "AFP respondents must also be included in this allocation run." });
+    return;
+  }
 
   if (includedRespondentIds?.length) {
     await db
@@ -128,11 +168,11 @@ router.post("/surveys/:id/allocate", async (req, res): Promise<void> => {
       .where(inArray(respondentsTable.id, includedRespondentIds));
   }
 
-  if (parsed.data.afpRespondentIds.length > 0) {
+  if (afpRespondentIds.length > 0) {
     await db
       .update(respondentsTable)
       .set({ category: "AFP" })
-      .where(inArray(respondentsTable.id, parsed.data.afpRespondentIds));
+      .where(inArray(respondentsTable.id, afpRespondentIds));
   }
 
   // Clear existing allocations
@@ -140,7 +180,7 @@ router.post("/surveys/:id/allocate", async (req, res): Promise<void> => {
 
   const result = await runAllocation({
     surveyId: id,
-    afpRespondentIds: parsed.data.afpRespondentIds,
+    afpRespondentIds,
     includedRespondentIds,
   });
 
@@ -199,66 +239,103 @@ router.patch("/surveys/:id/allocations/adjust", async (req, res): Promise<void> 
     return;
   }
 
-  const { respondentId, shiftIdsToAdd = [], shiftIdsToRemove = [], penaltyNote } = parsed.data;
-
-  // Remove specified shifts
-  if (shiftIdsToRemove.length > 0) {
-    await db
-      .delete(allocationsTable)
-      .where(
-        and(
-          eq(allocationsTable.surveyId, id),
-          eq(allocationsTable.respondentId, respondentId),
-          inArray(allocationsTable.shiftId, shiftIdsToRemove)
-        )
-      );
+  const shiftIdsToAdd = dedupePositiveIntegerIds(parsed.data.shiftIdsToAdd);
+  const shiftIdsToRemove = dedupePositiveIntegerIds(parsed.data.shiftIdsToRemove);
+  const penaltyNoteResult = normalizeOptionalText(
+    parsed.data.penaltyNote,
+    "Penalty note",
+    FIELD_LIMITS.penaltyNote,
+  );
+  if (!penaltyNoteResult.ok) {
+    res.status(400).json({ error: penaltyNoteResult.error });
+    return;
   }
 
-  // Add specified shifts
-  for (const shiftId of shiftIdsToAdd) {
-    // A shift can only have one owner in the final calendar.
-    await db
-      .delete(allocationsTable)
-      .where(
-        and(
-          eq(allocationsTable.surveyId, id),
-          eq(allocationsTable.shiftId, shiftId)
-        )
-      );
+  const { respondentId } = parsed.data;
+  const [respondent] = await db
+    .select({ id: respondentsTable.id })
+    .from(respondentsTable)
+    .where(eq(respondentsTable.id, respondentId))
+    .limit(1);
+  if (!respondent) {
+    res.status(404).json({ error: "Respondent not found" });
+    return;
+  }
 
-    const existingForTarget = await db
-      .select()
-      .from(allocationsTable)
-      .where(
-        and(
-          eq(allocationsTable.surveyId, id),
-          eq(allocationsTable.respondentId, respondentId),
-          eq(allocationsTable.shiftId, shiftId)
-        )
-      );
-    if (existingForTarget.length === 0) {
-      await db.insert(allocationsTable).values({
-        surveyId: id,
-        respondentId,
-        shiftId,
-        isManuallyAdjusted: true,
-        penaltyNote: penaltyNote ?? null,
-      });
+  const surveyShiftRows = await db
+    .select({ id: shiftsTable.id })
+    .from(shiftsTable)
+    .where(eq(shiftsTable.surveyId, id));
+  const surveyShiftIdSet = new Set(surveyShiftRows.map((shift) => shift.id));
+  const invalidShiftIds = [...shiftIdsToAdd, ...shiftIdsToRemove].filter(
+    (shiftId) => !surveyShiftIdSet.has(shiftId),
+  );
+  if (invalidShiftIds.length > 0) {
+    res.status(400).json({ error: "Shift adjustments must belong to this survey." });
+    return;
+  }
+
+  await db.transaction(async (tx) => {
+    if (shiftIdsToRemove.length > 0) {
+      await tx
+        .delete(allocationsTable)
+        .where(
+          and(
+            eq(allocationsTable.surveyId, id),
+            eq(allocationsTable.respondentId, respondentId),
+            inArray(allocationsTable.shiftId, shiftIdsToRemove),
+          ),
+        );
     }
-  }
 
-  // Mark respondent's allocations as manually adjusted
-  if (penaltyNote !== undefined || shiftIdsToAdd.length > 0 || shiftIdsToRemove.length > 0) {
-    await db
-      .update(allocationsTable)
-      .set({ isManuallyAdjusted: true, penaltyNote: penaltyNote ?? null })
-      .where(
-        and(
-          eq(allocationsTable.surveyId, id),
-          eq(allocationsTable.respondentId, respondentId)
+    for (const shiftId of shiftIdsToAdd) {
+      await tx
+        .delete(allocationsTable)
+        .where(
+          and(
+            eq(allocationsTable.surveyId, id),
+            eq(allocationsTable.shiftId, shiftId),
+          ),
+        );
+
+      const existingForTarget = await tx
+        .select()
+        .from(allocationsTable)
+        .where(
+          and(
+            eq(allocationsTable.surveyId, id),
+            eq(allocationsTable.respondentId, respondentId),
+            eq(allocationsTable.shiftId, shiftId),
+          ),
         )
-      );
-  }
+        .limit(1);
+      if (existingForTarget.length === 0) {
+        await tx.insert(allocationsTable).values({
+          surveyId: id,
+          respondentId,
+          shiftId,
+          isManuallyAdjusted: true,
+          penaltyNote: penaltyNoteResult.value,
+        });
+      }
+    }
+
+    if (
+      parsed.data.penaltyNote !== undefined ||
+      shiftIdsToAdd.length > 0 ||
+      shiftIdsToRemove.length > 0
+    ) {
+      await tx
+        .update(allocationsTable)
+        .set({ isManuallyAdjusted: true, penaltyNote: penaltyNoteResult.value })
+        .where(
+          and(
+            eq(allocationsTable.surveyId, id),
+            eq(allocationsTable.respondentId, respondentId),
+          ),
+        );
+    }
+  });
 
   const allocationResult = await buildAllocationResult(id);
   res.json(allocationResult);

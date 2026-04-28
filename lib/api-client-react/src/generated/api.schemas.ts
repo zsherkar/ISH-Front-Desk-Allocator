@@ -104,6 +104,8 @@ export interface RespondentWithResponses {
   respondentId: number;
   name: string;
   preferredName: string;
+  /** @nullable */
+  email: string | null;
   category: RespondentWithResponsesCategory;
   selectedShiftIds: number[];
   totalAvailableHours: number;
@@ -193,6 +195,8 @@ export const CreateRespondentBodyCategory = {
 export interface CreateRespondentBody {
   name: string;
   /** @nullable */
+  preferredName?: string | null;
+  /** @nullable */
   email?: string | null;
   category: CreateRespondentBodyCategory;
 }
@@ -212,6 +216,8 @@ export const UpdateRespondentBodyCategory = {
 export interface UpdateRespondentBody {
   /** @nullable */
   name?: string | null;
+  /** @nullable */
+  preferredName?: string | null;
   /** @nullable */
   email?: string | null;
   /** @nullable */

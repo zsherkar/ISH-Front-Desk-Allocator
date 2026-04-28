@@ -46,6 +46,10 @@ Thumbs.db
 
 .cache/
 .local/
+.env
+.env.*
+!.env.example
+!.env.*.example
 
 # local tunnel/debug artifacts
 *.log

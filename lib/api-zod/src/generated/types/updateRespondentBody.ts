@@ -11,6 +11,8 @@ export interface UpdateRespondentBody {
   /** @nullable */
   name?: string | null;
   /** @nullable */
+  preferredName?: string | null;
+  /** @nullable */
   email?: string | null;
   /** @nullable */
   category?: UpdateRespondentBodyCategory;

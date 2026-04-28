@@ -9,10 +9,18 @@ import {
 } from "@workspace/api-zod";
 import { computeAverage, computeMedian, computeStdDev } from "../lib/stats.js";
 import { requireAdmin } from "../lib/adminAuth.js";
+import { requireSameOriginForBrowser } from "../lib/security.js";
+import {
+  FIELD_LIMITS,
+  firstGivenName,
+  normalizeEmail,
+  normalizeRequiredText,
+  sanitizePreferredName,
+} from "../lib/inputValidation.js";
 
 const router: IRouter = Router();
 
-router.use(requireAdmin);
+router.use(requireAdmin, requireSameOriginForBrowser);
 
 function formatTime12(time: string): string {
   const [h, m] = time.split(":").map(Number);
@@ -64,12 +72,55 @@ router.post("/respondents", async (req, res): Promise<void> => {
     return;
   }
 
+  const nameResult = normalizeRequiredText(
+    parsed.data.name,
+    "Name",
+    FIELD_LIMITS.respondentName,
+  );
+  if (!nameResult.ok) {
+    res.status(400).json({ error: nameResult.error });
+    return;
+  }
+
+  const preferredNameInput =
+    typeof req.body?.preferredName === "string"
+      ? req.body.preferredName
+      : firstGivenName(nameResult.value);
+  const preferredNameResult = normalizeRequiredText(
+    preferredNameInput,
+    "Preferred name",
+    FIELD_LIMITS.preferredName,
+  );
+  if (!preferredNameResult.ok) {
+    res.status(400).json({ error: preferredNameResult.error });
+    return;
+  }
+
+  const emailResult = normalizeEmail(parsed.data.email, { required: false });
+  if (!emailResult.ok) {
+    res.status(400).json({ error: emailResult.error });
+    return;
+  }
+
+  if (emailResult.value) {
+    const existingRespondent = await db
+      .select({ id: respondentsTable.id })
+      .from(respondentsTable)
+      .where(eq(respondentsTable.email, emailResult.value))
+      .limit(1);
+
+    if (existingRespondent[0]) {
+      res.status(409).json({ error: "A respondent with that email already exists." });
+      return;
+    }
+  }
+
   const [respondent] = await db
     .insert(respondentsTable)
     .values({
-      name: parsed.data.name,
-      preferredName: req.body?.preferredName ?? parsed.data.name.split(" ")[0] ?? parsed.data.name,
-      email: parsed.data.email ?? null,
+      name: nameResult.value,
+      preferredName: sanitizePreferredName(preferredNameResult.value, nameResult.value),
+      email: emailResult.value,
       category: parsed.data.category,
     })
     .returning();
@@ -91,11 +142,74 @@ router.patch("/respondents/:id", async (req, res): Promise<void> => {
     return;
   }
 
+  const [currentRespondent] = await db
+    .select()
+    .from(respondentsTable)
+    .where(eq(respondentsTable.id, id))
+    .limit(1);
+  if (!currentRespondent) {
+    res.status(404).json({ error: "Respondent not found" });
+    return;
+  }
+
   const updateData: Partial<typeof respondentsTable.$inferInsert> = {};
-  if (parsed.data.name !== null && parsed.data.name !== undefined) updateData.name = parsed.data.name;
-  if (parsed.data.email !== undefined) updateData.email = parsed.data.email;
+  if (parsed.data.name !== null && parsed.data.name !== undefined) {
+    const nameResult = normalizeRequiredText(
+      parsed.data.name,
+      "Name",
+      FIELD_LIMITS.respondentName,
+    );
+    if (!nameResult.ok) {
+      res.status(400).json({ error: nameResult.error });
+      return;
+    }
+    updateData.name = nameResult.value;
+  }
+
+  if (parsed.data.email !== undefined) {
+    const emailResult = normalizeEmail(parsed.data.email, { required: false });
+    if (!emailResult.ok) {
+      res.status(400).json({ error: emailResult.error });
+      return;
+    }
+
+    if (emailResult.value) {
+      const existingRespondent = await db
+        .select({ id: respondentsTable.id })
+        .from(respondentsTable)
+        .where(eq(respondentsTable.email, emailResult.value))
+        .limit(1);
+
+      if (existingRespondent[0] && existingRespondent[0].id !== id) {
+        res.status(409).json({ error: "A respondent with that email already exists." });
+        return;
+      }
+    }
+
+    updateData.email = emailResult.value;
+  }
+
   if (parsed.data.category !== null && parsed.data.category !== undefined) updateData.category = parsed.data.category;
-  if (req.body?.preferredName !== undefined) updateData.preferredName = req.body.preferredName;
+  if (req.body?.preferredName !== undefined) {
+    const fallbackPreferredName = firstGivenName(updateData.name ?? currentRespondent.name);
+    const preferredNameInput =
+      typeof req.body.preferredName === "string" && req.body.preferredName.trim()
+        ? req.body.preferredName
+        : fallbackPreferredName;
+    const preferredNameResult = normalizeRequiredText(
+      preferredNameInput,
+      "Preferred name",
+      FIELD_LIMITS.preferredName,
+    );
+    if (!preferredNameResult.ok) {
+      res.status(400).json({ error: preferredNameResult.error });
+      return;
+    }
+    updateData.preferredName = sanitizePreferredName(
+      preferredNameResult.value,
+      updateData.name ?? currentRespondent.name,
+    );
+  }
 
   const [respondent] = await db
     .update(respondentsTable)
