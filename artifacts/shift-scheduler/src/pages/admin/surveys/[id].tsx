@@ -186,6 +186,8 @@ export function AdminSurveyDetail() {
 
   const [afpIds, setAfpIds] = useState<Set<number>>(new Set());
   const [afpUnclaimedShiftIds, setAfpUnclaimedShiftIds] = useState<Set<number>>(new Set());
+  const [allowAfpOverCapForAvailableShifts, setAllowAfpOverCapForAvailableShifts] = useState(false);
+  const [preserveManualLocks, setPreserveManualLocks] = useState(true);
   const [showCalendar, setShowCalendar] = useState(false);
   const [selectedRespondentId, setSelectedRespondentId] = useState<number | null>(null);
   const [selectedResponse, setSelectedResponse] = useState<any | null>(null);
@@ -208,6 +210,7 @@ export function AdminSurveyDetail() {
   const { data: respondentHistory } = useGetRespondentFdHistory(selectedRespondentId ?? 0);
   const hasExistingAllocations = (allocations?.allocations.length ?? 0) > 0;
   const blankShiftExplanations = allocations?.blankShiftExplanations ?? [];
+  const allocationAudit = allocations?.allocationAudit ?? [];
   const generalAllocationSummary = useMemo(
     () => summarizeAllocationStats(
       allocStats?.nonPenalizedGeneralStats ??
@@ -386,6 +389,8 @@ export function AdminSurveyDetail() {
             afpIds.has(respondentId),
           ),
           includedRespondentIds: Array.from(includedRespondentIds),
+          allowAfpOverCapForAvailableShifts,
+          preserveManualLocks,
         },
       },
       { onSuccess: () => setShowCalendar(true) }
@@ -500,7 +505,7 @@ export function AdminSurveyDetail() {
     pdf.save(`${survey?.title ?? "schedule"}.pdf`);
   };
 
-  const downloadExcel = () => {
+  const downloadScheduleCsv = () => {
     if (!survey?.shifts || !allocations?.allocations) return;
 
     const respondentById = new Map((responses ?? []).map((response) => [response.respondentId, response]));
@@ -512,6 +517,7 @@ export function AdminSurveyDetail() {
         email: string;
         category: string;
         totalHours: number;
+        stableShiftKey: string;
         assignmentSource: string;
         isManual: boolean;
         isEmergency: boolean;
@@ -526,6 +532,7 @@ export function AdminSurveyDetail() {
           email: respondent?.email ?? "",
           category: allocation.category,
           totalHours: allocation.totalHours,
+          stableShiftKey: shift.stableShiftKey,
           assignmentSource: shift.assignmentSource,
           isManual: shift.isManual,
           isEmergency: shift.isEmergency,
@@ -537,6 +544,7 @@ export function AdminSurveyDetail() {
     const rows = [
       [
         "date",
+        "stable_shift_key",
         "day_of_week",
         "shift_label",
         "start_time",
@@ -559,6 +567,7 @@ export function AdminSurveyDetail() {
           const blank = blankByShiftId.get(shift.id);
           return [
             shift.date,
+            allocation?.stableShiftKey ?? blank?.stableShiftKey ?? "",
             format(parseISO(shift.date), "EEEE"),
             formatShiftLabelText(shift.label),
             formatTime12(shift.startTime),
@@ -581,6 +590,65 @@ export function AdminSurveyDetail() {
     const blob = new Blob([`\uFEFF${csv}`], { type: "text/csv;charset=utf-8" });
     const link = document.createElement("a");
     link.download = `${survey?.title ?? "schedule"}.csv`;
+    link.href = URL.createObjectURL(blob);
+    link.click();
+    URL.revokeObjectURL(link.href);
+  };
+
+  const downloadAuditCsv = () => {
+    if (!allocationAudit.length) return;
+    const rows = [
+      [
+        "shift_id",
+        "stable_shift_key",
+        "date",
+        "day_of_week",
+        "start_time",
+        "end_time",
+        "slot_index",
+        "duration_minutes",
+        "rendered_cell_is_blank",
+        "allocation_record_exists",
+        "assigned_respondent_id",
+        "assigned_respondent_name",
+        "assignment_source",
+        "availability_count",
+        "eligible_normal_candidate_count",
+        "eligible_back_to_back_emergency_candidate_count",
+        "eligible_no_availability_fallback_afp_count",
+        "reason_category",
+        "available_respondents_and_blockers",
+        "explanation",
+      ],
+      ...allocationAudit.map((row) => [
+        row.shiftId,
+        row.stableShiftKey,
+        row.date,
+        row.dayOfWeek,
+        formatTime12(row.startTime),
+        formatTime12(row.endTime),
+        row.slotIndex,
+        row.durationMinutes,
+        row.renderedCellIsBlank ? "yes" : "no",
+        row.allocationRecordExists ? "yes" : "no",
+        row.assignedRespondentId ?? "",
+        row.assignedRespondentName ?? "",
+        row.assignmentSource ?? "",
+        row.availabilityCount,
+        row.eligibleNormalCandidateCount,
+        row.eligibleBackToBackEmergencyCandidateCount,
+        row.eligibleNoAvailabilityFallbackAfpCount,
+        row.reasonCategory,
+        row.availableRespondents
+          .map((respondent) => `${respondent.name}: ${respondent.blockers.length ? respondent.blockers.join("|") : "eligible"}`)
+          .join("; "),
+        row.explanationText,
+      ]),
+    ];
+    const csv = rows.map((row) => row.map(escapeCsvCell).join(",")).join("\r\n");
+    const blob = new Blob([`\uFEFF${csv}`], { type: "text/csv;charset=utf-8" });
+    const link = document.createElement("a");
+    link.download = `${survey?.title ?? "schedule"}-allocation-audit.csv`;
     link.href = URL.createObjectURL(blob);
     link.click();
     URL.revokeObjectURL(link.href);
@@ -655,7 +723,10 @@ export function AdminSurveyDetail() {
           <TabsTrigger value="stats" className="rounded-lg px-4 py-2 data-[state=active]:bg-white data-[state=active]:shadow-sm">Availability Stats</TabsTrigger>
           <TabsTrigger value="allocation" className="rounded-lg px-4 py-2 data-[state=active]:bg-white data-[state=active]:shadow-sm">Allocation</TabsTrigger>
           {hasExistingAllocations && allocStats && (
-            <TabsTrigger value="alloc-stats" className="rounded-lg px-4 py-2 data-[state=active]:bg-white data-[state=active]:shadow-sm">Post-Alloc Stats</TabsTrigger>
+            <>
+              <TabsTrigger value="alloc-stats" className="rounded-lg px-4 py-2 data-[state=active]:bg-white data-[state=active]:shadow-sm">Post-Alloc Stats</TabsTrigger>
+              <TabsTrigger value="alloc-audit" className="rounded-lg px-4 py-2 data-[state=active]:bg-white data-[state=active]:shadow-sm">Allocation Audit</TabsTrigger>
+            </>
           )}
         </TabsList>
 
@@ -915,6 +986,28 @@ export function AdminSurveyDetail() {
                   ))}
                 </div>
               )}
+              <div className="mb-6 grid gap-3 rounded-xl border border-slate-200 bg-slate-50/70 p-4 text-sm text-slate-700 sm:grid-cols-2">
+                <label className="flex items-start gap-2">
+                  <Checkbox
+                    checked={preserveManualLocks}
+                    onCheckedChange={(checked) => setPreserveManualLocks(Boolean(checked))}
+                  />
+                  <span>
+                    Preserve manual assignments on re-run
+                    <span className="block text-xs text-slate-500">Manual rows stay locked and the engine allocates around them.</span>
+                  </span>
+                </label>
+                <label className="flex items-start gap-2">
+                  <Checkbox
+                    checked={allowAfpOverCapForAvailableShifts}
+                    onCheckedChange={(checked) => setAllowAfpOverCapForAvailableShifts(Boolean(checked))}
+                  />
+                  <span>
+                    Allow AFP cap overflow for available shifts
+                    <span className="block text-xs text-slate-500">Use only after normal legal candidates fail.</span>
+                  </span>
+                </label>
+              </div>
               <div className="flex items-center gap-4">
                 <Button
                   onClick={handleRunAllocation}
@@ -956,6 +1049,11 @@ export function AdminSurveyDetail() {
                       Run Allocation
                     </Button>
                   )}
+                  {allocationAudit.length > 0 && (
+                    <Button size="sm" variant="outline" onClick={downloadAuditCsv} className="bg-white rounded-xl">
+                      <FileSpreadsheet className="w-4 h-4 mr-1" /> Download Audit
+                    </Button>
+                  )}
                   <Button
                     variant="outline"
                     size="sm"
@@ -973,8 +1071,8 @@ export function AdminSurveyDetail() {
                       <Button size="sm" variant="outline" onClick={downloadPDF} className="bg-white rounded-xl">
                         <Download className="w-4 h-4 mr-1" /> Download PDF
                       </Button>
-                      <Button size="sm" variant="outline" onClick={downloadExcel} className="bg-white rounded-xl">
-                        <FileSpreadsheet className="w-4 h-4 mr-1" /> Download Excel
+                      <Button size="sm" variant="outline" onClick={downloadScheduleCsv} className="bg-white rounded-xl">
+                        <FileSpreadsheet className="w-4 h-4 mr-1" /> Download CSV
                       </Button>
                     </>
                   )}
@@ -1118,8 +1216,19 @@ export function AdminSurveyDetail() {
                   <p className="mt-1 text-xs text-slate-500">Only shifts nobody selected</p>
                 </div>
                 <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
+                  <p className="text-sm font-medium text-slate-500 mb-1">AFP Cap Overflow</p>
+                  <p className="text-2xl font-bold text-slate-900">{allocStats.afpCapOverflowCount}</p>
+                  <p className="mt-1 text-xs text-slate-500">Available-shift fallback only</p>
+                </div>
+                <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
                   <p className="text-sm font-medium text-slate-500 mb-1">Manual Assignments</p>
                   <p className="text-2xl font-bold text-slate-900">{allocStats.manualAssignmentCount}</p>
+                </div>
+                <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
+                  <p className="text-sm font-medium text-slate-500 mb-1">Rendered Assigned Blanks</p>
+                  <p className={clsx("text-2xl font-bold", allocStats.renderedBlankButAssignedCount > 0 ? "text-rose-700" : "text-slate-900")}>
+                    {allocStats.renderedBlankButAssignedCount}
+                  </p>
                 </div>
                 <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
                   <p className="text-sm font-medium text-slate-500 mb-1">Hard Same-Day Issues</p>
@@ -1280,6 +1389,94 @@ export function AdminSurveyDetail() {
             </div>
           )}
 	        </TabsContent>
+
+        <TabsContent value="alloc-audit" className="animate-in fade-in duration-300">
+          {hasExistingAllocations && allocationAudit.length > 0 && (
+            <div className="space-y-4">
+              <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                <div>
+                  <h3 className="font-bold text-slate-900">Allocation Audit</h3>
+                  <p className="mt-1 text-sm text-slate-500">
+                    Every shift is listed with its stable key, assignment/rendering state, availability, and blockers.
+                  </p>
+                </div>
+                <Button size="sm" variant="outline" onClick={downloadAuditCsv} className="rounded-xl">
+                  <FileSpreadsheet className="w-4 h-4 mr-1" /> Download Audit CSV
+                </Button>
+              </div>
+              <div className="overflow-x-auto rounded-2xl border border-slate-200 bg-white shadow-sm">
+                <table className="w-full min-w-[1100px] text-left text-sm">
+                  <thead className="bg-slate-50 text-xs font-medium uppercase tracking-wide text-slate-500">
+                    <tr>
+                      <th className="px-4 py-3">Shift</th>
+                      <th className="px-4 py-3">Stable Key</th>
+                      <th className="px-4 py-3">Assigned</th>
+                      <th className="px-4 py-3">Availability</th>
+                      <th className="px-4 py-3">Eligible</th>
+                      <th className="px-4 py-3">Reason</th>
+                      <th className="px-4 py-3">Blockers</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {allocationAudit.map((row) => (
+                      <tr
+                        key={row.shiftId}
+                        className={clsx(
+                          row.allocationRecordExists && row.renderedCellIsBlank
+                            ? "bg-rose-50"
+                            : !row.allocationRecordExists && row.availabilityCount > 0
+                              ? "bg-amber-50"
+                              : undefined,
+                        )}
+                      >
+                        <td className="px-4 py-3">
+                          <div className="font-medium text-slate-900">{row.dayOfWeek}, {row.date}</div>
+                          <div className="text-xs text-slate-500">{formatTime12(row.startTime)}-{formatTime12(row.endTime)}</div>
+                        </td>
+                        <td className="px-4 py-3 font-mono text-xs text-slate-600">{row.stableShiftKey}</td>
+                        <td className="px-4 py-3">
+                          {row.allocationRecordExists ? (
+                            <div>
+                              <div className="font-medium text-slate-900">{row.assignedRespondentName}</div>
+                              <div className="text-xs text-slate-500">{row.assignmentSource}</div>
+                            </div>
+                          ) : (
+                            <Badge variant="outline" className="border-rose-200 bg-rose-50 text-rose-700">Blank</Badge>
+                          )}
+                        </td>
+                        <td className="px-4 py-3">{row.availabilityCount}</td>
+                        <td className="px-4 py-3 text-xs text-slate-600">
+                          Normal {row.eligibleNormalCandidateCount} | B2B {row.eligibleBackToBackEmergencyCandidateCount} | AFP fallback {row.eligibleNoAvailabilityFallbackAfpCount}
+                        </td>
+                        <td className="px-4 py-3">
+                          <Badge variant="outline" className="border-slate-200 bg-white text-slate-700">{row.reasonCategory}</Badge>
+                          {row.renderedCellIsBlank && row.allocationRecordExists && (
+                            <div className="mt-1 text-xs font-medium text-rose-700">Rendered blank despite allocation</div>
+                          )}
+                        </td>
+                        <td className="px-4 py-3 text-xs text-slate-600">
+                          {row.availableRespondents.length > 0 ? (
+                            <div className="space-y-1">
+                              {row.availableRespondents.map((respondent) => (
+                                <div key={respondent.respondentId}>
+                                  <span className="font-medium text-slate-800">{respondent.name}</span>
+                                  {": "}
+                                  {respondent.blockers.length > 0 ? respondent.blockers.join(", ") : "eligible"}
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            <span className="text-slate-400">No availability</span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </TabsContent>
 	      </Tabs>
 
       <Dialog

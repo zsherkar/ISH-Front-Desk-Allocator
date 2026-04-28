@@ -10,6 +10,8 @@ import type { BlankShiftExplanationReasonCategory } from "./blankShiftExplanatio
 
 export interface BlankShiftExplanation {
   shiftId: number;
+  stableShiftKey: string;
+  slotIndex: number;
   date: Date;
   label: string;
   startTime: string;

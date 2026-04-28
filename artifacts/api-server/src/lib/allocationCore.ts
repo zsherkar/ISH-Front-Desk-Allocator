@@ -2,6 +2,7 @@ export type AssignmentSource =
   | "engine_normal"
   | "engine_back_to_back_emergency"
   | "engine_no_availability_afp_fallback"
+  | "engine_afp_cap_overflow_available"
   | "manual"
   | "blank";
 
@@ -12,6 +13,7 @@ export type ExplanationCode =
   | "BLOCKED_BY_NON_ADJACENT_SAME_DAY"
   | "BLOCKED_BY_MAX_TWO_SHIFTS_DAY"
   | "BLOCKED_BY_AFP_CAP"
+  | "BLOCKED_ONLY_BY_AFP_CAP"
   | "BLOCKED_BY_MANUAL_LOCK"
   | "BLOCKED_BY_NO_BACK_TO_BACK_OPTION"
   | "NON_AFP_CAPACITY_SHORTFALL"
@@ -26,6 +28,8 @@ export type ExplanationCode =
   | "ONLY_ONE_NON_AFP"
   | "TARGET_TRUNCATED_AT_ZERO"
   | "ENGINE_REPAIR_LIMIT_REACHED"
+  | "RENDERING_ASSIGNMENT_MISMATCH"
+  | "AVAILABILITY_SHIFT_KEY_MISMATCH"
   | "UNKNOWN";
 
 export interface ShiftTimeWindow {
@@ -37,6 +41,7 @@ export interface ShiftTimeWindow {
 export interface CoreShift extends ShiftTimeWindow {
   id: number;
   durationHours: number;
+  slotIndex?: number;
 }
 
 export interface PenaltyTargetInput {
@@ -63,6 +68,10 @@ export interface AssignmentValidationResult {
   ok: boolean;
   reasonCodes: ExplanationCode[];
   wouldBeBackToBackEmergency: boolean;
+  wouldExceedAfpCap: boolean;
+  wouldViolateAvailability: boolean;
+  wouldCreateNonAdjacentSameDayDouble: boolean;
+  wouldCreateTripleShiftDay: boolean;
 }
 
 export function hoursToMinutes(hours: number): number {
@@ -75,6 +84,32 @@ export function minutesToHours(minutes: number): number {
 
 export function isBackToBack(a: ShiftTimeWindow, b: ShiftTimeWindow): boolean {
   return a.date === b.date && (a.endTime === b.startTime || b.endTime === a.startTime);
+}
+
+export function stableShiftKey(shift: ShiftTimeWindow & { slotIndex?: number }): string {
+  return `${shift.date}|${shift.startTime}|${shift.endTime}|${shift.slotIndex ?? 0}`;
+}
+
+export function deriveShiftSlotIndexes<T extends { id: number; date: string; startTime: string; endTime: string }>(
+  shifts: T[],
+): Map<number, number> {
+  const byDate = new Map<string, T[]>();
+  for (const shift of shifts) {
+    byDate.set(shift.date, [...(byDate.get(shift.date) ?? []), shift]);
+  }
+
+  const slotIndexes = new Map<number, number>();
+  for (const shiftsForDate of byDate.values()) {
+    shiftsForDate
+      .sort(
+        (a, b) =>
+          a.startTime.localeCompare(b.startTime) ||
+          a.endTime.localeCompare(b.endTime) ||
+          a.id - b.id,
+      )
+      .forEach((shift, index) => slotIndexes.set(shift.id, index));
+  }
+  return slotIndexes;
 }
 
 export function sameDayAllocationTier(
@@ -121,28 +156,45 @@ export function canAssignShiftToRespondent({
   const reasonCodes: ExplanationCode[] = [];
 
   if (!shift) {
-    return { ok: false, reasonCodes: ["UNKNOWN"], wouldBeBackToBackEmergency: false };
+    return {
+      ok: false,
+      reasonCodes: ["UNKNOWN"],
+      wouldBeBackToBackEmergency: false,
+      wouldExceedAfpCap: false,
+      wouldViolateAvailability: false,
+      wouldCreateNonAdjacentSameDayDouble: false,
+      wouldCreateTripleShiftDay: false,
+    };
   }
 
   const requiresAvailability =
-    assignmentSource === "engine_normal" || assignmentSource === "engine_back_to_back_emergency";
+    assignmentSource === "engine_normal" ||
+    assignmentSource === "engine_back_to_back_emergency" ||
+    assignmentSource === "engine_afp_cap_overflow_available";
+  const wouldViolateAvailability = requiresAvailability && !isAvailable;
   if (requiresAvailability && !isAvailable) {
     reasonCodes.push("NO_AVAILABLE_ALTERNATIVE");
   }
 
   const dayTier = sameDayAllocationTier(shiftId, existingShiftIds, shiftMap);
+  const sameDayCount = existingShiftIds.filter((id) => shiftMap.get(id)?.date === shift.date).length;
+  const wouldCreateTripleShiftDay = sameDayCount >= 2;
+  const wouldCreateNonAdjacentSameDayDouble = dayTier === 2 && !wouldCreateTripleShiftDay;
   if (dayTier === 2) {
-    const sameDayCount = existingShiftIds.filter((id) => shiftMap.get(id)?.date === shift.date).length;
     reasonCodes.push(
       sameDayCount >= 2 ? "BLOCKED_BY_MAX_TWO_SHIFTS_DAY" : "BLOCKED_BY_NON_ADJACENT_SAME_DAY",
     );
   }
 
+  const wouldExceedAfpCap =
+    category === "AFP" &&
+    currentNormalMinutes + hoursToMinutes(shift.durationHours) > afpCapMinutes;
   if (
     category === "AFP" &&
     assignmentSource !== "engine_no_availability_afp_fallback" &&
+    assignmentSource !== "engine_afp_cap_overflow_available" &&
     assignmentSource !== "manual" &&
-    currentNormalMinutes + hoursToMinutes(shift.durationHours) > afpCapMinutes
+    wouldExceedAfpCap
   ) {
     reasonCodes.push("BLOCKED_BY_AFP_CAP");
   }
@@ -151,6 +203,10 @@ export function canAssignShiftToRespondent({
     ok: reasonCodes.length === 0,
     reasonCodes,
     wouldBeBackToBackEmergency: dayTier === 1,
+    wouldExceedAfpCap,
+    wouldViolateAvailability,
+    wouldCreateNonAdjacentSameDayDouble,
+    wouldCreateTripleShiftDay,
   };
 }
 

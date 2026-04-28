@@ -21,6 +21,9 @@ export interface AllocationStats {
   manualAssignmentCount: number;
   backToBackEmergencyCount: number;
   noAvailabilityFallbackCount: number;
+  afpCapOverflowCount: number;
+  renderedBlankButAssignedCount: number;
+  availabilityMappingFailureCount: number;
   nonAdjacentSameDayDoubleCount: number;
   tripleShiftDayCount: number;
   respondentStats: AllocationRespondentStat[];

@@ -13,6 +13,7 @@ export const AllocatedShiftAssignmentSource = {
   engine_normal: "engine_normal",
   engine_back_to_back_emergency: "engine_back_to_back_emergency",
   engine_no_availability_afp_fallback: "engine_no_availability_afp_fallback",
+  engine_afp_cap_overflow_available: "engine_afp_cap_overflow_available",
   manual: "manual",
   blank: "blank",
 } as const;

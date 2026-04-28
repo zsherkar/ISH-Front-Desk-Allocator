@@ -13,4 +13,8 @@ export interface RunAllocationBody {
   afpUnclaimedShiftRespondentIds?: number[];
   /** IDs of respondents to include in this allocation run */
   includedRespondentIds?: number[];
+  /** Allow AFP respondents to exceed their cap for selected-availability shifts only after all normal legal candidates fail */
+  allowAfpOverCapForAvailableShifts?: boolean;
+  /** Preserve existing manual assignments while rerunning the engine */
+  preserveManualLocks?: boolean;
 }
