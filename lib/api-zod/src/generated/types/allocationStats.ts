@@ -15,7 +15,18 @@ export interface AllocationStats {
   minHours: number;
   maxHours: number;
   totalAllocatedHours: number;
+  blankShiftCount: number;
+  blankWithAvailabilityCount: number;
+  noAvailabilityBlankCount: number;
+  manualAssignmentCount: number;
+  backToBackEmergencyCount: number;
+  noAvailabilityFallbackCount: number;
+  nonAdjacentSameDayDoubleCount: number;
+  tripleShiftDayCount: number;
   respondentStats: AllocationRespondentStat[];
   afpStats: AllocationRespondentStat[];
   generalStats: AllocationRespondentStat[];
+  nonPenalizedGeneralStats: AllocationRespondentStat[];
+  penalizedStats: AllocationRespondentStat[];
+  nonPenalizedGeneralMeanHours: number;
 }

@@ -5,6 +5,7 @@
  * Shift Scheduler API
  * OpenAPI spec version: 0.1.0
  */
+import type { AllocatedShiftAssignmentSource } from "./allocatedShiftAssignmentSource";
 import type { AllocatedShiftDayType } from "./allocatedShiftDayType";
 
 export interface AllocatedShift {
@@ -15,4 +16,8 @@ export interface AllocatedShift {
   endTime: string;
   durationHours: number;
   dayType: AllocatedShiftDayType;
+  assignmentSource: AllocatedShiftAssignmentSource;
+  isManual: boolean;
+  isEmergency: boolean;
+  explanationCodes: string[];
 }

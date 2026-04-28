@@ -1,10 +1,18 @@
 import { db, shiftsTable, respondentsTable, responsesTable, allocationsTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
+import {
+  hoursToMinutes,
+  isBackToBack,
+  minutesToHours,
+  sameDayAllocationTier,
+  solveNonAfpPenaltyTargets,
+} from "./allocationCore.js";
 import { safeDisplayName } from "./inputValidation.js";
 
 export interface AllocationOptions {
   surveyId: number;
   afpRespondentIds: number[];
+  afpUnclaimedShiftRespondentIds?: number[];
   includedRespondentIds?: number[];
 }
 
@@ -30,10 +38,6 @@ interface ShiftInfo {
 
 function calcHours(shiftIds: number[], shiftMap: Map<number, ShiftInfo>): number {
   return shiftIds.reduce((sum, id) => sum + (shiftMap.get(id)?.durationHours ?? 0), 0);
-}
-
-function isBackToBack(a: ShiftInfo, b: ShiftInfo): boolean {
-  return a.date === b.date && (a.endTime === b.startTime || b.endTime === a.startTime);
 }
 
 function stdDev(values: number[]): number {
@@ -66,28 +70,6 @@ function addsBackToBack(newShiftId: number, existing: number[], shiftMap: Map<nu
     }
   }
   return false;
-}
-
-function sameDayAllocationTier(
-  newShiftId: number,
-  existing: number[],
-  shiftMap: Map<number, ShiftInfo>,
-): 0 | 1 | 2 {
-  const nextShift = shiftMap.get(newShiftId)!;
-  const sameDayShiftIds = existing.filter((id) => shiftMap.get(id)?.date === nextShift.date);
-
-  if (sameDayShiftIds.length === 0) {
-    return 0;
-  }
-
-  if (
-    sameDayShiftIds.length === 1 &&
-    isBackToBack(nextShift, shiftMap.get(sameDayShiftIds[0])!)
-  ) {
-    return 1;
-  }
-
-  return 2;
 }
 
 function canAddShiftOnDay(
@@ -201,8 +183,9 @@ export async function runAllocation(options: AllocationOptions): Promise<{
   stdDev: number;
   unallocatedShiftIds: number[];
 }> {
-  const { surveyId, afpRespondentIds, includedRespondentIds } = options;
+  const { surveyId, afpRespondentIds, afpUnclaimedShiftRespondentIds, includedRespondentIds } = options;
   const afpIdSet = new Set(afpRespondentIds);
+  const afpUnclaimedShiftIdSet = new Set(afpUnclaimedShiftRespondentIds ?? []);
   const includedIdSet = includedRespondentIds?.length ? new Set(includedRespondentIds) : null;
 
   const shifts = await db.select().from(shiftsTable).where(eq(shiftsTable.surveyId, surveyId));
@@ -263,9 +246,11 @@ export async function runAllocation(options: AllocationOptions): Promise<{
   const allRespondents = Array.from(respondentMap.values());
   const afpRespondents = allRespondents.filter((r) => r.category === "AFP");
   const generalRespondents = allRespondents.filter((r) => r.category === "General");
+  const afpUnclaimedShiftRespondents = afpRespondents.filter((r) => afpUnclaimedShiftIdSet.has(r.id));
 
   const assignedShiftIds = new Set<number>();
   const plans: AllocationPlan[] = [];
+  const afpAllocations = new Map<number, number[]>();
 
   const totalShiftHours = shifts.reduce((s, sh) => s + sh.durationHours, 0);
   const weekdayHours = shifts.filter((s) => s.dayType === "weekday").reduce((s, sh) => s + sh.durationHours, 0);
@@ -293,19 +278,46 @@ export async function runAllocation(options: AllocationOptions): Promise<{
     }
 
     for (const id of allocated) assignedShiftIds.add(id);
-
-    plans.push({
-      respondentId: afp.id,
-      name: afp.name,
-      category: "AFP",
-      shiftIds: allocated,
-      totalHours: calcHours(allocated, shiftMap),
-      isManuallyAdjusted: false,
-      penaltyNote: null,
-    });
+    afpAllocations.set(afp.id, allocated);
   }
 
   if (generalRespondents.length === 0) {
+    for (const shift of shifts) {
+      if (assignedShiftIds.has(shift.id)) continue;
+      const selectedByAnyone = allRespondents.some((respondent) => respondent.availableShiftIds.has(shift.id));
+      if (selectedByAnyone) continue;
+
+      const best = afpUnclaimedShiftRespondents
+        .map((respondent) => {
+          const current = afpAllocations.get(respondent.id) ?? [];
+          return {
+            respondent,
+            current,
+            currentHours: calcHours(current, shiftMap),
+            dayTier: sameDayAllocationTier(shift.id, current, shiftMap),
+          };
+        })
+        .filter((candidate) => candidate.dayTier < 2)
+        .sort((a, b) => a.dayTier - b.dayTier || a.currentHours - b.currentHours || a.respondent.name.localeCompare(b.respondent.name))[0];
+
+      if (best) {
+        afpAllocations.set(best.respondent.id, [...best.current, shift.id]);
+        assignedShiftIds.add(shift.id);
+      }
+    }
+
+    for (const afp of afpRespondents) {
+      const shiftIds = afpAllocations.get(afp.id) ?? [];
+      plans.push({
+        respondentId: afp.id,
+        name: afp.name,
+        category: "AFP",
+        shiftIds,
+        totalHours: calcHours(shiftIds, shiftMap),
+        isManuallyAdjusted: false,
+        penaltyNote: null,
+      });
+    }
     const allHrs = plans.map((p) => p.totalHours);
     const avg = allHrs.length > 0 ? allHrs.reduce((a, b) => a + b, 0) / allHrs.length : 0;
     const unallocated = shifts.map((s) => s.id).filter((id) => !assignedShiftIds.has(id));
@@ -313,25 +325,31 @@ export async function runAllocation(options: AllocationOptions): Promise<{
   }
 
   const remainingShifts = shifts.filter((s) => !assignedShiftIds.has(s.id));
-  const totalRemainingHours = remainingShifts.reduce((s, sh) => s + sh.durationHours, 0);
-  const baseTargetPerGeneral = totalRemainingHours / generalRespondents.length;
-  const penalizedGeneralRespondents = generalRespondents.filter((r) => r.hasPenalty && r.penaltyHours > 0);
-  const regularGeneralRespondents = generalRespondents.filter((r) => !(r.hasPenalty && r.penaltyHours > 0));
-  const penalizedTargets = new Map(
-    penalizedGeneralRespondents.map((r) => [r.id, Math.max(0, baseTargetPerGeneral - (r.penaltyHours / 2))]),
+  const generalAssignableShifts = remainingShifts.filter((shift) =>
+    generalRespondents.some((respondent) => respondent.availableShiftIds.has(shift.id)),
   );
-  const regularTargetHours = regularGeneralRespondents.length > 0
-    ? Math.max(
-      0,
-      (totalRemainingHours - Array.from(penalizedTargets.values()).reduce((sum, value) => sum + value, 0)) /
-        regularGeneralRespondents.length,
-    )
-    : baseTargetPerGeneral;
+  const generalAssignableShiftIds = new Set(generalAssignableShifts.map((shift) => shift.id));
+  const totalRemainingHours = generalAssignableShifts.reduce((s, sh) => s + sh.durationHours, 0);
+  const regularGeneralRespondents = generalRespondents.filter((r) => !(r.hasPenalty && r.penaltyHours > 0));
+  const targetResult = solveNonAfpPenaltyTargets(
+    generalRespondents.map((respondent) => ({
+      respondentId: respondent.id,
+      penaltyMinutes: hoursToMinutes(respondent.hasPenalty ? respondent.penaltyHours : 0),
+      capacityMinutes: Array.from(respondent.availableShiftIds)
+        .filter((id) => generalAssignableShiftIds.has(id))
+        .reduce((sum, id) => sum + hoursToMinutes(shiftMap.get(id)?.durationHours ?? 0), 0),
+    })),
+    hoursToMinutes(totalRemainingHours),
+  );
+  const regularTargetHours = minutesToHours(targetResult.baselineMinutes);
+  const penaltyTargetByRespondentId = new Map(
+    targetResult.targets.map((target) => [target.respondentId, minutesToHours(target.targetMinutes)]),
+  );
   const targetByRespondentId = new Map<number, number>();
   for (const respondent of generalRespondents) {
     targetByRespondentId.set(
       respondent.id,
-      penalizedTargets.get(respondent.id) ?? regularTargetHours,
+      penaltyTargetByRespondentId.get(respondent.id) ?? regularTargetHours,
     );
   }
 
@@ -373,7 +391,7 @@ export async function runAllocation(options: AllocationOptions): Promise<{
         const current = generalAllocations.get(respondent.id)!;
         const currentHours = calcHours(current, shiftMap);
         const afterHours = currentHours + shift.durationHours;
-        const respondentTargetHours = targetByRespondentId.get(respondent.id) ?? baseTargetPerGeneral;
+        const respondentTargetHours = targetByRespondentId.get(respondent.id) ?? regularTargetHours;
         return {
           respondent,
           current,
@@ -481,7 +499,7 @@ export async function runAllocation(options: AllocationOptions): Promise<{
           const toDayTier = sameDayAllocationTier(shiftId, toShiftIds, shiftMap);
           if (toDayTier >= 2) continue;
           if (toDayTier === 1 && hasNoSameDayRecipient) continue;
-          const toTarget = targetByRespondentId.get(to.id) ?? baseTargetPerGeneral;
+          const toTarget = targetByRespondentId.get(to.id) ?? regularTargetHours;
           if (
             regularGeneralRespondents.length > 0 &&
             to.hasPenalty &&
@@ -494,7 +512,7 @@ export async function runAllocation(options: AllocationOptions): Promise<{
           const nextStdDev = stdDev(getMoveAdjustedHours(from.id, to.id, shiftId));
           if (nextStdDev < currentStdDev - 0.01) {
             const existingBest = bestMove?.nextStdDev ?? Infinity;
-            const fromTarget = targetByRespondentId.get(from.id) ?? baseTargetPerGeneral;
+            const fromTarget = targetByRespondentId.get(from.id) ?? regularTargetHours;
             const targetImprovement =
               Math.abs(fromHours - fromTarget) + Math.abs(toHours - toTarget) -
               (Math.abs(fromHours - shift.durationHours - fromTarget) +
@@ -517,6 +535,102 @@ export async function runAllocation(options: AllocationOptions): Promise<{
       generalAllocations.get(bestMove.toId)!.push(bestMove.shiftId);
       improved = true;
     }
+  }
+
+  const assignFallbackShift = (
+    shiftId: number,
+    respondents: typeof allRespondents,
+    allocationMap: Map<number, number[]>,
+    requireAvailability: boolean,
+    allowAfpCapOverage: boolean,
+  ): boolean => {
+    const shift = shiftMap.get(shiftId)!;
+    const candidates = respondents
+      .filter((respondent) => !requireAvailability || respondent.availableShiftIds.has(shiftId))
+      .map((respondent) => {
+        const current = allocationMap.get(respondent.id) ?? [];
+        const currentHours = calcHours(current, shiftMap);
+        const afterHours = currentHours + shift.durationHours;
+        const targetHours = targetByRespondentId.get(respondent.id) ?? regularTargetHours;
+        return {
+          respondent,
+          current,
+          currentHours,
+          afterHours,
+          targetHours,
+          capBlocked:
+            respondent.category === "AFP" &&
+            !allowAfpCapOverage &&
+            afterHours > respondent.afpHoursCap + 0.01,
+          dayTier: sameDayAllocationTier(shiftId, current, shiftMap),
+          isPenalized: respondent.hasPenalty && respondent.penaltyHours > 0,
+        };
+      })
+      .filter((candidate) => candidate.dayTier < 2 && !candidate.capBlocked);
+
+    if (candidates.length === 0) return false;
+
+    const bestDayTier = Math.min(...candidates.map((candidate) => candidate.dayTier));
+    const best = candidates
+      .filter((candidate) => candidate.dayTier === bestDayTier)
+      .sort((a, b) => {
+        const penalizedOverTargetDiff =
+          Number(a.isPenalized && a.afterHours > a.targetHours + 0.01) -
+          Number(b.isPenalized && b.afterHours > b.targetHours + 0.01);
+        if (penalizedOverTargetDiff !== 0) return penalizedOverTargetDiff;
+
+        const overTargetDiff =
+          Math.max(0, a.afterHours - a.targetHours) - Math.max(0, b.afterHours - b.targetHours);
+        if (Math.abs(overTargetDiff) > 0.01) return overTargetDiff;
+
+        return a.currentHours - b.currentHours || a.respondent.name.localeCompare(b.respondent.name);
+      })[0];
+
+    if (!best) return false;
+    allocationMap.set(best.respondent.id, [...best.current, shiftId]);
+    assignedShiftIds.add(shiftId);
+    return true;
+  };
+
+  for (const shift of shifts) {
+    if (assignedShiftIds.has(shift.id)) continue;
+    if (generalRespondents.some((respondent) => respondent.availableShiftIds.has(shift.id))) {
+      assignFallbackShift(shift.id, generalRespondents, generalAllocations, true, false);
+    }
+  }
+
+  for (const shift of shifts) {
+    if (assignedShiftIds.has(shift.id)) continue;
+    const selectedByAnyone = allRespondents.some((respondent) => respondent.availableShiftIds.has(shift.id));
+    if (selectedByAnyone) {
+      assignFallbackShift(shift.id, afpRespondents, afpAllocations, true, false);
+    }
+  }
+
+  for (const shift of shifts) {
+    if (assignedShiftIds.has(shift.id)) continue;
+    const selectedByAnyone = allRespondents.some((respondent) => respondent.availableShiftIds.has(shift.id));
+    if (!selectedByAnyone) {
+      assignFallbackShift(shift.id, afpUnclaimedShiftRespondents, afpAllocations, false, true);
+    }
+  }
+
+  for (const afp of afpRespondents) {
+    const shiftIds = (afpAllocations.get(afp.id) ?? []).sort((a, b) =>
+      `${shiftMap.get(a)!.date}-${shiftMap.get(a)!.startTime}`.localeCompare(
+        `${shiftMap.get(b)!.date}-${shiftMap.get(b)!.startTime}`,
+      ),
+    );
+
+    plans.push({
+      respondentId: afp.id,
+      name: afp.name,
+      category: "AFP",
+      shiftIds,
+      totalHours: calcHours(shiftIds, shiftMap),
+      isManuallyAdjusted: false,
+      penaltyNote: null,
+    });
   }
 
   for (const r of sortedByAvailability) {

@@ -16,4 +16,7 @@ export interface AllocationRespondentStat {
   weekendShifts: number;
   shiftCount: number;
   isManuallyAdjusted: boolean;
+  hasPenalty: boolean;
+  penaltyHours: number;
+  penaltyGapHours: number;
 }

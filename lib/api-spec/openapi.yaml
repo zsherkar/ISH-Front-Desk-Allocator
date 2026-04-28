@@ -805,6 +805,11 @@ components:
           items:
             type: integer
           description: IDs of respondents to treat as AFP (capped at 10 hours each)
+        afpUnclaimedShiftRespondentIds:
+          type: array
+          items:
+            type: integer
+          description: AFP respondent IDs that should receive shifts nobody selected, even above their cap
         includedRespondentIds:
           type: array
           items:
@@ -832,6 +837,22 @@ components:
         dayType:
           type: string
           enum: [weekday, weekend]
+        assignmentSource:
+          type: string
+          enum:
+            - engine_normal
+            - engine_back_to_back_emergency
+            - engine_no_availability_afp_fallback
+            - manual
+            - blank
+        isManual:
+          type: boolean
+        isEmergency:
+          type: boolean
+        explanationCodes:
+          type: array
+          items:
+            type: string
       required:
         - shiftId
         - date
@@ -840,6 +861,82 @@ components:
         - endTime
         - durationHours
         - dayType
+        - assignmentSource
+        - isManual
+        - isEmergency
+        - explanationCodes
+
+    BlankShiftAvailableRespondent:
+      type: object
+      properties:
+        respondentId:
+          type: integer
+        name:
+          type: string
+        category:
+          type: string
+          enum: [AFP, General]
+        blockers:
+          type: array
+          items:
+            type: string
+      required:
+        - respondentId
+        - name
+        - category
+        - blockers
+
+    BlankShiftExplanation:
+      type: object
+      properties:
+        shiftId:
+          type: integer
+        date:
+          type: string
+          format: date
+        label:
+          type: string
+        startTime:
+          type: string
+        endTime:
+          type: string
+        durationHours:
+          type: number
+        availabilityCount:
+          type: integer
+        availableRespondents:
+          type: array
+          items:
+            $ref: "#/components/schemas/BlankShiftAvailableRespondent"
+        reasonCategory:
+          type: string
+          enum:
+            - NO_AVAILABILITY
+            - NO_FALLBACK_AFP_SELECTED
+            - ALL_AVAILABLE_BLOCKED_BY_SAME_DAY
+            - ALL_AVAILABLE_BLOCKED_BY_AFP_CAP
+            - ALL_AVAILABLE_BLOCKED_BY_MANUAL_LOCK
+            - ALL_AVAILABLE_BLOCKED_BY_MIXED_CONSTRAINTS
+            - ENGINE_REPAIR_LIMIT_REACHED
+            - UNKNOWN
+        explanationCodes:
+          type: array
+          items:
+            type: string
+        explanationText:
+          type: string
+      required:
+        - shiftId
+        - date
+        - label
+        - startTime
+        - endTime
+        - durationHours
+        - availabilityCount
+        - availableRespondents
+        - reasonCategory
+        - explanationCodes
+        - explanationText
 
     RespondentAllocation:
       type: object
@@ -886,12 +983,17 @@ components:
           type: array
           items:
             type: integer
+        blankShiftExplanations:
+          type: array
+          items:
+            $ref: "#/components/schemas/BlankShiftExplanation"
       required:
         - surveyId
         - allocations
         - averageHours
         - stdDev
         - unallocatedShiftIds
+        - blankShiftExplanations
 
     AdjustAllocationBody:
       type: object
@@ -1000,6 +1102,12 @@ components:
           type: integer
         isManuallyAdjusted:
           type: boolean
+        hasPenalty:
+          type: boolean
+        penaltyHours:
+          type: number
+        penaltyGapHours:
+          type: number
       required:
         - respondentId
         - name
@@ -1009,6 +1117,9 @@ components:
         - weekendShifts
         - shiftCount
         - isManuallyAdjusted
+        - hasPenalty
+        - penaltyHours
+        - penaltyGapHours
 
     AllocationStats:
       type: object
@@ -1027,6 +1138,22 @@ components:
           type: number
         totalAllocatedHours:
           type: number
+        blankShiftCount:
+          type: integer
+        blankWithAvailabilityCount:
+          type: integer
+        noAvailabilityBlankCount:
+          type: integer
+        manualAssignmentCount:
+          type: integer
+        backToBackEmergencyCount:
+          type: integer
+        noAvailabilityFallbackCount:
+          type: integer
+        nonAdjacentSameDayDoubleCount:
+          type: integer
+        tripleShiftDayCount:
+          type: integer
         respondentStats:
           type: array
           items:
@@ -1039,6 +1166,16 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/AllocationRespondentStat"
+        nonPenalizedGeneralStats:
+          type: array
+          items:
+            $ref: "#/components/schemas/AllocationRespondentStat"
+        penalizedStats:
+          type: array
+          items:
+            $ref: "#/components/schemas/AllocationRespondentStat"
+        nonPenalizedGeneralMeanHours:
+          type: number
       required:
         - meanHours
         - averageHours
@@ -1047,9 +1184,20 @@ components:
         - minHours
         - maxHours
         - totalAllocatedHours
+        - blankShiftCount
+        - blankWithAvailabilityCount
+        - noAvailabilityBlankCount
+        - manualAssignmentCount
+        - backToBackEmergencyCount
+        - noAvailabilityFallbackCount
+        - nonAdjacentSameDayDoubleCount
+        - tripleShiftDayCount
         - respondentStats
         - afpStats
         - generalStats
+        - nonPenalizedGeneralStats
+        - penalizedStats
+        - nonPenalizedGeneralMeanHours
 
     RespondentFdHistoryMonthlyEntry:
       type: object

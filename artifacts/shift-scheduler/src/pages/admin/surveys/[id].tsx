@@ -27,7 +27,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import {
   ArrowLeft, Lock, LockOpen, Calendar, Users, BarChart3,
-  Clock, Settings, BrainCircuit, CheckCircle2, Download, Image,
+  Clock, Settings, BrainCircuit, CheckCircle2, Download, FileSpreadsheet, Image,
 } from "lucide-react";
 import { Link } from "wouter";
 import { clsx } from "clsx";
@@ -58,6 +58,11 @@ function isEmailLike(value: string) {
 function displayRespondentName(response: { name: string; preferredName: string }) {
   const preferredName = response.preferredName.trim();
   return preferredName && !isEmailLike(preferredName) ? preferredName : response.name;
+}
+
+function escapeCsvCell(value: string | number | null | undefined) {
+  const text = String(value ?? "");
+  return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 }
 
 type AllocationStatSummary = {
@@ -180,6 +185,7 @@ export function AdminSurveyDetail() {
   const updateRespondentMutation = useUpdateRespondent();
 
   const [afpIds, setAfpIds] = useState<Set<number>>(new Set());
+  const [afpUnclaimedShiftIds, setAfpUnclaimedShiftIds] = useState<Set<number>>(new Set());
   const [showCalendar, setShowCalendar] = useState(false);
   const [selectedRespondentId, setSelectedRespondentId] = useState<number | null>(null);
   const [selectedResponse, setSelectedResponse] = useState<any | null>(null);
@@ -201,13 +207,19 @@ export function AdminSurveyDetail() {
   const didInitializeAfpIds = useRef(false);
   const { data: respondentHistory } = useGetRespondentFdHistory(selectedRespondentId ?? 0);
   const hasExistingAllocations = (allocations?.allocations.length ?? 0) > 0;
+  const blankShiftExplanations = allocations?.blankShiftExplanations ?? [];
   const generalAllocationSummary = useMemo(
     () => summarizeAllocationStats(
+      allocStats?.nonPenalizedGeneralStats ??
       allocStats?.generalStats ??
       allocations?.allocations.filter((allocation) => allocation.category === "General") ??
       [],
     ),
-    [allocStats?.generalStats, allocations?.allocations],
+    [allocStats?.generalStats, allocStats?.nonPenalizedGeneralStats, allocations?.allocations],
+  );
+  const penalizedAllocationSummary = useMemo(
+    () => summarizeAllocationStats(allocStats?.penalizedStats ?? []),
+    [allocStats?.penalizedStats],
   );
   const afpAllocationSummary = useMemo(
     () => summarizeAllocationStats(
@@ -238,9 +250,24 @@ export function AdminSurveyDetail() {
 
   const toggleAfp = (id: number) => {
     const next = new Set(afpIds);
+    if (next.has(id)) {
+      next.delete(id);
+      setAfpUnclaimedShiftIds((prev) => {
+        const fallbackNext = new Set(prev);
+        fallbackNext.delete(id);
+        return fallbackNext;
+      });
+    } else {
+      next.add(id);
+    }
+    setAfpIds(next);
+  };
+
+  const toggleAfpUnclaimedShift = (id: number) => {
+    const next = new Set(afpUnclaimedShiftIds);
     if (next.has(id)) next.delete(id);
     else next.add(id);
-    setAfpIds(next);
+    setAfpUnclaimedShiftIds(next);
   };
 
   const toggleIncludedRespondent = (id: number) => {
@@ -303,6 +330,13 @@ export function AdminSurveyDetail() {
       else next.delete(selectedResponse.respondentId);
       return next;
     });
+    if (updatedRespondent.category !== "AFP") {
+      setAfpUnclaimedShiftIds((prev) => {
+        const next = new Set(prev);
+        next.delete(selectedResponse.respondentId);
+        return next;
+      });
+    }
   };
 
   const updateResponseSettings = async (
@@ -344,7 +378,16 @@ export function AdminSurveyDetail() {
       return;
     }
     runAllocMutation.mutate(
-      { id: surveyId, data: { afpRespondentIds: Array.from(afpIds), includedRespondentIds: Array.from(includedRespondentIds) } },
+      {
+        id: surveyId,
+        data: {
+          afpRespondentIds: Array.from(afpIds),
+          afpUnclaimedShiftRespondentIds: Array.from(afpUnclaimedShiftIds).filter((respondentId) =>
+            afpIds.has(respondentId),
+          ),
+          includedRespondentIds: Array.from(includedRespondentIds),
+        },
+      },
       { onSuccess: () => setShowCalendar(true) }
     );
   };
@@ -455,6 +498,92 @@ export function AdminSurveyDetail() {
     }
 
     pdf.save(`${survey?.title ?? "schedule"}.pdf`);
+  };
+
+  const downloadExcel = () => {
+    if (!survey?.shifts || !allocations?.allocations) return;
+
+    const respondentById = new Map((responses ?? []).map((response) => [response.respondentId, response]));
+    const blankByShiftId = new Map(blankShiftExplanations.map((blank) => [blank.shiftId, blank]));
+    const allocationByShiftId = new Map<
+      number,
+      {
+        name: string;
+        email: string;
+        category: string;
+        totalHours: number;
+        assignmentSource: string;
+        isManual: boolean;
+        isEmergency: boolean;
+        explanationCodes: string[];
+      }
+    >();
+    for (const allocation of allocations.allocations) {
+      const respondent = respondentById.get(allocation.respondentId);
+      for (const shift of allocation.allocatedShifts) {
+        allocationByShiftId.set(shift.shiftId, {
+          name: allocation.name,
+          email: respondent?.email ?? "",
+          category: allocation.category,
+          totalHours: allocation.totalHours,
+          assignmentSource: shift.assignmentSource,
+          isManual: shift.isManual,
+          isEmergency: shift.isEmergency,
+          explanationCodes: shift.explanationCodes,
+        });
+      }
+    }
+
+    const rows = [
+      [
+        "date",
+        "day_of_week",
+        "shift_label",
+        "start_time",
+        "end_time",
+        "duration_hours",
+        "assigned_name",
+        "assigned_email",
+        "assigned_category",
+        "assignment_source",
+        "is_manual",
+        "is_emergency",
+        "is_blank",
+        "blank_reason",
+        "notes",
+      ],
+      ...[...survey.shifts]
+        .sort((a, b) => `${a.date}-${a.startTime}`.localeCompare(`${b.date}-${b.startTime}`))
+        .map((shift) => {
+          const allocation = allocationByShiftId.get(shift.id);
+          const blank = blankByShiftId.get(shift.id);
+          return [
+            shift.date,
+            format(parseISO(shift.date), "EEEE"),
+            formatShiftLabelText(shift.label),
+            formatTime12(shift.startTime),
+            formatTime12(shift.endTime),
+            shift.durationHours,
+            allocation?.name ?? "",
+            allocation?.email ?? "",
+            allocation?.category ?? "",
+            allocation?.assignmentSource ?? "blank",
+            allocation?.isManual ? "yes" : "no",
+            allocation?.isEmergency ? "yes" : "no",
+            allocation ? "no" : "yes",
+            allocation ? "" : (blank?.reasonCategory ?? "UNKNOWN"),
+            allocation?.explanationCodes.join("; ") ?? blank?.explanationText ?? "",
+          ];
+        }),
+    ];
+
+    const csv = rows.map((row) => row.map(escapeCsvCell).join(",")).join("\r\n");
+    const blob = new Blob([`\uFEFF${csv}`], { type: "text/csv;charset=utf-8" });
+    const link = document.createElement("a");
+    link.download = `${survey?.title ?? "schedule"}.csv`;
+    link.href = URL.createObjectURL(blob);
+    link.click();
+    URL.revokeObjectURL(link.href);
   };
 
   if (isSurveyLoading || !survey)
@@ -604,22 +733,31 @@ export function AdminSurveyDetail() {
                       </td>
                       <td className="px-6 py-4">
                         {r.category === "AFP" || afpIds.has(r.respondentId) ? (
-                          <div className="flex items-center gap-2">
-                            <Input
-                              type="number"
-                              min={0}
-                              step={0.5}
-                              defaultValue={r.afpHoursCap ?? 10}
-                              className="h-8 w-20 rounded-md"
-                              onBlur={(event) => {
-                                const value = Math.max(0, Number(event.currentTarget.value || 10));
-                                if (value !== Number(r.afpHoursCap ?? 10)) {
-                                  void updateResponseSettings(r, { afpHoursCap: value });
-                                }
-                              }}
-                            />
-                            <span className="text-xs text-slate-500">hrs</span>
-                          </div>
+                          <>
+                            <div className="flex items-center gap-2">
+                              <Input
+                                type="number"
+                                min={0}
+                                step={0.5}
+                                defaultValue={r.afpHoursCap ?? 10}
+                                className="h-8 w-20 rounded-md"
+                                onBlur={(event) => {
+                                  const value = Math.max(0, Number(event.currentTarget.value || 10));
+                                  if (value !== Number(r.afpHoursCap ?? 10)) {
+                                    void updateResponseSettings(r, { afpHoursCap: value });
+                                  }
+                                }}
+                              />
+                              <span className="text-xs text-slate-500">hrs</span>
+                            </div>
+                            <label className="mt-2 flex items-center gap-2 text-xs text-slate-600">
+                              <Checkbox
+                                checked={afpUnclaimedShiftIds.has(r.respondentId)}
+                                onCheckedChange={() => toggleAfpUnclaimedShift(r.respondentId)}
+                              />
+                              Take no-availability shifts
+                            </label>
+                          </>
                         ) : (
                           <span className="text-slate-400">-</span>
                         )}
@@ -741,24 +879,36 @@ export function AdminSurveyDetail() {
                         <p className="font-medium text-slate-900 text-sm leading-tight">{r.preferredName || r.name}</p>
                         <p className="text-xs text-slate-400">{r.totalAvailableHours} hrs avail.</p>
                         {afpIds.has(r.respondentId) && (
-                          <div className="mt-2 flex items-center gap-2">
-                            <span className="text-xs text-slate-500">Cap</span>
-                            <Input
-                              type="number"
-                              min={0}
-                              step={0.5}
-                              defaultValue={r.afpHoursCap ?? 10}
-                              className="h-7 w-20 rounded-md bg-white"
+                          <>
+                            <div className="mt-2 flex items-center gap-2">
+                              <span className="text-xs text-slate-500">Cap</span>
+                              <Input
+                                type="number"
+                                min={0}
+                                step={0.5}
+                                defaultValue={r.afpHoursCap ?? 10}
+                                className="h-7 w-20 rounded-md bg-white"
+                                onClick={(event) => event.stopPropagation()}
+                                onBlur={(event) => {
+                                  const value = Math.max(0, Number(event.currentTarget.value || 10));
+                                  if (value !== Number(r.afpHoursCap ?? 10)) {
+                                    void updateResponseSettings(r, { afpHoursCap: value });
+                                  }
+                                }}
+                              />
+                              <span className="text-xs text-slate-500">hrs</span>
+                            </div>
+                            <label
+                              className="mt-2 flex items-center gap-2 text-xs text-slate-600"
                               onClick={(event) => event.stopPropagation()}
-                              onBlur={(event) => {
-                                const value = Math.max(0, Number(event.currentTarget.value || 10));
-                                if (value !== Number(r.afpHoursCap ?? 10)) {
-                                  void updateResponseSettings(r, { afpHoursCap: value });
-                                }
-                              }}
-                            />
-                            <span className="text-xs text-slate-500">hrs</span>
-                          </div>
+                            >
+                              <Checkbox
+                                checked={afpUnclaimedShiftIds.has(r.respondentId)}
+                                onCheckedChange={() => toggleAfpUnclaimedShift(r.respondentId)}
+                              />
+                              Take blank shifts
+                            </label>
+                          </>
                         )}
                       </div>
                     </label>
@@ -791,7 +941,7 @@ export function AdminSurveyDetail() {
                   <div>
                     <h3 className="font-bold text-indigo-900">Allocation Complete</h3>
                     <p className="text-sm text-indigo-700">
-                      Non-AFP avg: {generalAllocationSummary.average.toFixed(1)} hrs | Non-AFP Std Dev: {generalAllocationSummary.stdDev.toFixed(2)} | AFP cap: 10 hrs
+                      Non-penalized non-AFP avg: {generalAllocationSummary.average.toFixed(1)} hrs | Std Dev: {generalAllocationSummary.stdDev.toFixed(2)} | AFP cap: 10 hrs
                     </p>
                   </div>
                 </div>
@@ -822,6 +972,9 @@ export function AdminSurveyDetail() {
                       </Button>
                       <Button size="sm" variant="outline" onClick={downloadPDF} className="bg-white rounded-xl">
                         <Download className="w-4 h-4 mr-1" /> Download PDF
+                      </Button>
+                      <Button size="sm" variant="outline" onClick={downloadExcel} className="bg-white rounded-xl">
+                        <FileSpreadsheet className="w-4 h-4 mr-1" /> Download Excel
                       </Button>
                     </>
                   )}
@@ -882,7 +1035,20 @@ export function AdminSurveyDetail() {
                         <td className="px-6 py-4">
                           <div className="flex flex-wrap gap-2">
                             {a.allocatedShifts.map((s) => (
-                              <span key={s.shiftId} className="inline-flex items-center px-2.5 py-1 rounded-md text-xs font-medium bg-slate-100 text-slate-700">
+                              <span
+                                key={s.shiftId}
+                                className={clsx(
+                                  "inline-flex items-center px-2.5 py-1 rounded-md text-xs font-medium",
+                                  s.isManual
+                                    ? "bg-amber-100 text-amber-800"
+                                    : s.isEmergency
+                                      ? "bg-rose-100 text-rose-800"
+                                      : s.assignmentSource === "engine_no_availability_afp_fallback"
+                                        ? "bg-indigo-100 text-indigo-800"
+                                        : "bg-slate-100 text-slate-700",
+                                )}
+                                title={s.assignmentSource}
+                              >
                                 {formatShiftLabelText(s.label)}
                               </span>
                             ))}
@@ -934,6 +1100,37 @@ export function AdminSurveyDetail() {
                   <p className="text-2xl font-bold text-slate-900">{allocStats.totalAllocatedHours.toFixed(1)} <span className="text-sm text-slate-400 font-normal">hrs</span></p>
                 </div>
                 <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
+                  <p className="text-sm font-medium text-slate-500 mb-1">Blank Shifts</p>
+                  <p className="text-2xl font-bold text-slate-900">{allocStats.blankShiftCount}</p>
+                  <p className="mt-1 text-xs text-rose-600">{allocStats.blankWithAvailabilityCount} had availability</p>
+                </div>
+                <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
+                  <p className="text-sm font-medium text-slate-500 mb-1">No-Availability Blanks</p>
+                  <p className="text-2xl font-bold text-slate-900">{allocStats.noAvailabilityBlankCount}</p>
+                </div>
+                <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
+                  <p className="text-sm font-medium text-slate-500 mb-1">Back-to-Back Emergency</p>
+                  <p className="text-2xl font-bold text-slate-900">{allocStats.backToBackEmergencyCount}</p>
+                </div>
+                <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
+                  <p className="text-sm font-medium text-slate-500 mb-1">AFP Fallback</p>
+                  <p className="text-2xl font-bold text-slate-900">{allocStats.noAvailabilityFallbackCount}</p>
+                  <p className="mt-1 text-xs text-slate-500">Only shifts nobody selected</p>
+                </div>
+                <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
+                  <p className="text-sm font-medium text-slate-500 mb-1">Manual Assignments</p>
+                  <p className="text-2xl font-bold text-slate-900">{allocStats.manualAssignmentCount}</p>
+                </div>
+                <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
+                  <p className="text-sm font-medium text-slate-500 mb-1">Hard Same-Day Issues</p>
+                  <p className={clsx(
+                    "text-2xl font-bold",
+                    allocStats.nonAdjacentSameDayDoubleCount + allocStats.tripleShiftDayCount > 0 ? "text-rose-700" : "text-slate-900",
+                  )}>
+                    {allocStats.nonAdjacentSameDayDoubleCount + allocStats.tripleShiftDayCount}
+                  </p>
+                </div>
+                <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
                   <p className="text-sm font-medium text-slate-500 mb-1">Min Hours</p>
                   <p className="text-2xl font-bold text-slate-900">{allocStats.minHours} <span className="text-sm text-slate-400 font-normal">hrs</span></p>
                 </div>
@@ -942,11 +1139,16 @@ export function AdminSurveyDetail() {
                   <p className="text-2xl font-bold text-slate-900">{allocStats.maxHours} <span className="text-sm text-slate-400 font-normal">hrs</span></p>
                 </div>
               </div>
-              <div className="grid gap-4 xl:grid-cols-2">
+              <div className="grid gap-4 xl:grid-cols-3">
                 <AllocationSummaryPanel
-                  title="Non-AFP Allocation"
-                  note="Fairness is measured here, after AFP shifts are capped and removed from the remaining pool."
+                  title="Non-Penalized Non-AFP"
+                  note="This mean is the baseline used to check strike gaps."
                   summary={generalAllocationSummary}
+                />
+                <AllocationSummaryPanel
+                  title="Penalized Non-AFP"
+                  note="Each person here should sit roughly their strike hours below the non-penalized mean."
+                  summary={penalizedAllocationSummary}
                 />
                 <AllocationSummaryPanel
                   title="AFP Allocation"
@@ -954,6 +1156,93 @@ export function AdminSurveyDetail() {
                   summary={afpAllocationSummary}
                 />
               </div>
+              {allocStats.penalizedStats.length > 0 && (
+                <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden mt-4">
+                  <div className="p-4 border-b border-slate-100 bg-slate-50/50">
+                    <h3 className="font-bold text-slate-900">Strike Gap Check</h3>
+                    <p className="mt-1 text-sm text-slate-500">
+                      Non-penalized non-AFP mean: {allocStats.nonPenalizedGeneralMeanHours.toFixed(1)} hrs
+                    </p>
+                  </div>
+                  <table className="w-full text-sm text-left">
+                    <thead className="bg-slate-50 text-slate-500 font-medium">
+                      <tr>
+                        <th className="px-6 py-3">Name</th>
+                        <th className="px-6 py-3">Penalty</th>
+                        <th className="px-6 py-3">Allocated</th>
+                        <th className="px-6 py-3">Actual Gap</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {allocStats.penalizedStats.map((s) => (
+                        <tr key={s.respondentId}>
+                          <td className="px-6 py-3 font-medium text-slate-900">{s.name}</td>
+                          <td className="px-6 py-3">{s.penaltyHours.toFixed(1)} hrs</td>
+                          <td className="px-6 py-3 font-bold">{s.totalHours.toFixed(1)} hrs</td>
+                          <td className="px-6 py-3">{s.penaltyGapHours.toFixed(1)} hrs</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+              {blankShiftExplanations.length > 0 && (
+                <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden mt-4">
+                  <div className="p-4 border-b border-slate-100 bg-slate-50/50">
+                    <h3 className="font-bold text-slate-900">Blank Shift Explanations</h3>
+                    <p className="mt-1 text-sm text-slate-500">
+                      Blank shifts with availability are highlighted because the engine could not find a legal assignment under the same-day and cap rules.
+                    </p>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm text-left">
+                      <thead className="bg-slate-50 text-slate-500 font-medium">
+                        <tr>
+                          <th className="px-6 py-3">Shift</th>
+                          <th className="px-6 py-3">Availability</th>
+                          <th className="px-6 py-3">Reason</th>
+                          <th className="px-6 py-3">Available People / Blockers</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {blankShiftExplanations.map((blank) => (
+                          <tr
+                            key={blank.shiftId}
+                            className={blank.availabilityCount > 0 ? "bg-rose-50/50" : undefined}
+                          >
+                            <td className="px-6 py-3 font-medium text-slate-900">
+                              {formatShiftDisplay(blank)}
+                              <div className="text-xs text-slate-500">{blank.durationHours} hrs</div>
+                            </td>
+                            <td className="px-6 py-3">{blank.availabilityCount}</td>
+                            <td className="px-6 py-3">
+                              <Badge variant="outline" className="border-slate-200 bg-white text-slate-700">
+                                {blank.reasonCategory}
+                              </Badge>
+                              <div className="mt-1 text-xs text-slate-500">{blank.explanationText}</div>
+                            </td>
+                            <td className="px-6 py-3 text-xs text-slate-600">
+                              {blank.availableRespondents.length > 0 ? (
+                                <div className="space-y-1">
+                                  {blank.availableRespondents.map((respondent) => (
+                                    <div key={respondent.respondentId}>
+                                      <span className="font-medium text-slate-800">{respondent.name}</span>
+                                      {" - "}
+                                      {respondent.blockers.join(", ")}
+                                    </div>
+                                  ))}
+                                </div>
+                              ) : (
+                                <span className="text-slate-400">No one selected this shift.</span>
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
               <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden mt-4">
                 <div className="p-4 border-b border-slate-100 bg-slate-50/50">
                   <h3 className="font-bold text-slate-900">Per-Respondent Analysis</h3>
@@ -1101,18 +1390,27 @@ export function AdminSurveyDetail() {
                   hours
                 </label>
                 {(selectedCategory === "AFP" || afpIds.has(selectedResponse.respondentId)) && (
-                  <label className="flex items-center gap-2 text-sm text-slate-700 sm:col-span-2">
-                    AFP cap
-                    <Input
-                      type="number"
-                      min={0}
-                      step={0.5}
-                      value={selectedAfpHoursCap}
-                      onChange={(event) => setSelectedAfpHoursCap(Math.max(0, Number(event.target.value || 0)))}
-                      className="h-8 w-20 rounded-md"
-                    />
-                    hours for this survey
-                  </label>
+                  <div className="space-y-2 sm:col-span-2">
+                    <label className="flex items-center gap-2 text-sm text-slate-700">
+                      AFP cap
+                      <Input
+                        type="number"
+                        min={0}
+                        step={0.5}
+                        value={selectedAfpHoursCap}
+                        onChange={(event) => setSelectedAfpHoursCap(Math.max(0, Number(event.target.value || 0)))}
+                        className="h-8 w-20 rounded-md"
+                      />
+                      hours for this survey
+                    </label>
+                    <label className="flex items-center gap-2 text-xs text-slate-600">
+                      <Checkbox
+                        checked={afpUnclaimedShiftIds.has(selectedResponse.respondentId)}
+                        onCheckedChange={() => toggleAfpUnclaimedShift(selectedResponse.respondentId)}
+                      />
+                      Assign no-availability shifts to this AFP when allocation runs
+                    </label>
+                  </div>
                 )}
               </div>
               <div className="max-h-72 overflow-auto rounded-lg border border-slate-200 p-3">
