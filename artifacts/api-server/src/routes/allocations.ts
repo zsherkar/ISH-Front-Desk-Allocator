@@ -136,6 +136,9 @@ router.post("/surveys/:id/allocate", async (req, res): Promise<void> => {
     parsed.data.includedRespondentIds,
   );
   const afpRespondentIds = dedupePositiveIntegerIds(parsed.data.afpRespondentIds);
+  const afpUnclaimedShiftRespondentIds = dedupePositiveIntegerIds(
+    parsed.data.afpUnclaimedShiftRespondentIds,
+  );
 
   const invalidIncludedRespondentIds = includedRespondentIds.filter(
     (respondentId) => !surveyRespondentIdSet.has(respondentId),
@@ -161,6 +164,13 @@ router.post("/surveys/:id/allocate", async (req, res): Promise<void> => {
     return;
   }
 
+  if (
+    afpUnclaimedShiftRespondentIds.some((respondentId) => !afpRespondentIds.includes(respondentId))
+  ) {
+    res.status(400).json({ error: "No-availability fallback respondents must be selected AFP respondents." });
+    return;
+  }
+
   if (includedRespondentIds?.length) {
     await db
       .update(respondentsTable)
@@ -181,6 +191,7 @@ router.post("/surveys/:id/allocate", async (req, res): Promise<void> => {
   const result = await runAllocation({
     surveyId: id,
     afpRespondentIds,
+    afpUnclaimedShiftRespondentIds,
     includedRespondentIds,
   });
 
@@ -357,21 +368,57 @@ router.get("/surveys/:id/allocation-stats", async (req, res): Promise<void> => {
 
   const allocationResult = await buildAllocationResult(id);
   const { allocations } = allocationResult;
+  const responseSettings = await db
+    .select({
+      respondentId: responsesTable.respondentId,
+      hasPenalty: responsesTable.hasPenalty,
+      penaltyHours: responsesTable.penaltyHours,
+    })
+    .from(responsesTable)
+    .where(eq(responsesTable.surveyId, id));
+  const penaltyByRespondentId = new Map<number, { hasPenalty: boolean; penaltyHours: number }>();
+  for (const response of responseSettings) {
+    const current = penaltyByRespondentId.get(response.respondentId) ?? {
+      hasPenalty: false,
+      penaltyHours: 0,
+    };
+    penaltyByRespondentId.set(response.respondentId, {
+      hasPenalty: current.hasPenalty || Boolean(response.hasPenalty),
+      penaltyHours: Math.max(current.penaltyHours, response.hasPenalty ? response.penaltyHours ?? 0 : 0),
+    });
+  }
 
-  const toStat = (a: typeof allocations[0]) => ({
-    respondentId: a.respondentId,
-    name: a.name,
-    category: a.category,
-    totalHours: a.totalHours,
-    weekdayShifts: a.allocatedShifts.filter((s) => s.dayType === "weekday").length,
-    weekendShifts: a.allocatedShifts.filter((s) => s.dayType === "weekend").length,
-    shiftCount: a.allocatedShifts.length,
-    isManuallyAdjusted: a.isManuallyAdjusted,
-  });
+  const toStat = (a: typeof allocations[0]) => {
+    const penalty = penaltyByRespondentId.get(a.respondentId) ?? { hasPenalty: false, penaltyHours: 0 };
+    return {
+      respondentId: a.respondentId,
+      name: a.name,
+      category: a.category,
+      totalHours: a.totalHours,
+      weekdayShifts: a.allocatedShifts.filter((s) => s.dayType === "weekday").length,
+      weekendShifts: a.allocatedShifts.filter((s) => s.dayType === "weekend").length,
+      shiftCount: a.allocatedShifts.length,
+      isManuallyAdjusted: a.isManuallyAdjusted,
+      hasPenalty: penalty.hasPenalty,
+      penaltyHours: penalty.penaltyHours,
+      penaltyGapHours: 0,
+    };
+  };
 
-  const respondentStats = allocations.map(toStat);
-  const afpStats = allocations.filter((a) => a.category === "AFP").map(toStat);
-  const generalStats = allocations.filter((a) => a.category === "General").map(toStat);
+  const baseRespondentStats = allocations.map(toStat);
+  const nonPenalizedGeneralMeanHours = computeAverage(
+    baseRespondentStats
+      .filter((stat) => stat.category === "General" && !stat.hasPenalty)
+      .map((stat) => stat.totalHours),
+  );
+  const respondentStats = baseRespondentStats.map((stat) => ({
+    ...stat,
+    penaltyGapHours: stat.hasPenalty ? nonPenalizedGeneralMeanHours - stat.totalHours : 0,
+  }));
+  const afpStats = respondentStats.filter((a) => a.category === "AFP");
+  const generalStats = respondentStats.filter((a) => a.category === "General");
+  const nonPenalizedGeneralStats = generalStats.filter((a) => !a.hasPenalty);
+  const penalizedStats = generalStats.filter((a) => a.hasPenalty);
 
   const allHours = respondentStats.map((r) => r.totalHours);
   const avg = computeAverage(allHours);
@@ -392,6 +439,9 @@ router.get("/surveys/:id/allocation-stats", async (req, res): Promise<void> => {
     respondentStats,
     afpStats,
     generalStats,
+    nonPenalizedGeneralStats,
+    penalizedStats,
+    nonPenalizedGeneralMeanHours,
   });
 });
 

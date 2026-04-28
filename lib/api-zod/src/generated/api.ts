@@ -165,6 +165,12 @@ export const RunAllocationBody = zod.object({
   afpRespondentIds: zod
     .array(zod.number())
     .describe("IDs of respondents to treat as AFP (capped at 10 hours each)"),
+  afpUnclaimedShiftRespondentIds: zod
+    .array(zod.number())
+    .optional()
+    .describe(
+      "AFP respondent IDs that should receive shifts nobody selected, even above their cap",
+    ),
   includedRespondentIds: zod
     .array(zod.number())
     .optional()
@@ -301,6 +307,9 @@ export const GetAllocationStatsResponse = zod.object({
       weekendShifts: zod.number(),
       shiftCount: zod.number(),
       isManuallyAdjusted: zod.boolean(),
+      hasPenalty: zod.boolean(),
+      penaltyHours: zod.number(),
+      penaltyGapHours: zod.number(),
     }),
   ),
   afpStats: zod.array(
@@ -313,6 +322,9 @@ export const GetAllocationStatsResponse = zod.object({
       weekendShifts: zod.number(),
       shiftCount: zod.number(),
       isManuallyAdjusted: zod.boolean(),
+      hasPenalty: zod.boolean(),
+      penaltyHours: zod.number(),
+      penaltyGapHours: zod.number(),
     }),
   ),
   generalStats: zod.array(
@@ -325,8 +337,42 @@ export const GetAllocationStatsResponse = zod.object({
       weekendShifts: zod.number(),
       shiftCount: zod.number(),
       isManuallyAdjusted: zod.boolean(),
+      hasPenalty: zod.boolean(),
+      penaltyHours: zod.number(),
+      penaltyGapHours: zod.number(),
     }),
   ),
+  nonPenalizedGeneralStats: zod.array(
+    zod.object({
+      respondentId: zod.number(),
+      name: zod.string(),
+      category: zod.enum(["AFP", "General"]),
+      totalHours: zod.number(),
+      weekdayShifts: zod.number(),
+      weekendShifts: zod.number(),
+      shiftCount: zod.number(),
+      isManuallyAdjusted: zod.boolean(),
+      hasPenalty: zod.boolean(),
+      penaltyHours: zod.number(),
+      penaltyGapHours: zod.number(),
+    }),
+  ),
+  penalizedStats: zod.array(
+    zod.object({
+      respondentId: zod.number(),
+      name: zod.string(),
+      category: zod.enum(["AFP", "General"]),
+      totalHours: zod.number(),
+      weekdayShifts: zod.number(),
+      weekendShifts: zod.number(),
+      shiftCount: zod.number(),
+      isManuallyAdjusted: zod.boolean(),
+      hasPenalty: zod.boolean(),
+      penaltyHours: zod.number(),
+      penaltyGapHours: zod.number(),
+    }),
+  ),
+  nonPenalizedGeneralMeanHours: zod.number(),
 });
 
 /**

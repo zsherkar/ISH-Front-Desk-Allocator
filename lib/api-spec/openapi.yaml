@@ -805,6 +805,11 @@ components:
           items:
             type: integer
           description: IDs of respondents to treat as AFP (capped at 10 hours each)
+        afpUnclaimedShiftRespondentIds:
+          type: array
+          items:
+            type: integer
+          description: AFP respondent IDs that should receive shifts nobody selected, even above their cap
         includedRespondentIds:
           type: array
           items:
@@ -1000,6 +1005,12 @@ components:
           type: integer
         isManuallyAdjusted:
           type: boolean
+        hasPenalty:
+          type: boolean
+        penaltyHours:
+          type: number
+        penaltyGapHours:
+          type: number
       required:
         - respondentId
         - name
@@ -1009,6 +1020,9 @@ components:
         - weekendShifts
         - shiftCount
         - isManuallyAdjusted
+        - hasPenalty
+        - penaltyHours
+        - penaltyGapHours
 
     AllocationStats:
       type: object
@@ -1039,6 +1053,16 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/AllocationRespondentStat"
+        nonPenalizedGeneralStats:
+          type: array
+          items:
+            $ref: "#/components/schemas/AllocationRespondentStat"
+        penalizedStats:
+          type: array
+          items:
+            $ref: "#/components/schemas/AllocationRespondentStat"
+        nonPenalizedGeneralMeanHours:
+          type: number
       required:
         - meanHours
         - averageHours
@@ -1050,6 +1074,9 @@ components:
         - respondentStats
         - afpStats
         - generalStats
+        - nonPenalizedGeneralStats
+        - penalizedStats
+        - nonPenalizedGeneralMeanHours
 
     RespondentFdHistoryMonthlyEntry:
       type: object

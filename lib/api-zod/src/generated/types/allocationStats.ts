@@ -18,4 +18,7 @@ export interface AllocationStats {
   respondentStats: AllocationRespondentStat[];
   afpStats: AllocationRespondentStat[];
   generalStats: AllocationRespondentStat[];
+  nonPenalizedGeneralStats: AllocationRespondentStat[];
+  penalizedStats: AllocationRespondentStat[];
+  nonPenalizedGeneralMeanHours: number;
 }

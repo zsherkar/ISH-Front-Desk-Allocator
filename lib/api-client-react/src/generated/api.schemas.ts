@@ -227,6 +227,8 @@ export interface UpdateRespondentBody {
 export interface RunAllocationBody {
   /** IDs of respondents to treat as AFP (capped at 10 hours each) */
   afpRespondentIds: number[];
+  /** AFP respondent IDs that should receive shifts nobody selected, even above their cap */
+  afpUnclaimedShiftRespondentIds?: number[];
   /** IDs of respondents to include in this allocation run */
   includedRespondentIds?: number[];
 }
@@ -342,6 +344,9 @@ export interface AllocationRespondentStat {
   weekendShifts: number;
   shiftCount: number;
   isManuallyAdjusted: boolean;
+  hasPenalty: boolean;
+  penaltyHours: number;
+  penaltyGapHours: number;
 }
 
 export interface AllocationStats {
@@ -355,6 +360,9 @@ export interface AllocationStats {
   respondentStats: AllocationRespondentStat[];
   afpStats: AllocationRespondentStat[];
   generalStats: AllocationRespondentStat[];
+  nonPenalizedGeneralStats: AllocationRespondentStat[];
+  penalizedStats: AllocationRespondentStat[];
+  nonPenalizedGeneralMeanHours: number;
 }
 
 export interface RespondentFdHistoryMonthlyEntry {
