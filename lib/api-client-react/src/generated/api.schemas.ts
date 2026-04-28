@@ -241,6 +241,17 @@ export const AllocatedShiftDayType = {
   weekend: "weekend",
 } as const;
 
+export type AllocatedShiftAssignmentSource =
+  (typeof AllocatedShiftAssignmentSource)[keyof typeof AllocatedShiftAssignmentSource];
+
+export const AllocatedShiftAssignmentSource = {
+  engine_normal: "engine_normal",
+  engine_back_to_back_emergency: "engine_back_to_back_emergency",
+  engine_no_availability_afp_fallback: "engine_no_availability_afp_fallback",
+  manual: "manual",
+  blank: "blank",
+} as const;
+
 export interface AllocatedShift {
   shiftId: number;
   date: string;
@@ -249,6 +260,54 @@ export interface AllocatedShift {
   endTime: string;
   durationHours: number;
   dayType: AllocatedShiftDayType;
+  assignmentSource: AllocatedShiftAssignmentSource;
+  isManual: boolean;
+  isEmergency: boolean;
+  explanationCodes: string[];
+}
+
+export type BlankShiftAvailableRespondentCategory =
+  (typeof BlankShiftAvailableRespondentCategory)[keyof typeof BlankShiftAvailableRespondentCategory];
+
+export const BlankShiftAvailableRespondentCategory = {
+  AFP: "AFP",
+  General: "General",
+} as const;
+
+export interface BlankShiftAvailableRespondent {
+  respondentId: number;
+  name: string;
+  category: BlankShiftAvailableRespondentCategory;
+  blockers: string[];
+}
+
+export type BlankShiftExplanationReasonCategory =
+  (typeof BlankShiftExplanationReasonCategory)[keyof typeof BlankShiftExplanationReasonCategory];
+
+export const BlankShiftExplanationReasonCategory = {
+  NO_AVAILABILITY: "NO_AVAILABILITY",
+  NO_FALLBACK_AFP_SELECTED: "NO_FALLBACK_AFP_SELECTED",
+  ALL_AVAILABLE_BLOCKED_BY_SAME_DAY: "ALL_AVAILABLE_BLOCKED_BY_SAME_DAY",
+  ALL_AVAILABLE_BLOCKED_BY_AFP_CAP: "ALL_AVAILABLE_BLOCKED_BY_AFP_CAP",
+  ALL_AVAILABLE_BLOCKED_BY_MANUAL_LOCK: "ALL_AVAILABLE_BLOCKED_BY_MANUAL_LOCK",
+  ALL_AVAILABLE_BLOCKED_BY_MIXED_CONSTRAINTS:
+    "ALL_AVAILABLE_BLOCKED_BY_MIXED_CONSTRAINTS",
+  ENGINE_REPAIR_LIMIT_REACHED: "ENGINE_REPAIR_LIMIT_REACHED",
+  UNKNOWN: "UNKNOWN",
+} as const;
+
+export interface BlankShiftExplanation {
+  shiftId: number;
+  date: string;
+  label: string;
+  startTime: string;
+  endTime: string;
+  durationHours: number;
+  availabilityCount: number;
+  availableRespondents: BlankShiftAvailableRespondent[];
+  reasonCategory: BlankShiftExplanationReasonCategory;
+  explanationCodes: string[];
+  explanationText: string;
 }
 
 export type RespondentAllocationCategory =
@@ -276,6 +335,7 @@ export interface AllocationResult {
   averageHours: number;
   stdDev: number;
   unallocatedShiftIds: number[];
+  blankShiftExplanations: BlankShiftExplanation[];
 }
 
 export interface AdjustAllocationBody {
@@ -357,6 +417,14 @@ export interface AllocationStats {
   minHours: number;
   maxHours: number;
   totalAllocatedHours: number;
+  blankShiftCount: number;
+  blankWithAvailabilityCount: number;
+  noAvailabilityBlankCount: number;
+  manualAssignmentCount: number;
+  backToBackEmergencyCount: number;
+  noAvailabilityFallbackCount: number;
+  nonAdjacentSameDayDoubleCount: number;
+  tripleShiftDayCount: number;
   respondentStats: AllocationRespondentStat[];
   afpStats: AllocationRespondentStat[];
   generalStats: AllocationRespondentStat[];

@@ -2,6 +2,13 @@ import { Router, type IRouter } from "express";
 import { eq, and, inArray } from "drizzle-orm";
 import { db, surveysTable, shiftsTable, respondentsTable, allocationsTable, responsesTable } from "@workspace/db";
 import { runAllocation } from "../lib/allocationEngine.js";
+import {
+  type AssignmentSource,
+  type ExplanationCode,
+  hoursToMinutes,
+  isBackToBack,
+  sameDayAllocationTier,
+} from "../lib/allocationCore.js";
 import { computeAverage, computeMedian, computeStdDev } from "../lib/stats.js";
 import {
   RunAllocationBody,
@@ -38,6 +45,37 @@ async function buildAllocationResult(surveyId: number) {
 
   const shiftMap = new Map(shifts.map((s) => [s.id, s]));
   const allShiftIds = new Set(shifts.map((s) => s.id));
+  const responseRows = await db
+    .select({
+      shiftId: responsesTable.shiftId,
+      respondentId: responsesTable.respondentId,
+      respondentName: respondentsTable.preferredName,
+      respondentFullName: respondentsTable.name,
+      respondentCategory: respondentsTable.category,
+      afpHoursCap: responsesTable.afpHoursCap,
+    })
+    .from(responsesTable)
+    .innerJoin(respondentsTable, eq(responsesTable.respondentId, respondentsTable.id))
+    .where(eq(responsesTable.surveyId, surveyId));
+  const availableRespondentsByShiftId = new Map<
+    number,
+    {
+      respondentId: number;
+      name: string;
+      category: string;
+      afpHoursCap: number;
+    }[]
+  >();
+  for (const row of responseRows) {
+    const respondents = availableRespondentsByShiftId.get(row.shiftId) ?? [];
+    respondents.push({
+      respondentId: row.respondentId,
+      name: safeDisplayName(row.respondentName, row.respondentFullName),
+      category: row.respondentCategory,
+      afpHoursCap: row.afpHoursCap ?? 10,
+    });
+    availableRespondentsByShiftId.set(row.shiftId, respondents);
+  }
 
   const respondentMap = new Map<
     number,
@@ -46,6 +84,7 @@ async function buildAllocationResult(surveyId: number) {
       name: string;
       category: string;
       shiftIds: number[];
+      manualShiftIds: Set<number>;
       isManuallyAdjusted: boolean;
       penaltyNote: string | null;
     }
@@ -58,21 +97,41 @@ async function buildAllocationResult(surveyId: number) {
         name: safeDisplayName(a.respondentName, a.respondentFullName),
         category: a.respondentCategory,
         shiftIds: [],
+        manualShiftIds: new Set(),
         isManuallyAdjusted: a.isManuallyAdjusted,
         penaltyNote: a.penaltyNote ?? null,
       });
     }
     respondentMap.get(a.respondentId)!.shiftIds.push(a.shiftId);
-    if (a.isManuallyAdjusted) respondentMap.get(a.respondentId)!.isManuallyAdjusted = true;
+    if (a.isManuallyAdjusted) {
+      respondentMap.get(a.respondentId)!.isManuallyAdjusted = true;
+      respondentMap.get(a.respondentId)!.manualShiftIds.add(a.shiftId);
+    }
   }
 
   const allocatedShiftIds = new Set(allocations.map((a) => a.shiftId));
   const unallocatedShiftIds = Array.from(allShiftIds).filter((id) => !allocatedShiftIds.has(id));
+  const allocationShiftIdsByRespondentId = new Map<number, number[]>();
+  for (const respondent of respondentMap.values()) {
+    allocationShiftIdsByRespondentId.set(respondent.respondentId, respondent.shiftIds);
+  }
 
   const allocationsList = Array.from(respondentMap.values()).map((r) => {
     const totalHours = r.shiftIds.reduce((sum, id) => sum + (shiftMap.get(id)?.durationHours ?? 0), 0);
     const allocatedShifts = r.shiftIds.map((id) => {
       const shift = shiftMap.get(id)!;
+      const assignmentSource: AssignmentSource = r.manualShiftIds.has(id)
+        ? "manual"
+        : (availableRespondentsByShiftId.get(id)?.length ?? 0) === 0 && r.category === "AFP"
+          ? "engine_no_availability_afp_fallback"
+          : r.shiftIds.some((otherId) => otherId !== id && isBackToBack(shift, shiftMap.get(otherId)!))
+            ? "engine_back_to_back_emergency"
+            : "engine_normal";
+      const explanationCodes: ExplanationCode[] = assignmentSource === "manual"
+        ? ["MANUAL_OVERRIDE"]
+        : assignmentSource === "engine_no_availability_afp_fallback"
+          ? ["NO_AVAILABILITY"]
+          : [];
       return {
         shiftId: id,
         date: shift.date,
@@ -81,6 +140,10 @@ async function buildAllocationResult(surveyId: number) {
         label: shift.label,
         durationHours: shift.durationHours,
         dayType: shift.dayType as "weekday" | "weekend",
+        assignmentSource,
+        isManual: assignmentSource === "manual",
+        isEmergency: assignmentSource === "engine_back_to_back_emergency",
+        explanationCodes,
       };
     }).sort((a, b) => `${a.date}-${a.startTime}`.localeCompare(`${b.date}-${b.startTime}`));
     return {
@@ -94,11 +157,83 @@ async function buildAllocationResult(surveyId: number) {
     };
   }).sort((a, b) => a.name.localeCompare(b.name));
 
+  const blankShiftExplanations = unallocatedShiftIds.map((shiftId) => {
+    const shift = shiftMap.get(shiftId)!;
+    const availableRespondents = availableRespondentsByShiftId.get(shiftId) ?? [];
+    const availableWithBlockers = availableRespondents.map((respondent) => {
+      const existingShiftIds = allocationShiftIdsByRespondentId.get(respondent.respondentId) ?? [];
+      const blockers: ExplanationCode[] = [];
+      const dayTier = sameDayAllocationTier(shiftId, existingShiftIds, shiftMap);
+      if (dayTier === 2) {
+        const sameDayCount = existingShiftIds.filter((id) => shiftMap.get(id)?.date === shift.date).length;
+        blockers.push(
+          sameDayCount >= 2 ? "BLOCKED_BY_MAX_TWO_SHIFTS_DAY" : "BLOCKED_BY_NON_ADJACENT_SAME_DAY",
+        );
+      }
+      const currentMinutes = existingShiftIds.reduce(
+        (sum, id) => sum + hoursToMinutes(shiftMap.get(id)?.durationHours ?? 0),
+        0,
+      );
+      if (
+        respondent.category === "AFP" &&
+        currentMinutes + hoursToMinutes(shift.durationHours) > hoursToMinutes(respondent.afpHoursCap)
+      ) {
+        blockers.push("BLOCKED_BY_AFP_CAP");
+      }
+      if (blockers.length === 0) blockers.push("ENGINE_REPAIR_LIMIT_REACHED");
+      return {
+        respondentId: respondent.respondentId,
+        name: respondent.name,
+        category: respondent.category as "AFP" | "General",
+        blockers,
+      };
+    });
+    const reasonCategory =
+      availableRespondents.length === 0
+        ? "NO_FALLBACK_AFP_SELECTED"
+        : availableWithBlockers.every((respondent) =>
+            respondent.blockers.some((blocker) =>
+              blocker === "BLOCKED_BY_MAX_TWO_SHIFTS_DAY" || blocker === "BLOCKED_BY_NON_ADJACENT_SAME_DAY",
+            ),
+          )
+          ? "ALL_AVAILABLE_BLOCKED_BY_SAME_DAY"
+          : availableWithBlockers.every((respondent) => respondent.blockers.includes("BLOCKED_BY_AFP_CAP"))
+            ? "ALL_AVAILABLE_BLOCKED_BY_AFP_CAP"
+            : "ALL_AVAILABLE_BLOCKED_BY_MIXED_CONSTRAINTS";
+
+    return {
+      shiftId,
+      date: shift.date,
+      label: shift.label,
+      startTime: shift.startTime,
+      endTime: shift.endTime,
+      durationHours: shift.durationHours,
+      availabilityCount: availableRespondents.length,
+      availableRespondents: availableWithBlockers,
+      reasonCategory,
+      explanationCodes:
+        availableRespondents.length === 0
+          ? ["NO_AVAILABILITY", "NO_FALLBACK_AFP_SELECTED"] as ExplanationCode[]
+          : Array.from(new Set(availableWithBlockers.flatMap((respondent) => respondent.blockers))),
+      explanationText:
+        availableRespondents.length === 0
+          ? "No respondent selected availability for this shift, and no AFP fallback assignment was available."
+          : "Every available respondent was blocked by same-day, cap, or repair constraints.",
+    };
+  });
+
   const allHours = allocationsList.map((a) => a.totalHours);
   const avg = computeAverage(allHours);
   const std = computeStdDev(allHours, avg);
 
-  return { surveyId, allocations: allocationsList, averageHours: avg, stdDev: std, unallocatedShiftIds };
+  return {
+    surveyId,
+    allocations: allocationsList,
+    averageHours: avg,
+    stdDev: std,
+    unallocatedShiftIds,
+    blankShiftExplanations,
+  };
 }
 
 router.post("/surveys/:id/allocate", async (req, res): Promise<void> => {
@@ -368,6 +503,33 @@ router.get("/surveys/:id/allocation-stats", async (req, res): Promise<void> => {
 
   const allocationResult = await buildAllocationResult(id);
   const { allocations } = allocationResult;
+  const allAllocatedShifts = allocations.flatMap((allocation) =>
+    allocation.allocatedShifts.map((shift) => ({ ...shift, respondentId: allocation.respondentId })),
+  );
+  const manualAssignmentCount = allAllocatedShifts.filter((shift) => shift.isManual).length;
+  const backToBackEmergencyCount = allAllocatedShifts.filter(
+    (shift) => shift.assignmentSource === "engine_back_to_back_emergency",
+  ).length;
+  const noAvailabilityFallbackCount = allAllocatedShifts.filter(
+    (shift) => shift.assignmentSource === "engine_no_availability_afp_fallback",
+  ).length;
+  let nonAdjacentSameDayDoubleCount = 0;
+  let tripleShiftDayCount = 0;
+  for (const allocation of allocations) {
+    const byDate = new Map<string, typeof allocation.allocatedShifts>();
+    for (const shift of allocation.allocatedShifts) {
+      byDate.set(shift.date, [...(byDate.get(shift.date) ?? []), shift]);
+    }
+    for (const shiftsForDay of byDate.values()) {
+      if (shiftsForDay.length >= 3) tripleShiftDayCount += 1;
+      if (
+        shiftsForDay.length === 2 &&
+        !isBackToBack(shiftsForDay[0], shiftsForDay[1])
+      ) {
+        nonAdjacentSameDayDoubleCount += 1;
+      }
+    }
+  }
   const responseSettings = await db
     .select({
       respondentId: responsesTable.respondentId,
@@ -436,6 +598,18 @@ router.get("/surveys/:id/allocation-stats", async (req, res): Promise<void> => {
     minHours,
     maxHours,
     totalAllocatedHours,
+    blankShiftCount: allocationResult.blankShiftExplanations.length,
+    blankWithAvailabilityCount: allocationResult.blankShiftExplanations.filter(
+      (shift) => shift.availabilityCount > 0,
+    ).length,
+    noAvailabilityBlankCount: allocationResult.blankShiftExplanations.filter(
+      (shift) => shift.availabilityCount === 0,
+    ).length,
+    manualAssignmentCount,
+    backToBackEmergencyCount,
+    noAvailabilityFallbackCount,
+    nonAdjacentSameDayDoubleCount,
+    tripleShiftDayCount,
     respondentStats,
     afpStats,
     generalStats,

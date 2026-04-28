@@ -1,5 +1,12 @@
 import { db, shiftsTable, respondentsTable, responsesTable, allocationsTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
+import {
+  hoursToMinutes,
+  isBackToBack,
+  minutesToHours,
+  sameDayAllocationTier,
+  solveNonAfpPenaltyTargets,
+} from "./allocationCore.js";
 import { safeDisplayName } from "./inputValidation.js";
 
 export interface AllocationOptions {
@@ -31,10 +38,6 @@ interface ShiftInfo {
 
 function calcHours(shiftIds: number[], shiftMap: Map<number, ShiftInfo>): number {
   return shiftIds.reduce((sum, id) => sum + (shiftMap.get(id)?.durationHours ?? 0), 0);
-}
-
-function isBackToBack(a: ShiftInfo, b: ShiftInfo): boolean {
-  return a.date === b.date && (a.endTime === b.startTime || b.endTime === a.startTime);
 }
 
 function stdDev(values: number[]): number {
@@ -69,64 +72,12 @@ function addsBackToBack(newShiftId: number, existing: number[], shiftMap: Map<nu
   return false;
 }
 
-function sameDayAllocationTier(
-  newShiftId: number,
-  existing: number[],
-  shiftMap: Map<number, ShiftInfo>,
-): 0 | 1 | 2 {
-  const nextShift = shiftMap.get(newShiftId)!;
-  const sameDayShiftIds = existing.filter((id) => shiftMap.get(id)?.date === nextShift.date);
-
-  if (sameDayShiftIds.length === 0) {
-    return 0;
-  }
-
-  if (
-    sameDayShiftIds.length === 1 &&
-    isBackToBack(nextShift, shiftMap.get(sameDayShiftIds[0])!)
-  ) {
-    return 1;
-  }
-
-  return 2;
-}
-
 function canAddShiftOnDay(
   newShiftId: number,
   existing: number[],
   shiftMap: Map<number, ShiftInfo>,
 ): boolean {
   return sameDayAllocationTier(newShiftId, existing, shiftMap) < 2;
-}
-
-function solvePenaltyBaselineMean(
-  totalHours: number,
-  nonPenalizedCount: number,
-  penalties: number[],
-): number {
-  const respondentCount = nonPenalizedCount + penalties.length;
-  if (respondentCount === 0 || totalHours <= 0) return 0;
-
-  let low = 0;
-  let high = Math.max(totalHours, ...penalties, 1);
-  const assignedAt = (baseline: number) =>
-    nonPenalizedCount * baseline +
-    penalties.reduce((sum, penalty) => sum + Math.max(0, baseline - penalty), 0);
-
-  while (assignedAt(high) < totalHours) {
-    high *= 2;
-  }
-
-  for (let i = 0; i < 80; i++) {
-    const mid = (low + high) / 2;
-    if (assignedAt(mid) < totalHours) {
-      low = mid;
-    } else {
-      high = mid;
-    }
-  }
-
-  return high;
 }
 
 function weekdayWeekendRatio(shiftIds: number[], shiftMap: Map<number, ShiftInfo>): number {
@@ -377,22 +328,28 @@ export async function runAllocation(options: AllocationOptions): Promise<{
   const generalAssignableShifts = remainingShifts.filter((shift) =>
     generalRespondents.some((respondent) => respondent.availableShiftIds.has(shift.id)),
   );
+  const generalAssignableShiftIds = new Set(generalAssignableShifts.map((shift) => shift.id));
   const totalRemainingHours = generalAssignableShifts.reduce((s, sh) => s + sh.durationHours, 0);
-  const penalizedGeneralRespondents = generalRespondents.filter((r) => r.hasPenalty && r.penaltyHours > 0);
   const regularGeneralRespondents = generalRespondents.filter((r) => !(r.hasPenalty && r.penaltyHours > 0));
-  const regularTargetHours = solvePenaltyBaselineMean(
-    totalRemainingHours,
-    regularGeneralRespondents.length,
-    penalizedGeneralRespondents.map((r) => r.penaltyHours),
+  const targetResult = solveNonAfpPenaltyTargets(
+    generalRespondents.map((respondent) => ({
+      respondentId: respondent.id,
+      penaltyMinutes: hoursToMinutes(respondent.hasPenalty ? respondent.penaltyHours : 0),
+      capacityMinutes: Array.from(respondent.availableShiftIds)
+        .filter((id) => generalAssignableShiftIds.has(id))
+        .reduce((sum, id) => sum + hoursToMinutes(shiftMap.get(id)?.durationHours ?? 0), 0),
+    })),
+    hoursToMinutes(totalRemainingHours),
   );
-  const penalizedTargets = new Map(
-    penalizedGeneralRespondents.map((r) => [r.id, Math.max(0, regularTargetHours - r.penaltyHours)]),
+  const regularTargetHours = minutesToHours(targetResult.baselineMinutes);
+  const penaltyTargetByRespondentId = new Map(
+    targetResult.targets.map((target) => [target.respondentId, minutesToHours(target.targetMinutes)]),
   );
   const targetByRespondentId = new Map<number, number>();
   for (const respondent of generalRespondents) {
     targetByRespondentId.set(
       respondent.id,
-      penalizedTargets.get(respondent.id) ?? regularTargetHours,
+      penaltyTargetByRespondentId.get(respondent.id) ?? regularTargetHours,
     );
   }
 
@@ -585,6 +542,7 @@ export async function runAllocation(options: AllocationOptions): Promise<{
     respondents: typeof allRespondents,
     allocationMap: Map<number, number[]>,
     requireAvailability: boolean,
+    allowAfpCapOverage: boolean,
   ): boolean => {
     const shift = shiftMap.get(shiftId)!;
     const candidates = respondents
@@ -600,11 +558,15 @@ export async function runAllocation(options: AllocationOptions): Promise<{
           currentHours,
           afterHours,
           targetHours,
+          capBlocked:
+            respondent.category === "AFP" &&
+            !allowAfpCapOverage &&
+            afterHours > respondent.afpHoursCap + 0.01,
           dayTier: sameDayAllocationTier(shiftId, current, shiftMap),
           isPenalized: respondent.hasPenalty && respondent.penaltyHours > 0,
         };
       })
-      .filter((candidate) => candidate.dayTier < 2);
+      .filter((candidate) => candidate.dayTier < 2 && !candidate.capBlocked);
 
     if (candidates.length === 0) return false;
 
@@ -633,7 +595,7 @@ export async function runAllocation(options: AllocationOptions): Promise<{
   for (const shift of shifts) {
     if (assignedShiftIds.has(shift.id)) continue;
     if (generalRespondents.some((respondent) => respondent.availableShiftIds.has(shift.id))) {
-      assignFallbackShift(shift.id, generalRespondents, generalAllocations, true);
+      assignFallbackShift(shift.id, generalRespondents, generalAllocations, true, false);
     }
   }
 
@@ -641,7 +603,7 @@ export async function runAllocation(options: AllocationOptions): Promise<{
     if (assignedShiftIds.has(shift.id)) continue;
     const selectedByAnyone = allRespondents.some((respondent) => respondent.availableShiftIds.has(shift.id));
     if (selectedByAnyone) {
-      assignFallbackShift(shift.id, afpRespondents, afpAllocations, true);
+      assignFallbackShift(shift.id, afpRespondents, afpAllocations, true, false);
     }
   }
 
@@ -649,7 +611,7 @@ export async function runAllocation(options: AllocationOptions): Promise<{
     if (assignedShiftIds.has(shift.id)) continue;
     const selectedByAnyone = allRespondents.some((respondent) => respondent.availableShiftIds.has(shift.id));
     if (!selectedByAnyone) {
-      assignFallbackShift(shift.id, afpUnclaimedShiftRespondents, afpAllocations, false);
+      assignFallbackShift(shift.id, afpUnclaimedShiftRespondents, afpAllocations, false, true);
     }
   }
 

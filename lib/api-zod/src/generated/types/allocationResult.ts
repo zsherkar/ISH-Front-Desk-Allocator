@@ -5,6 +5,7 @@
  * Shift Scheduler API
  * OpenAPI spec version: 0.1.0
  */
+import type { BlankShiftExplanation } from "./blankShiftExplanation";
 import type { RespondentAllocation } from "./respondentAllocation";
 
 export interface AllocationResult {
@@ -13,4 +14,5 @@ export interface AllocationResult {
   averageHours: number;
   stdDev: number;
   unallocatedShiftIds: number[];
+  blankShiftExplanations: BlankShiftExplanation[];
 }

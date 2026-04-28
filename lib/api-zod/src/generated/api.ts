@@ -193,6 +193,16 @@ export const RunAllocationResponse = zod.object({
           endTime: zod.string(),
           durationHours: zod.number(),
           dayType: zod.enum(["weekday", "weekend"]),
+          assignmentSource: zod.enum([
+            "engine_normal",
+            "engine_back_to_back_emergency",
+            "engine_no_availability_afp_fallback",
+            "manual",
+            "blank",
+          ]),
+          isManual: zod.boolean(),
+          isEmergency: zod.boolean(),
+          explanationCodes: zod.array(zod.string()),
         }),
       ),
       totalHours: zod.number(),
@@ -203,6 +213,37 @@ export const RunAllocationResponse = zod.object({
   averageHours: zod.number(),
   stdDev: zod.number(),
   unallocatedShiftIds: zod.array(zod.number()),
+  blankShiftExplanations: zod.array(
+    zod.object({
+      shiftId: zod.number(),
+      date: zod.date(),
+      label: zod.string(),
+      startTime: zod.string(),
+      endTime: zod.string(),
+      durationHours: zod.number(),
+      availabilityCount: zod.number(),
+      availableRespondents: zod.array(
+        zod.object({
+          respondentId: zod.number(),
+          name: zod.string(),
+          category: zod.enum(["AFP", "General"]),
+          blockers: zod.array(zod.string()),
+        }),
+      ),
+      reasonCategory: zod.enum([
+        "NO_AVAILABILITY",
+        "NO_FALLBACK_AFP_SELECTED",
+        "ALL_AVAILABLE_BLOCKED_BY_SAME_DAY",
+        "ALL_AVAILABLE_BLOCKED_BY_AFP_CAP",
+        "ALL_AVAILABLE_BLOCKED_BY_MANUAL_LOCK",
+        "ALL_AVAILABLE_BLOCKED_BY_MIXED_CONSTRAINTS",
+        "ENGINE_REPAIR_LIMIT_REACHED",
+        "UNKNOWN",
+      ]),
+      explanationCodes: zod.array(zod.string()),
+      explanationText: zod.string(),
+    }),
+  ),
 });
 
 /**
@@ -228,6 +269,16 @@ export const GetAllocationsResponse = zod.object({
           endTime: zod.string(),
           durationHours: zod.number(),
           dayType: zod.enum(["weekday", "weekend"]),
+          assignmentSource: zod.enum([
+            "engine_normal",
+            "engine_back_to_back_emergency",
+            "engine_no_availability_afp_fallback",
+            "manual",
+            "blank",
+          ]),
+          isManual: zod.boolean(),
+          isEmergency: zod.boolean(),
+          explanationCodes: zod.array(zod.string()),
         }),
       ),
       totalHours: zod.number(),
@@ -238,6 +289,37 @@ export const GetAllocationsResponse = zod.object({
   averageHours: zod.number(),
   stdDev: zod.number(),
   unallocatedShiftIds: zod.array(zod.number()),
+  blankShiftExplanations: zod.array(
+    zod.object({
+      shiftId: zod.number(),
+      date: zod.date(),
+      label: zod.string(),
+      startTime: zod.string(),
+      endTime: zod.string(),
+      durationHours: zod.number(),
+      availabilityCount: zod.number(),
+      availableRespondents: zod.array(
+        zod.object({
+          respondentId: zod.number(),
+          name: zod.string(),
+          category: zod.enum(["AFP", "General"]),
+          blockers: zod.array(zod.string()),
+        }),
+      ),
+      reasonCategory: zod.enum([
+        "NO_AVAILABILITY",
+        "NO_FALLBACK_AFP_SELECTED",
+        "ALL_AVAILABLE_BLOCKED_BY_SAME_DAY",
+        "ALL_AVAILABLE_BLOCKED_BY_AFP_CAP",
+        "ALL_AVAILABLE_BLOCKED_BY_MANUAL_LOCK",
+        "ALL_AVAILABLE_BLOCKED_BY_MIXED_CONSTRAINTS",
+        "ENGINE_REPAIR_LIMIT_REACHED",
+        "UNKNOWN",
+      ]),
+      explanationCodes: zod.array(zod.string()),
+      explanationText: zod.string(),
+    }),
+  ),
 });
 
 /**
@@ -270,6 +352,16 @@ export const AdjustAllocationResponse = zod.object({
           endTime: zod.string(),
           durationHours: zod.number(),
           dayType: zod.enum(["weekday", "weekend"]),
+          assignmentSource: zod.enum([
+            "engine_normal",
+            "engine_back_to_back_emergency",
+            "engine_no_availability_afp_fallback",
+            "manual",
+            "blank",
+          ]),
+          isManual: zod.boolean(),
+          isEmergency: zod.boolean(),
+          explanationCodes: zod.array(zod.string()),
         }),
       ),
       totalHours: zod.number(),
@@ -280,6 +372,37 @@ export const AdjustAllocationResponse = zod.object({
   averageHours: zod.number(),
   stdDev: zod.number(),
   unallocatedShiftIds: zod.array(zod.number()),
+  blankShiftExplanations: zod.array(
+    zod.object({
+      shiftId: zod.number(),
+      date: zod.date(),
+      label: zod.string(),
+      startTime: zod.string(),
+      endTime: zod.string(),
+      durationHours: zod.number(),
+      availabilityCount: zod.number(),
+      availableRespondents: zod.array(
+        zod.object({
+          respondentId: zod.number(),
+          name: zod.string(),
+          category: zod.enum(["AFP", "General"]),
+          blockers: zod.array(zod.string()),
+        }),
+      ),
+      reasonCategory: zod.enum([
+        "NO_AVAILABILITY",
+        "NO_FALLBACK_AFP_SELECTED",
+        "ALL_AVAILABLE_BLOCKED_BY_SAME_DAY",
+        "ALL_AVAILABLE_BLOCKED_BY_AFP_CAP",
+        "ALL_AVAILABLE_BLOCKED_BY_MANUAL_LOCK",
+        "ALL_AVAILABLE_BLOCKED_BY_MIXED_CONSTRAINTS",
+        "ENGINE_REPAIR_LIMIT_REACHED",
+        "UNKNOWN",
+      ]),
+      explanationCodes: zod.array(zod.string()),
+      explanationText: zod.string(),
+    }),
+  ),
 });
 
 /**
@@ -297,6 +420,14 @@ export const GetAllocationStatsResponse = zod.object({
   minHours: zod.number(),
   maxHours: zod.number(),
   totalAllocatedHours: zod.number(),
+  blankShiftCount: zod.number(),
+  blankWithAvailabilityCount: zod.number(),
+  noAvailabilityBlankCount: zod.number(),
+  manualAssignmentCount: zod.number(),
+  backToBackEmergencyCount: zod.number(),
+  noAvailabilityFallbackCount: zod.number(),
+  nonAdjacentSameDayDoubleCount: zod.number(),
+  tripleShiftDayCount: zod.number(),
   respondentStats: zod.array(
     zod.object({
       respondentId: zod.number(),

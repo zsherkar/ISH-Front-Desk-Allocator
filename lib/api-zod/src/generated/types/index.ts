@@ -8,11 +8,16 @@
 
 export * from "./adjustAllocationBody";
 export * from "./allocatedShift";
+export * from "./allocatedShiftAssignmentSource";
 export * from "./allocatedShiftDayType";
 export * from "./allocationRespondentStat";
 export * from "./allocationRespondentStatCategory";
 export * from "./allocationResult";
 export * from "./allocationStats";
+export * from "./blankShiftAvailableRespondent";
+export * from "./blankShiftAvailableRespondentCategory";
+export * from "./blankShiftExplanation";
+export * from "./blankShiftExplanationReasonCategory";
 export * from "./createRespondentBody";
 export * from "./createRespondentBodyCategory";
 export * from "./createSurveyBody";
