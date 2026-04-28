@@ -11,6 +11,7 @@ import {
   dedupePositiveIntegerIds,
   FIELD_LIMITS,
   normalizeOptionalText,
+  safeDisplayName,
 } from "../lib/inputValidation.js";
 
 const router: IRouter = Router();
@@ -54,7 +55,7 @@ async function buildAllocationResult(surveyId: number) {
     if (!respondentMap.has(a.respondentId)) {
       respondentMap.set(a.respondentId, {
         respondentId: a.respondentId,
-        name: a.respondentName || a.respondentFullName,
+        name: safeDisplayName(a.respondentName, a.respondentFullName),
         category: a.respondentCategory,
         shiftIds: [],
         isManuallyAdjusted: a.isManuallyAdjusted,

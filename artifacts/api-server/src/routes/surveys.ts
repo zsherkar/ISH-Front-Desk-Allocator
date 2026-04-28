@@ -256,6 +256,7 @@ router.get("/surveys/:id/responses", async (req, res): Promise<void> => {
       shiftId: responsesTable.shiftId,
       respondentName: respondentsTable.name,
       preferredName: respondentsTable.preferredName,
+      respondentEmail: respondentsTable.email,
       respondentCategory: respondentsTable.category,
       hasPenalty: responsesTable.hasPenalty,
       penaltyHours: responsesTable.penaltyHours,
@@ -272,6 +273,7 @@ router.get("/surveys/:id/responses", async (req, res): Promise<void> => {
       respondentId: number;
       name: string;
       preferredName: string;
+      email: string | null;
       category: string;
       selectedShiftIds: number[];
       hasPenalty: boolean;
@@ -286,6 +288,7 @@ router.get("/surveys/:id/responses", async (req, res): Promise<void> => {
           respondentId: r.respondentId,
           name: r.respondentName,
           preferredName: r.preferredName,
+          email: r.respondentEmail,
           category: r.respondentCategory,
           selectedShiftIds: [],
           hasPenalty: r.hasPenalty,

@@ -20,6 +20,24 @@ export function firstGivenName(fullName: string): string {
   return collapseWhitespace(fullName).split(" ")[0] ?? "";
 }
 
+export function isEmailLike(value: string): boolean {
+  return EMAIL_PATTERN.test(collapseWhitespace(value).toLowerCase());
+}
+
+export function safeDisplayName(preferredName: string | null | undefined, fullName: string | null | undefined): string {
+  const preferred = collapseWhitespace(preferredName ?? "");
+  if (preferred && !isEmailLike(preferred)) {
+    return preferred;
+  }
+
+  const full = collapseWhitespace(fullName ?? "");
+  return full || preferred || "Unknown";
+}
+
+export function sanitizePreferredName(preferredName: string, fullName: string): string {
+  return isEmailLike(preferredName) ? firstGivenName(fullName) : preferredName;
+}
+
 export function normalizeRequiredText(
   value: unknown,
   fieldLabel: string,

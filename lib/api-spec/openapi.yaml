@@ -644,6 +644,8 @@ components:
           type: string
         preferredName:
           type: string
+        email:
+          type: ["string", "null"]
         category:
           type: string
           enum: [AFP, General]
@@ -663,6 +665,7 @@ components:
         - respondentId
         - name
         - preferredName
+        - email
         - category
         - selectedShiftIds
         - totalAvailableHours
@@ -770,6 +773,8 @@ components:
       properties:
         name:
           type: string
+        preferredName:
+          type: ["string", "null"]
         email:
           type: ["string", "null"]
         category:
@@ -783,6 +788,8 @@ components:
       type: object
       properties:
         name:
+          type: ["string", "null"]
+        preferredName:
           type: ["string", "null"]
         email:
           type: ["string", "null"]

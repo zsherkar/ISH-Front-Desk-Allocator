@@ -10,6 +10,7 @@ import {
   FIELD_LIMITS,
   normalizeEmail,
   normalizeRequiredText,
+  sanitizePreferredName,
 } from "../lib/inputValidation.js";
 
 const router: IRouter = Router();
@@ -137,7 +138,7 @@ router.post(
       }
 
       const selectedShiftIds = dedupePositiveIntegerIds(parsed.data.selectedShiftIds);
-      const preferredName = preferredNameResult.value;
+      const preferredName = sanitizePreferredName(preferredNameResult.value, nameResult.value);
       const category = parsed.data.category === "AFP" ? "AFP" : "General";
       const normalizedEmail = emailResult.value;
       const normalizedName = normalizeText(nameResult.value);

@@ -26,6 +26,7 @@ export function AdminRespondents() {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [name, setName] = useState("");
+  const [preferredName, setPreferredName] = useState("");
   const [email, setEmail] = useState("");
   const [category, setCategory] = useState<"AFP" | "General">("General");
   const [search, setSearch] = useState("");
@@ -35,6 +36,7 @@ export function AdminRespondents() {
   const openCreate = () => {
     setEditingId(null);
     setName("");
+    setPreferredName("");
     setEmail("");
     setCategory("General");
     setIsModalOpen(true);
@@ -43,6 +45,7 @@ export function AdminRespondents() {
   const openEdit = (r: Respondent) => {
     setEditingId(r.id);
     setName(r.name);
+    setPreferredName(r.preferredName || "");
     setEmail(r.email || "");
     setCategory(r.category);
     setIsModalOpen(true);
@@ -52,11 +55,11 @@ export function AdminRespondents() {
     if (editingId) {
       await updateMutation.mutateAsync({
         id: editingId,
-        data: { name, email: email || null, category }
+        data: { name, preferredName: preferredName || null, email: email || null, category }
       });
     } else {
       await createMutation.mutateAsync({
-        data: { name, email: email || null, category }
+        data: { name, preferredName: preferredName || null, email: email || null, category }
       });
     }
     setIsModalOpen(false);
@@ -70,6 +73,7 @@ export function AdminRespondents() {
 
   const filtered = respondents?.filter(r => 
     r.name.toLowerCase().includes(search.toLowerCase()) || 
+    r.preferredName.toLowerCase().includes(search.toLowerCase()) ||
     (r.email && r.email.toLowerCase().includes(search.toLowerCase()))
   );
 
@@ -106,6 +110,7 @@ export function AdminRespondents() {
             <thead className="bg-slate-50 text-slate-500 font-medium">
               <tr>
                 <th className="px-6 py-4">Name</th>
+                <th className="px-6 py-4">Preferred</th>
                 <th className="px-6 py-4">Email</th>
                 <th className="px-6 py-4">Category</th>
                 <th className="px-6 py-4 text-right">Actions</th>
@@ -122,6 +127,7 @@ export function AdminRespondents() {
                       {r.name}
                     </button>
                   </td>
+                  <td className="px-6 py-4 text-slate-600">{r.preferredName || "-"}</td>
                   <td className="px-6 py-4 text-slate-500">{r.email || "-"}</td>
                   <td className="px-6 py-4">
                     <Badge variant="outline" className={clsx("rounded-md", r.category === 'AFP' ? 'border-indigo-200 text-indigo-700 bg-indigo-50' : 'border-slate-200 text-slate-600 bg-slate-50')}>
@@ -142,7 +148,7 @@ export function AdminRespondents() {
               ))}
               {filtered?.length === 0 && (
                 <tr>
-                  <td colSpan={4} className="px-6 py-12 text-center text-slate-500">No respondents found.</td>
+                  <td colSpan={5} className="px-6 py-12 text-center text-slate-500">No respondents found.</td>
                 </tr>
               )}
             </tbody>
@@ -159,6 +165,10 @@ export function AdminRespondents() {
             <div className="space-y-2">
               <label className="text-sm font-medium text-slate-700">Full Name</label>
               <Input value={name} onChange={e => setName(e.target.value)} placeholder="Jane Doe" className="rounded-xl" />
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-slate-700">Preferred Name</label>
+              <Input value={preferredName} onChange={e => setPreferredName(e.target.value)} placeholder="Jane" className="rounded-xl" />
             </div>
             <div className="space-y-2">
               <label className="text-sm font-medium text-slate-700">Email (Optional)</label>

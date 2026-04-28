@@ -11,6 +11,8 @@ export interface RespondentWithResponses {
   respondentId: number;
   name: string;
   preferredName: string;
+  /** @nullable */
+  email: string | null;
   category: RespondentWithResponsesCategory;
   selectedShiftIds: number[];
   totalAvailableHours: number;

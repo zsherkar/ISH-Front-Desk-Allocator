@@ -263,7 +263,11 @@ export function PublicSurveyPage() {
         : !hasUsefulEmail(email)
           ? "Use a valid email address."
           : "",
-      preferredName: !preferredName.trim() ? "Preferred name is required." : "",
+      preferredName: !preferredName.trim()
+        ? "Preferred name is required."
+        : hasUsefulEmail(preferredName)
+          ? "Preferred name should be your name, not your email."
+          : "",
     };
   }, [email, firstName, lastName, preferredName]);
   const hasFieldErrors = Object.values(fieldErrors).some(Boolean);

@@ -17,11 +17,12 @@ import {
   useGetAllocationStats,
   useAdjustAllocation,
 } from "@/hooks/use-allocations";
-import { useGetRespondentFdHistory } from "@/hooks/use-respondents";
+import { useGetRespondentFdHistory, useUpdateRespondent } from "@/hooks/use-respondents";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import {
@@ -48,6 +49,15 @@ function formatShiftDisplay(shift: { date: string; startTime: string; endTime: s
 function formatShiftLabelText(label: string) {
   if (/\b(?:AM|PM)\b/i.test(label)) return label;
   return label.replace(/\b(\d{1,2}:\d{2})\b/g, (match) => formatTime12(match));
+}
+
+function isEmailLike(value: string) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
+}
+
+function displayRespondentName(response: { name: string; preferredName: string }) {
+  const preferredName = response.preferredName.trim();
+  return preferredName && !isEmailLike(preferredName) ? preferredName : response.name;
 }
 
 type AllocationStatSummary = {
@@ -158,21 +168,26 @@ export function AdminSurveyDetail() {
   const surveyId = parseInt(id, 10);
 
   const { data: survey, isLoading: isSurveyLoading } = useGetSurvey(surveyId);
-  const { data: responses } = useGetSurveyResponses(surveyId);
-  const { data: stats } = useGetSurveyStats(surveyId);
-  const { data: allocations } = useGetAllocations(surveyId);
-  const { data: allocStats } = useGetAllocationStats(surveyId);
+  const { data: responses, refetch: refetchResponses } = useGetSurveyResponses(surveyId);
+  const { data: stats, refetch: refetchStats } = useGetSurveyStats(surveyId);
+  const { data: allocations, refetch: refetchAllocations } = useGetAllocations(surveyId);
+  const { data: allocStats, refetch: refetchAllocationStats } = useGetAllocationStats(surveyId);
 
   const updateMutation = useUpdateSurvey();
   const runAllocMutation = useRunAllocation();
   const adjustAllocationMutation = useAdjustAllocation();
   const updateResponseMutation = useUpdateSurveyResponse();
+  const updateRespondentMutation = useUpdateRespondent();
 
   const [afpIds, setAfpIds] = useState<Set<number>>(new Set());
   const [showCalendar, setShowCalendar] = useState(false);
   const [selectedRespondentId, setSelectedRespondentId] = useState<number | null>(null);
   const [selectedResponse, setSelectedResponse] = useState<any | null>(null);
   const [selectedShiftIds, setSelectedShiftIds] = useState<Set<number>>(new Set());
+  const [selectedName, setSelectedName] = useState("");
+  const [selectedPreferredName, setSelectedPreferredName] = useState("");
+  const [selectedEmail, setSelectedEmail] = useState("");
+  const [selectedCategory, setSelectedCategory] = useState<"AFP" | "General">("General");
   const [selectedHasPenalty, setSelectedHasPenalty] = useState(false);
   const [selectedPenaltyHours, setSelectedPenaltyHours] = useState(0);
   const [selectedAfpHoursCap, setSelectedAfpHoursCap] = useState(10);
@@ -245,9 +260,49 @@ export function AdminSurveyDetail() {
   const openResponseEditor = (response: NonNullable<typeof responses>[number]) => {
     setSelectedResponse(response);
     setSelectedShiftIds(new Set(response.selectedShiftIds));
+    setSelectedName(response.name);
+    setSelectedPreferredName(response.preferredName);
+    setSelectedEmail(response.email || "");
+    setSelectedCategory(response.category);
     setSelectedHasPenalty(Boolean(response.hasPenalty));
     setSelectedPenaltyHours(Number(response.penaltyHours ?? 0));
     setSelectedAfpHoursCap(Number(response.afpHoursCap ?? 10));
+  };
+
+  const saveSelectedRespondentDetails = async () => {
+    if (!selectedResponse) return;
+    const updatedRespondent = await updateRespondentMutation.mutateAsync({
+      id: selectedResponse.respondentId,
+      data: {
+        name: selectedName,
+        preferredName: selectedPreferredName || null,
+        email: selectedEmail || null,
+        category: selectedCategory,
+      },
+    });
+    await Promise.all([
+      refetchResponses(),
+      refetchStats(),
+      refetchAllocations(),
+      refetchAllocationStats(),
+    ]);
+    setSelectedResponse({
+      ...selectedResponse,
+      name: updatedRespondent.name,
+      preferredName: updatedRespondent.preferredName,
+      email: updatedRespondent.email,
+      category: updatedRespondent.category,
+    });
+    setSelectedName(updatedRespondent.name);
+    setSelectedPreferredName(updatedRespondent.preferredName);
+    setSelectedEmail(updatedRespondent.email || "");
+    setSelectedCategory(updatedRespondent.category);
+    setAfpIds((prev) => {
+      const next = new Set(prev);
+      if (updatedRespondent.category === "AFP") next.add(selectedResponse.respondentId);
+      else next.delete(selectedResponse.respondentId);
+      return next;
+    });
   };
 
   const updateResponseSettings = async (
@@ -513,8 +568,11 @@ export function AdminSurveyDetail() {
                             openResponseEditor(r);
                           }}
                         >
-                          {r.preferredName || r.name}
+                          {displayRespondentName(r)}
                         </button>
+                        <div className="mt-1 text-xs font-normal text-slate-500">
+                          {r.name}{r.email ? ` | ${r.email}` : ""}
+                        </div>
                       </td>
                       <td className="px-6 py-4">
                         <div className="flex items-center gap-2">
@@ -941,12 +999,75 @@ export function AdminSurveyDetail() {
           if (!open) setSelectedResponse(null);
         }}
       >
-        <DialogContent className="max-w-xl">
+        <DialogContent className="max-w-2xl">
           <DialogHeader>
-            <DialogTitle>Availability Details: {selectedResponse?.preferredName || selectedResponse?.name}</DialogTitle>
+            <DialogTitle>
+              Availability Details: {selectedResponse ? displayRespondentName(selectedResponse) : ""}
+            </DialogTitle>
           </DialogHeader>
           {selectedResponse && (
             <div className="space-y-4">
+              <div className="grid gap-3 rounded-lg border border-slate-200 p-4 sm:grid-cols-2">
+                <div className="space-y-1.5">
+                  <label className="text-sm font-medium text-slate-700">Full name</label>
+                  <Input
+                    value={selectedName}
+                    onChange={(event) => setSelectedName(event.target.value)}
+                    className="h-9 rounded-md"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-sm font-medium text-slate-700">Preferred name</label>
+                  <Input
+                    value={selectedPreferredName}
+                    onChange={(event) => setSelectedPreferredName(event.target.value)}
+                    className={clsx(
+                      "h-9 rounded-md",
+                      isEmailLike(selectedPreferredName) && "border-destructive bg-rose-50/70",
+                    )}
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-sm font-medium text-slate-700">Email</label>
+                  <Input
+                    type="email"
+                    value={selectedEmail}
+                    onChange={(event) => setSelectedEmail(event.target.value)}
+                    className="h-9 rounded-md"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-sm font-medium text-slate-700">Category</label>
+                  <Select value={selectedCategory} onValueChange={(value: "AFP" | "General") => setSelectedCategory(value)}>
+                    <SelectTrigger className="h-9 rounded-md">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="General">Non-Ambassador Fellow</SelectItem>
+                      <SelectItem value="AFP">Ambassador Fellow (AFP)</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                {isEmailLike(selectedPreferredName) && (
+                  <p className="text-xs font-medium text-destructive sm:col-span-2">
+                    Preferred name should be a name, not an email.
+                  </p>
+                )}
+                <div className="flex justify-end sm:col-span-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={saveSelectedRespondentDetails}
+                    disabled={
+                      updateRespondentMutation.isPending ||
+                      !selectedName.trim() ||
+                      isEmailLike(selectedPreferredName)
+                    }
+                  >
+                    {updateRespondentMutation.isPending ? "Saving..." : "Save Details"}
+                  </Button>
+                </div>
+              </div>
               <p className="text-sm text-slate-600">
                 Selected shifts: <strong>{selectedShiftIds.size}</strong> | Total available hours:{" "}
                 <strong>{editedSelectedHours}</strong>
@@ -979,7 +1100,7 @@ export function AdminSurveyDetail() {
                   />
                   hours
                 </label>
-                {(selectedResponse.category === "AFP" || afpIds.has(selectedResponse.respondentId)) && (
+                {(selectedCategory === "AFP" || afpIds.has(selectedResponse.respondentId)) && (
                   <label className="flex items-center gap-2 text-sm text-slate-700 sm:col-span-2">
                     AFP cap
                     <Input

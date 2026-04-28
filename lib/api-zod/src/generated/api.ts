@@ -110,6 +110,7 @@ export const GetSurveyResponsesResponseItem = zod.object({
   respondentId: zod.number(),
   name: zod.string(),
   preferredName: zod.string(),
+  email: zod.string().nullable(),
   category: zod.enum(["AFP", "General"]),
   selectedShiftIds: zod.array(zod.number()),
   totalAvailableHours: zod.number(),
@@ -390,6 +391,7 @@ export const ListRespondentsResponse = zod.array(ListRespondentsResponseItem);
  */
 export const CreateRespondentBody = zod.object({
   name: zod.string(),
+  preferredName: zod.string().nullish(),
   email: zod.string().nullish(),
   category: zod.enum(["AFP", "General"]),
 });
@@ -403,6 +405,7 @@ export const UpdateRespondentParams = zod.object({
 
 export const UpdateRespondentBody = zod.object({
   name: zod.string().nullish(),
+  preferredName: zod.string().nullish(),
   email: zod.string().nullish(),
   category: zod
     .union([zod.literal("AFP"), zod.literal("General"), zod.literal(null)])

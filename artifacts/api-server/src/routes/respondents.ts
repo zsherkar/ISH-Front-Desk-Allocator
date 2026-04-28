@@ -15,6 +15,7 @@ import {
   firstGivenName,
   normalizeEmail,
   normalizeRequiredText,
+  sanitizePreferredName,
 } from "../lib/inputValidation.js";
 
 const router: IRouter = Router();
@@ -118,7 +119,7 @@ router.post("/respondents", async (req, res): Promise<void> => {
     .insert(respondentsTable)
     .values({
       name: nameResult.value,
-      preferredName: preferredNameResult.value,
+      preferredName: sanitizePreferredName(preferredNameResult.value, nameResult.value),
       email: emailResult.value,
       category: parsed.data.category,
     })
@@ -138,6 +139,16 @@ router.patch("/respondents/:id", async (req, res): Promise<void> => {
   const parsed = UpdateRespondentBody.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: parsed.error.message });
+    return;
+  }
+
+  const [currentRespondent] = await db
+    .select()
+    .from(respondentsTable)
+    .where(eq(respondentsTable.id, id))
+    .limit(1);
+  if (!currentRespondent) {
+    res.status(404).json({ error: "Respondent not found" });
     return;
   }
 
@@ -180,8 +191,13 @@ router.patch("/respondents/:id", async (req, res): Promise<void> => {
 
   if (parsed.data.category !== null && parsed.data.category !== undefined) updateData.category = parsed.data.category;
   if (req.body?.preferredName !== undefined) {
+    const fallbackPreferredName = firstGivenName(updateData.name ?? currentRespondent.name);
+    const preferredNameInput =
+      typeof req.body.preferredName === "string" && req.body.preferredName.trim()
+        ? req.body.preferredName
+        : fallbackPreferredName;
     const preferredNameResult = normalizeRequiredText(
-      req.body.preferredName,
+      preferredNameInput,
       "Preferred name",
       FIELD_LIMITS.preferredName,
     );
@@ -189,7 +205,10 @@ router.patch("/respondents/:id", async (req, res): Promise<void> => {
       res.status(400).json({ error: preferredNameResult.error });
       return;
     }
-    updateData.preferredName = preferredNameResult.value;
+    updateData.preferredName = sanitizePreferredName(
+      preferredNameResult.value,
+      updateData.name ?? currentRespondent.name,
+    );
   }
 
   const [respondent] = await db
