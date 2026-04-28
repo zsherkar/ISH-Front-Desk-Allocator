@@ -227,7 +227,7 @@ export interface UpdateRespondentBody {
 export interface RunAllocationBody {
   /** IDs of respondents to treat as AFP (capped at 10 hours each) */
   afpRespondentIds: number[];
-  /** AFP respondent IDs that should receive shifts nobody selected, even above their cap */
+  /** Deprecated; no-availability shifts now remain blank because availability is mandatory */
   afpUnclaimedShiftRespondentIds?: number[];
   /** IDs of respondents to include in this allocation run */
   includedRespondentIds?: number[];
@@ -459,11 +459,18 @@ export interface AllocationRespondentStat {
   totalHours: number;
   weekdayShifts: number;
   weekendShifts: number;
+  weekdayHours: number;
+  weekendHours: number;
   shiftCount: number;
   isManuallyAdjusted: boolean;
   hasPenalty: boolean;
   penaltyHours: number;
   penaltyGapHours: number;
+  targetHours: number;
+  availableCapacityHours: number;
+  deviationFromTargetHours: number;
+  sameDayDoubleCount: number;
+  fairnessStatus: string;
 }
 
 export interface AllocationStats {
@@ -481,6 +488,10 @@ export interface AllocationStats {
   backToBackEmergencyCount: number;
   noAvailabilityFallbackCount: number;
   afpCapOverflowCount: number;
+  normalAssignmentsWithoutAvailability: number;
+  manualAssignmentsWithoutAvailability: number;
+  fallbackAssignmentsWithoutAvailability: number;
+  assignmentsWithoutAvailabilityCount: number;
   renderedBlankButAssignedCount: number;
   availabilityMappingFailureCount: number;
   nonAdjacentSameDayDoubleCount: number;
@@ -491,6 +502,20 @@ export interface AllocationStats {
   nonPenalizedGeneralStats: AllocationRespondentStat[];
   penalizedStats: AllocationRespondentStat[];
   nonPenalizedGeneralMeanHours: number;
+  nonPenalizedGeneralMedianHours: number;
+  nonPenalizedGeneralMinHours: number;
+  nonPenalizedGeneralMaxHours: number;
+  nonPenalizedGeneralRangeHours: number;
+  nonPenalizedGeneralStdDevHours: number;
+  fairnessTargetStdDevHours: number;
+  fairnessWarningStdDevHours: number;
+  fairnessWarning: boolean;
+  fairnessRepairAttempted: boolean;
+  fairnessRepairMoveCount: number;
+  fairnessHighStdDevReason: string;
+  maxDeviationFromMeanHours: number;
+  maxDeviationFromTargetHours: number;
+  sumSquaredDeviationFromTargetHours: number;
 }
 
 export interface RespondentFdHistoryMonthlyEntry {

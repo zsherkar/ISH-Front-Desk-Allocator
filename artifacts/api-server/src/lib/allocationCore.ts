@@ -13,12 +13,17 @@ export type ExplanationCode =
   | "BLOCKED_BY_NON_ADJACENT_SAME_DAY"
   | "BLOCKED_BY_MAX_TWO_SHIFTS_DAY"
   | "BLOCKED_BY_AFP_CAP"
+  | "BLOCKED_BY_SAME_DAY_RULE"
   | "BLOCKED_ONLY_BY_AFP_CAP"
+  | "BLOCKED_BY_FAIRNESS_REPAIR_NOT_LEGAL"
   | "BLOCKED_BY_MANUAL_LOCK"
   | "BLOCKED_BY_NO_BACK_TO_BACK_OPTION"
+  | "HIGH_STD_DEV_NO_LEGAL_REPAIR"
   | "NON_AFP_CAPACITY_SHORTFALL"
   | "INSUFFICIENT_AVAILABILITY"
+  | "INSUFFICIENT_OVERLAPPING_AVAILABILITY"
   | "SHIFT_GRANULARITY"
+  | "SHIFT_GRANULARITY_LIMIT"
   | "SAME_DAY_CONSTRAINT"
   | "AFP_CAP_INTERACTION"
   | "MANUAL_OVERRIDE"
@@ -167,13 +172,10 @@ export function canAssignShiftToRespondent({
     };
   }
 
-  const requiresAvailability =
-    assignmentSource === "engine_normal" ||
-    assignmentSource === "engine_back_to_back_emergency" ||
-    assignmentSource === "engine_afp_cap_overflow_available";
+  const requiresAvailability = assignmentSource !== "blank";
   const wouldViolateAvailability = requiresAvailability && !isAvailable;
   if (requiresAvailability && !isAvailable) {
-    reasonCodes.push("NO_AVAILABLE_ALTERNATIVE");
+    reasonCodes.push("NO_AVAILABILITY");
   }
 
   const dayTier = sameDayAllocationTier(shiftId, existingShiftIds, shiftMap);
@@ -181,6 +183,7 @@ export function canAssignShiftToRespondent({
   const wouldCreateTripleShiftDay = sameDayCount >= 2;
   const wouldCreateNonAdjacentSameDayDouble = dayTier === 2 && !wouldCreateTripleShiftDay;
   if (dayTier === 2) {
+    reasonCodes.push("BLOCKED_BY_SAME_DAY_RULE");
     reasonCodes.push(
       sameDayCount >= 2 ? "BLOCKED_BY_MAX_TWO_SHIFTS_DAY" : "BLOCKED_BY_NON_ADJACENT_SAME_DAY",
     );

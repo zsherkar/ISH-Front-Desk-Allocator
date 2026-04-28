@@ -140,7 +140,21 @@ test("rejects three shifts in one day", () => {
   assert.ok(result.reasonCodes.includes("BLOCKED_BY_MAX_TWO_SHIFTS_DAY"));
 });
 
-test("enforces AFP normal cap and permits only no-availability fallback overage", () => {
+test("manual assignment unavailable block rejects manual shifts without selected availability", () => {
+  const result = canAssignShiftToRespondent({
+    shiftId: 1,
+    existingShiftIds: [],
+    shiftMap: shifts,
+    isAvailable: false,
+    assignmentSource: "manual",
+    category: "General",
+  });
+
+  assert.equal(result.ok, false);
+  assert.ok(result.reasonCodes.includes("NO_AVAILABILITY"));
+});
+
+test("enforces AFP normal cap and rejects no-availability fallback overage", () => {
   const normal = canAssignShiftToRespondent({
     shiftId: 3,
     existingShiftIds: [],
@@ -164,7 +178,8 @@ test("enforces AFP normal cap and permits only no-availability fallback overage"
 
   assert.equal(normal.ok, false);
   assert.ok(normal.reasonCodes.includes("BLOCKED_BY_AFP_CAP"));
-  assert.equal(fallback.ok, true);
+  assert.equal(fallback.ok, false);
+  assert.ok(fallback.reasonCodes.includes("NO_AVAILABILITY"));
 });
 
 test("unstable_shift_key_response_mapping_regression keeps date-time-slot identity stable across regenerated IDs", () => {

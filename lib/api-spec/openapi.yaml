@@ -809,7 +809,7 @@ components:
           type: array
           items:
             type: integer
-          description: AFP respondent IDs that should receive shifts nobody selected, even above their cap
+          description: Deprecated; no-availability shifts now remain blank because availability is mandatory
         includedRespondentIds:
           type: array
           items:
@@ -1230,6 +1230,10 @@ components:
           type: integer
         weekendShifts:
           type: integer
+        weekdayHours:
+          type: number
+        weekendHours:
+          type: number
         shiftCount:
           type: integer
         isManuallyAdjusted:
@@ -1240,6 +1244,16 @@ components:
           type: number
         penaltyGapHours:
           type: number
+        targetHours:
+          type: number
+        availableCapacityHours:
+          type: number
+        deviationFromTargetHours:
+          type: number
+        sameDayDoubleCount:
+          type: integer
+        fairnessStatus:
+          type: string
       required:
         - respondentId
         - name
@@ -1247,11 +1261,18 @@ components:
         - totalHours
         - weekdayShifts
         - weekendShifts
+        - weekdayHours
+        - weekendHours
         - shiftCount
         - isManuallyAdjusted
         - hasPenalty
         - penaltyHours
         - penaltyGapHours
+        - targetHours
+        - availableCapacityHours
+        - deviationFromTargetHours
+        - sameDayDoubleCount
+        - fairnessStatus
 
     AllocationStats:
       type: object
@@ -1284,6 +1305,14 @@ components:
           type: integer
         afpCapOverflowCount:
           type: integer
+        normalAssignmentsWithoutAvailability:
+          type: integer
+        manualAssignmentsWithoutAvailability:
+          type: integer
+        fallbackAssignmentsWithoutAvailability:
+          type: integer
+        assignmentsWithoutAvailabilityCount:
+          type: integer
         renderedBlankButAssignedCount:
           type: integer
         availabilityMappingFailureCount:
@@ -1314,6 +1343,34 @@ components:
             $ref: "#/components/schemas/AllocationRespondentStat"
         nonPenalizedGeneralMeanHours:
           type: number
+        nonPenalizedGeneralMedianHours:
+          type: number
+        nonPenalizedGeneralMinHours:
+          type: number
+        nonPenalizedGeneralMaxHours:
+          type: number
+        nonPenalizedGeneralRangeHours:
+          type: number
+        nonPenalizedGeneralStdDevHours:
+          type: number
+        fairnessTargetStdDevHours:
+          type: number
+        fairnessWarningStdDevHours:
+          type: number
+        fairnessWarning:
+          type: boolean
+        fairnessRepairAttempted:
+          type: boolean
+        fairnessRepairMoveCount:
+          type: integer
+        fairnessHighStdDevReason:
+          type: string
+        maxDeviationFromMeanHours:
+          type: number
+        maxDeviationFromTargetHours:
+          type: number
+        sumSquaredDeviationFromTargetHours:
+          type: number
       required:
         - meanHours
         - averageHours
@@ -1329,6 +1386,10 @@ components:
         - backToBackEmergencyCount
         - noAvailabilityFallbackCount
         - afpCapOverflowCount
+        - normalAssignmentsWithoutAvailability
+        - manualAssignmentsWithoutAvailability
+        - fallbackAssignmentsWithoutAvailability
+        - assignmentsWithoutAvailabilityCount
         - renderedBlankButAssignedCount
         - availabilityMappingFailureCount
         - nonAdjacentSameDayDoubleCount
@@ -1339,6 +1400,20 @@ components:
         - nonPenalizedGeneralStats
         - penalizedStats
         - nonPenalizedGeneralMeanHours
+        - nonPenalizedGeneralMedianHours
+        - nonPenalizedGeneralMinHours
+        - nonPenalizedGeneralMaxHours
+        - nonPenalizedGeneralRangeHours
+        - nonPenalizedGeneralStdDevHours
+        - fairnessTargetStdDevHours
+        - fairnessWarningStdDevHours
+        - fairnessWarning
+        - fairnessRepairAttempted
+        - fairnessRepairMoveCount
+        - fairnessHighStdDevReason
+        - maxDeviationFromMeanHours
+        - maxDeviationFromTargetHours
+        - sumSquaredDeviationFromTargetHours
 
     RespondentFdHistoryMonthlyEntry:
       type: object

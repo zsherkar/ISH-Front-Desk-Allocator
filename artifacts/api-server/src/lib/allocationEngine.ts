@@ -91,6 +91,26 @@ export interface PureAllocationOutput {
   averageHours: number;
   stdDev: number;
   unallocatedShiftIds: number[];
+  fairnessDiagnostics: FairnessDiagnostics;
+}
+
+export interface FairnessDiagnostics {
+  nonPenalizedGeneralMeanHours: number;
+  nonPenalizedGeneralMedianHours: number;
+  nonPenalizedGeneralMinHours: number;
+  nonPenalizedGeneralMaxHours: number;
+  nonPenalizedGeneralRangeHours: number;
+  nonPenalizedGeneralStdDevHours: number;
+  maxDeviationFromMeanHours: number;
+  maxDeviationFromTargetHours: number;
+  sumSquaredDeviationFromTargetHours: number;
+  targetStdDevHours: number;
+  warningStdDevHours: number;
+  repairAttempted: boolean;
+  successfulRepairMoves: number;
+  assignedShiftCountBeforeRepair: number;
+  assignedShiftCountAfterRepair: number;
+  highStdDevReasonCodes: string[];
 }
 
 function stdDev(values: number[]): number {
@@ -98,6 +118,13 @@ function stdDev(values: number[]): number {
   const mean = values.reduce((a, b) => a + b, 0) / values.length;
   const variance = values.reduce((sum, value) => sum + Math.pow(value - mean, 2), 0) / values.length;
   return Math.sqrt(variance);
+}
+
+function median(values: number[]): number {
+  if (values.length === 0) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
 }
 
 function calcMinutes(shiftIds: number[], shiftMap: Map<number, ShiftInfo>): number {
@@ -263,32 +290,18 @@ export function runPureAllocation(input: PureAllocationInput): PureAllocationOut
   const candidateFor = (
     shift: ShiftInfo,
     respondent: RespondentInfo,
-    mode: "available" | "no_availability_fallback",
     allowAfpCapOverflowAvailable: boolean,
   ): Candidate | null => {
     if (assignmentByShiftId.has(shift.id)) return null;
     const isAvailable = respondent.availableShiftIds.has(shift.id);
-    if (mode === "available" && !isAvailable) return null;
-    if (
-      mode === "no_availability_fallback" &&
-      ((availabilityByShiftId.get(shift.id)?.size ?? 0) > 0 ||
-        respondent.category !== "AFP" ||
-        !respondent.allowNoAvailabilityFallback)
-    ) {
-      return null;
-    }
+    if (!isAvailable) return null;
 
     const existingShiftIds = allocatedShiftIdsFor(respondent.id);
     const dayTier = sameDayAllocationTier(shift.id, existingShiftIds, shiftMap);
     if (dayTier >= 2) return null;
     const safeDayTier: 0 | 1 = dayTier === 1 ? 1 : 0;
 
-    let source: AssignmentSource =
-      mode === "no_availability_fallback"
-        ? "engine_no_availability_afp_fallback"
-        : safeDayTier === 1
-          ? "engine_back_to_back_emergency"
-          : "engine_normal";
+    let source: AssignmentSource = safeDayTier === 1 ? "engine_back_to_back_emergency" : "engine_normal";
 
     const validation = canAssignShiftToRespondent({
       shiftId: shift.id,
@@ -304,7 +317,6 @@ export function runPureAllocation(input: PureAllocationInput): PureAllocationOut
     if (!validation.ok) {
       const capOnly =
         respondent.category === "AFP" &&
-        mode === "available" &&
         allowAfpCapOverflowAvailable &&
         validation.reasonCodes.length === 1 &&
         validation.reasonCodes[0] === "BLOCKED_BY_AFP_CAP";
@@ -329,11 +341,10 @@ export function runPureAllocation(input: PureAllocationInput): PureAllocationOut
   const assignBest = (
     shift: ShiftInfo,
     candidateRespondents: RespondentInfo[],
-    mode: "available" | "no_availability_fallback",
     allowAfpCapOverflowAvailable: boolean,
   ): boolean => {
     const candidates = candidateRespondents
-      .map((respondent) => candidateFor(shift, respondent, mode, allowAfpCapOverflowAvailable))
+      .map((respondent) => candidateFor(shift, respondent, allowAfpCapOverflowAvailable))
       .filter((candidate): candidate is Candidate => candidate !== null)
       .sort(compareCandidates);
     const best = candidates[0];
@@ -345,9 +356,7 @@ export function runPureAllocation(input: PureAllocationInput): PureAllocationOut
       explanationCodes:
         best.source === "engine_afp_cap_overflow_available"
           ? ["BLOCKED_BY_AFP_CAP"]
-          : best.source === "engine_no_availability_afp_fallback"
-            ? ["NO_AVAILABILITY"]
-            : [],
+          : [],
     });
     return true;
   };
@@ -371,17 +380,17 @@ export function runPureAllocation(input: PureAllocationInput): PureAllocationOut
 
   for (const shift of availableShiftOrder) {
     if (assignmentByShiftId.has(shift.id)) continue;
-    if (assignBest(shift, respondents, "available", false)) continue;
+    if (assignBest(shift, respondents, false)) continue;
     if (input.allowAfpOverCapForAvailableShifts) {
-      assignBest(shift, respondents.filter((respondent) => respondent.category === "AFP"), "available", true);
+      assignBest(shift, respondents.filter((respondent) => respondent.category === "AFP"), true);
     }
   }
 
   const repairBlankWithAvailability = (shift: ShiftInfo): boolean => {
-    if (assignBest(shift, respondents, "available", false)) return true;
+    if (assignBest(shift, respondents, false)) return true;
     if (
       input.allowAfpOverCapForAvailableShifts &&
-      assignBest(shift, respondents.filter((respondent) => respondent.category === "AFP"), "available", true)
+      assignBest(shift, respondents.filter((respondent) => respondent.category === "AFP"), true)
     ) {
       return true;
     }
@@ -404,9 +413,9 @@ export function runPureAllocation(input: PureAllocationInput): PureAllocationOut
       removeAssignment(conflictingShift.id);
 
       const candidateForBlank =
-        candidateFor(shift, respondent, "available", false) ??
+        candidateFor(shift, respondent, false) ??
         (input.allowAfpOverCapForAvailableShifts
-          ? candidateFor(shift, respondent, "available", true)
+          ? candidateFor(shift, respondent, true)
           : null);
 
       if (candidateForBlank) {
@@ -423,14 +432,12 @@ export function runPureAllocation(input: PureAllocationInput): PureAllocationOut
         const moved = assignBest(
           conflictingShift,
           respondents.filter((candidate) => candidate.id !== respondent.id),
-          "available",
           false,
         ) ||
           (input.allowAfpOverCapForAvailableShifts &&
             assignBest(
               conflictingShift,
               respondents.filter((candidate) => candidate.id !== respondent.id && candidate.category === "AFP"),
-              "available",
               true,
             ));
 
@@ -448,14 +455,281 @@ export function runPureAllocation(input: PureAllocationInput): PureAllocationOut
     if (!assignmentByShiftId.has(shift.id)) repairBlankWithAvailability(shift);
   }
 
-  const fallbackRespondents = respondents.filter(
-    (respondent) => respondent.category === "AFP" && respondent.allowNoAvailabilityFallback,
-  );
-  const noAvailabilityShifts = shifts.filter((shift) => (availabilityByShiftId.get(shift.id)?.size ?? 0) === 0);
-  for (const shift of noAvailabilityShifts) {
-    if (assignmentByShiftId.has(shift.id)) continue;
-    assignBest(shift, fallbackRespondents, "no_availability_fallback", true);
+  type FairnessScore = {
+    maxAbsTargetDeviationMinutes: number;
+    nonPenalizedStdDevMinutes: number;
+    sumSquaredDeviationMinutes: number;
+    nonPenalizedRangeMinutes: number;
+    diagnostics: FairnessDiagnostics;
+  };
+
+  const actualMinutesByRespondentId = () => {
+    const actual = new Map<number, number>();
+    for (const respondent of respondents) {
+      actual.set(respondent.id, calcMinutes(allocatedShiftIdsFor(respondent.id), shiftMap));
+    }
+    return actual;
+  };
+
+  const currentFairnessScore = (
+    repairAttempted: boolean,
+    successfulRepairMoves: number,
+    assignedShiftCountBeforeRepair: number,
+  ): FairnessScore => {
+    const actual = actualMinutesByRespondentId();
+    const general = respondents.filter((respondent) => respondent.category === "General");
+    const nonPenalized = general.filter((respondent) => !respondent.hasPenalty || respondent.penaltyHours <= 0);
+    const nonPenalizedActual = nonPenalized.map((respondent) => actual.get(respondent.id) ?? 0);
+    const nonPenalizedMean =
+      nonPenalizedActual.length > 0
+        ? nonPenalizedActual.reduce((sum, minutes) => sum + minutes, 0) / nonPenalizedActual.length
+        : 0;
+    const nonPenalizedMin = nonPenalizedActual.length > 0 ? Math.min(...nonPenalizedActual) : 0;
+    const nonPenalizedMax = nonPenalizedActual.length > 0 ? Math.max(...nonPenalizedActual) : 0;
+    const targetDeviations = general.map((respondent) => {
+      const target = targetMinutesByRespondentId.get(respondent.id) ?? 0;
+      return (actual.get(respondent.id) ?? 0) - target;
+    });
+    const maxAbsTargetDeviationMinutes =
+      targetDeviations.length > 0 ? Math.max(...targetDeviations.map((value) => Math.abs(value))) : 0;
+    const maxDeviationFromMeanMinutes =
+      nonPenalizedActual.length > 0
+        ? Math.max(...nonPenalizedActual.map((minutes) => Math.abs(minutes - nonPenalizedMean)))
+        : 0;
+    const nonPenalizedStdDevMinutes = stdDev(nonPenalizedActual);
+    const targetStdDevHours = 2;
+    const warningStdDevHours = 4;
+    const highStdDevReasonCodes =
+      nonPenalizedStdDevMinutes > hoursToMinutes(targetStdDevHours)
+        ? [
+            "HIGH_STD_DEV_NO_LEGAL_REPAIR",
+            "INSUFFICIENT_OVERLAPPING_AVAILABILITY",
+            "SAME_DAY_CONSTRAINT",
+            "SHIFT_GRANULARITY_LIMIT",
+            ...(Array.from(assignmentByShiftId.values()).some((assignment) => assignment.source === "manual")
+              ? ["MANUAL_LOCK_CONSTRAINT"]
+              : []),
+          ]
+        : [];
+
+    return {
+      maxAbsTargetDeviationMinutes,
+      nonPenalizedStdDevMinutes,
+      sumSquaredDeviationMinutes: targetDeviations.reduce((sum, value) => sum + value * value, 0),
+      nonPenalizedRangeMinutes: nonPenalizedMax - nonPenalizedMin,
+      diagnostics: {
+        nonPenalizedGeneralMeanHours: minutesToHours(nonPenalizedMean),
+        nonPenalizedGeneralMedianHours: minutesToHours(median(nonPenalizedActual)),
+        nonPenalizedGeneralMinHours: minutesToHours(nonPenalizedMin),
+        nonPenalizedGeneralMaxHours: minutesToHours(nonPenalizedMax),
+        nonPenalizedGeneralRangeHours: minutesToHours(nonPenalizedMax - nonPenalizedMin),
+        nonPenalizedGeneralStdDevHours: minutesToHours(nonPenalizedStdDevMinutes),
+        maxDeviationFromMeanHours: minutesToHours(maxDeviationFromMeanMinutes),
+        maxDeviationFromTargetHours: minutesToHours(maxAbsTargetDeviationMinutes),
+        sumSquaredDeviationFromTargetHours: targetDeviations.reduce(
+          (sum, value) => sum + Math.pow(minutesToHours(value), 2),
+          0,
+        ),
+        targetStdDevHours,
+        warningStdDevHours,
+        repairAttempted,
+        successfulRepairMoves,
+        assignedShiftCountBeforeRepair,
+        assignedShiftCountAfterRepair: assignmentByShiftId.size,
+        highStdDevReasonCodes,
+      },
+    };
+  };
+
+  const scoreIsBetter = (next: FairnessScore, current: FairnessScore): boolean => {
+    const epsilon = 0.5;
+    const comparisons: Array<[number, number]> = [
+      [next.maxAbsTargetDeviationMinutes, current.maxAbsTargetDeviationMinutes],
+      [next.nonPenalizedStdDevMinutes, current.nonPenalizedStdDevMinutes],
+      [next.sumSquaredDeviationMinutes, current.sumSquaredDeviationMinutes],
+      [next.nonPenalizedRangeMinutes, current.nonPenalizedRangeMinutes],
+    ];
+    for (const [a, b] of comparisons) {
+      if (Math.abs(a - b) <= epsilon) continue;
+      return a < b;
+    }
+    return false;
+  };
+
+  const assignmentCodesFor = (source: AssignmentSource): string[] =>
+    source === "engine_afp_cap_overflow_available" ? ["BLOCKED_BY_AFP_CAP"] : [];
+
+  const trySingleFairnessMove = (
+    repairAttempted: boolean,
+    successfulRepairMoves: number,
+    assignedShiftCountBeforeRepair: number,
+  ): boolean => {
+    const baseScore = currentFairnessScore(
+      repairAttempted,
+      successfulRepairMoves,
+      assignedShiftCountBeforeRepair,
+    );
+    const actual = actualMinutesByRespondentId();
+    const movableAssignments = Array.from(assignmentByShiftId.values())
+      .filter((assignment) => assignment.source !== "manual")
+      .sort((a, b) => {
+        const donorA = respondentById.get(a.respondentId);
+        const donorB = respondentById.get(b.respondentId);
+        const overA = donorA?.category === "General"
+          ? (actual.get(a.respondentId) ?? 0) - (targetMinutesByRespondentId.get(a.respondentId) ?? 0)
+          : 0;
+        const overB = donorB?.category === "General"
+          ? (actual.get(b.respondentId) ?? 0) - (targetMinutesByRespondentId.get(b.respondentId) ?? 0)
+          : 0;
+        const shiftA = shiftMap.get(a.shiftId)!;
+        const shiftB = shiftMap.get(b.shiftId)!;
+        return (
+          overB - overA ||
+          hoursToMinutes(shiftB.durationHours) - hoursToMinutes(shiftA.durationHours) ||
+          shiftA.date.localeCompare(shiftB.date) ||
+          shiftA.slotIndex - shiftB.slotIndex ||
+          shiftA.id - shiftB.id
+        );
+      });
+
+    for (const originalAssignment of movableAssignments) {
+      const shift = shiftMap.get(originalAssignment.shiftId);
+      if (!shift) continue;
+
+      removeAssignment(shift.id);
+      const recipients = respondents
+        .filter(
+          (respondent) =>
+            respondent.id !== originalAssignment.respondentId && respondent.availableShiftIds.has(shift.id),
+        )
+        .sort((a, b) => {
+          const deficitA = (targetMinutesByRespondentId.get(a.id) ?? 0) - (actual.get(a.id) ?? 0);
+          const deficitB = (targetMinutesByRespondentId.get(b.id) ?? 0) - (actual.get(b.id) ?? 0);
+          return deficitB - deficitA || a.name.localeCompare(b.name) || a.id - b.id;
+        });
+
+      for (const recipient of recipients) {
+        const candidate =
+          candidateFor(shift, recipient, false) ??
+          (input.allowAfpOverCapForAvailableShifts ? candidateFor(shift, recipient, true) : null);
+        if (!candidate) continue;
+        addAssignment({
+          respondentId: recipient.id,
+          shiftId: shift.id,
+          source: candidate.source,
+          explanationCodes: assignmentCodesFor(candidate.source),
+        });
+        const nextScore = currentFairnessScore(
+          repairAttempted,
+          successfulRepairMoves,
+          assignedShiftCountBeforeRepair,
+        );
+        if (scoreIsBetter(nextScore, baseScore)) return true;
+        removeAssignment(shift.id);
+      }
+
+      addAssignment(originalAssignment);
+    }
+
+    return false;
+  };
+
+  const tryPairwiseFairnessSwap = (
+    repairAttempted: boolean,
+    successfulRepairMoves: number,
+    assignedShiftCountBeforeRepair: number,
+  ): boolean => {
+    const baseScore = currentFairnessScore(
+      repairAttempted,
+      successfulRepairMoves,
+      assignedShiftCountBeforeRepair,
+    );
+    const movableAssignments = Array.from(assignmentByShiftId.values())
+      .filter((assignment) => assignment.source !== "manual")
+      .sort((a, b) => {
+        const shiftA = shiftMap.get(a.shiftId)!;
+        const shiftB = shiftMap.get(b.shiftId)!;
+        return shiftA.date.localeCompare(shiftB.date) || shiftA.slotIndex - shiftB.slotIndex || shiftA.id - shiftB.id;
+      });
+
+    for (let i = 0; i < movableAssignments.length; i++) {
+      for (let j = i + 1; j < movableAssignments.length; j++) {
+        const first = movableAssignments[i];
+        const second = movableAssignments[j];
+        if (first.respondentId === second.respondentId) continue;
+        const firstRespondent = respondentById.get(first.respondentId);
+        const secondRespondent = respondentById.get(second.respondentId);
+        const firstShift = shiftMap.get(first.shiftId);
+        const secondShift = shiftMap.get(second.shiftId);
+        if (!firstRespondent || !secondRespondent || !firstShift || !secondShift) continue;
+        if (!firstRespondent.availableShiftIds.has(secondShift.id)) continue;
+        if (!secondRespondent.availableShiftIds.has(firstShift.id)) continue;
+
+        removeAssignment(firstShift.id);
+        removeAssignment(secondShift.id);
+
+        const secondTakesFirst =
+          candidateFor(firstShift, secondRespondent, false) ??
+          (input.allowAfpOverCapForAvailableShifts ? candidateFor(firstShift, secondRespondent, true) : null);
+        if (secondTakesFirst) {
+          addAssignment({
+            respondentId: secondRespondent.id,
+            shiftId: firstShift.id,
+            source: secondTakesFirst.source,
+            explanationCodes: assignmentCodesFor(secondTakesFirst.source),
+          });
+        }
+
+        const firstTakesSecond = secondTakesFirst
+          ? candidateFor(secondShift, firstRespondent, false) ??
+            (input.allowAfpOverCapForAvailableShifts
+              ? candidateFor(secondShift, firstRespondent, true)
+              : null)
+          : null;
+        if (firstTakesSecond) {
+          addAssignment({
+            respondentId: firstRespondent.id,
+            shiftId: secondShift.id,
+            source: firstTakesSecond.source,
+            explanationCodes: assignmentCodesFor(firstTakesSecond.source),
+          });
+          const nextScore = currentFairnessScore(
+            repairAttempted,
+            successfulRepairMoves,
+            assignedShiftCountBeforeRepair,
+          );
+          if (scoreIsBetter(nextScore, baseScore)) return true;
+          removeAssignment(secondShift.id);
+        }
+        if (secondTakesFirst) removeAssignment(firstShift.id);
+
+        addAssignment(first);
+        addAssignment(second);
+      }
+    }
+
+    return false;
+  };
+
+  const assignedShiftCountBeforeFairnessRepair = assignmentByShiftId.size;
+  let fairnessRepairMoves = 0;
+  let fairnessRepairAttempted = currentFairnessScore(false, 0, assignedShiftCountBeforeFairnessRepair)
+    .nonPenalizedStdDevMinutes > hoursToMinutes(2);
+
+  for (let iteration = 0; iteration < 200; iteration++) {
+    const moved =
+      trySingleFairnessMove(fairnessRepairAttempted, fairnessRepairMoves, assignedShiftCountBeforeFairnessRepair) ||
+      tryPairwiseFairnessSwap(fairnessRepairAttempted, fairnessRepairMoves, assignedShiftCountBeforeFairnessRepair);
+    if (!moved) break;
+    fairnessRepairAttempted = true;
+    fairnessRepairMoves += 1;
   }
+
+  const fairnessDiagnostics = currentFairnessScore(
+    fairnessRepairAttempted,
+    fairnessRepairMoves,
+    assignedShiftCountBeforeFairnessRepair,
+  ).diagnostics;
 
   const plans = respondents.map((respondent) => {
     const assignments = (assignmentsByRespondentId.get(respondent.id) ?? []).sort((a, b) => {
@@ -490,6 +764,7 @@ export function runPureAllocation(input: PureAllocationInput): PureAllocationOut
     averageHours: allHours.length > 0 ? allHours.reduce((a, b) => a + b, 0) / allHours.length : 0,
     stdDev: stdDev(allHours),
     unallocatedShiftIds: shifts.map((shift) => shift.id).filter((shiftId) => !assignmentByShiftId.has(shiftId)),
+    fairnessDiagnostics,
   };
 }
 

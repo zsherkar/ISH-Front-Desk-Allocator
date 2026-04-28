@@ -9,7 +9,7 @@
 export interface RunAllocationBody {
   /** IDs of respondents to treat as AFP (capped at 10 hours each) */
   afpRespondentIds: number[];
-  /** AFP respondent IDs that should receive shifts nobody selected, even above their cap */
+  /** Deprecated; no-availability shifts now remain blank because availability is mandatory */
   afpUnclaimedShiftRespondentIds?: number[];
   /** IDs of respondents to include in this allocation run */
   includedRespondentIds?: number[];

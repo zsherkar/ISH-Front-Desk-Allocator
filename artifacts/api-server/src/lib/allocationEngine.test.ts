@@ -112,7 +112,17 @@ test("non-adjacent double remains blank when no legal repair exists", () => {
   assert.equal(output.unallocatedShiftIds.length, 1);
 });
 
-test("no_availability_shift_not_assigned_to_fallback_afp_regression uses selected AFP fallback", () => {
+test("no unavailable assignment leaves a no-availability shift blank", () => {
+  const output = runPureAllocation({
+    shifts: [weekday[0]],
+    respondents: [respondent(1, "Alice", [])],
+  });
+
+  assert.deepEqual(output.unallocatedShiftIds, [1]);
+  assert.equal(assignmentFor(output, 1), undefined);
+});
+
+test("no_afp_no_availability_fallback_regression leaves no-availability shifts blank", () => {
   const output = runPureAllocation({
     shifts: [weekday[0]],
     respondents: [
@@ -124,9 +134,8 @@ test("no_availability_shift_not_assigned_to_fallback_afp_regression uses selecte
     ],
   });
 
-  assert.equal(output.unallocatedShiftIds.length, 0);
-  assert.equal(assignmentFor(output, 1)?.respondentId, 1);
-  assert.equal(assignmentFor(output, 1)?.source, "engine_no_availability_afp_fallback");
+  assert.deepEqual(output.unallocatedShiftIds, [1]);
+  assert.equal(assignmentFor(output, 1), undefined);
 });
 
 test("available AFP cap overflow is explicit and opt-in", () => {
@@ -177,3 +186,39 @@ test("preserve manual locks keeps manual assignments and allocates around them",
   assert.equal(output.unallocatedShiftIds.length, 0);
 });
 
+test("fairness_high_sd_regression keeps balanced feasible non-penalized allocation under target threshold", () => {
+  const monday = shift(11, "09:00", "11:00", 2);
+  const tuesday = { ...shift(12, "09:00", "11:00", 2), date: "2026-05-05" };
+  const wednesday = { ...shift(13, "09:00", "11:00", 2), date: "2026-05-06" };
+  const thursday = { ...shift(14, "09:00", "11:00", 2), date: "2026-05-07" };
+
+  const output = runPureAllocation({
+    shifts: [monday, tuesday, wednesday, thursday],
+    respondents: [
+      respondent(1, "Alice", [11, 12, 13, 14]),
+      respondent(2, "Bob", [11, 12, 13, 14]),
+      respondent(3, "Caleb", [11, 12, 13, 14]),
+      respondent(4, "Dana", [11, 12, 13, 14]),
+    ],
+  });
+
+  assert.equal(output.assignments.length, 4);
+  assert.equal(output.fairnessDiagnostics.nonPenalizedGeneralStdDevHours <= 2, true);
+});
+
+test("coverage preserved during fairness repair", () => {
+  const output = runPureAllocation({
+    shifts: [
+      shift(21, "09:00", "11:00", 2),
+      { ...shift(22, "09:00", "11:00", 2), date: "2026-05-05" },
+      { ...shift(23, "09:00", "11:00", 2), date: "2026-05-06" },
+    ],
+    respondents: [
+      respondent(1, "Alice", [21, 22, 23]),
+      respondent(2, "Bob", [21, 22, 23]),
+    ],
+  });
+
+  assert.equal(output.fairnessDiagnostics.assignedShiftCountBeforeRepair, output.assignments.length);
+  assert.equal(output.fairnessDiagnostics.assignedShiftCountAfterRepair, output.assignments.length);
+});
