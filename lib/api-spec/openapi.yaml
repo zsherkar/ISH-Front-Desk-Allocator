@@ -237,6 +237,43 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
+  /surveys/{id}/allocations/dry-run:
+    post:
+      operationId: dryRunAllocation
+      tags: [allocations]
+      summary: Run a safe allocation dry-run without changing saved allocations or responses
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RunAllocationBody"
+      responses:
+        "200":
+          description: Dry-run allocation audit summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AllocationDryRunResult"
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
   /surveys/{id}/allocations/adjust:
     patch:
       operationId: adjustAllocation
@@ -809,7 +846,15 @@ components:
           type: array
           items:
             type: integer
-          description: Deprecated; no-availability shifts now remain blank because availability is mandatory
+          description: Deprecated alias for noAvailabilityFallbackAfpIds
+        allowNoAvailabilityAfpPlaceholders:
+          type: boolean
+          description: Explicitly allow zero-availability shifts to be assigned to selected AFPs as emergency placeholders
+        noAvailabilityFallbackAfpIds:
+          type: array
+          items:
+            type: integer
+          description: AFP respondents eligible for no-availability emergency placeholder assignments
         includedRespondentIds:
           type: array
           items:
@@ -853,6 +898,7 @@ components:
             - engine_normal
             - engine_back_to_back_emergency
             - engine_no_availability_afp_fallback
+            - admin_no_availability_afp_placeholder
             - engine_afp_cap_overflow_available
             - manual
             - blank
@@ -1142,6 +1188,9 @@ components:
             type: integer
         penaltyNote:
           type: ["string", "null"]
+        noAvailabilityAfpPlaceholder:
+          type: boolean
+          description: Special mode for assigning zero-availability shifts to AFP placeholders only
       required:
         - respondentId
 
@@ -1252,6 +1301,14 @@ components:
           type: number
         sameDayDoubleCount:
           type: integer
+        normalHours:
+          type: number
+        afpCapOverflowHours:
+          type: number
+        noAvailabilityPlaceholderHours:
+          type: number
+        manualHours:
+          type: number
         fairnessStatus:
           type: string
       required:
@@ -1272,7 +1329,105 @@ components:
         - availableCapacityHours
         - deviationFromTargetHours
         - sameDayDoubleCount
+        - normalHours
+        - afpCapOverflowHours
+        - noAvailabilityPlaceholderHours
+        - manualHours
         - fairnessStatus
+
+    AllocationDryRunAssignment:
+      type: object
+      properties:
+        respondentId:
+          type: integer
+        shiftId:
+          type: integer
+        source:
+          type: string
+        explanationCodes:
+          type: array
+          items:
+            type: string
+      required:
+        - respondentId
+        - shiftId
+        - source
+        - explanationCodes
+
+    AllocationDryRunResult:
+      type: object
+      properties:
+        surveyId:
+          type: integer
+        dryRun:
+          type: boolean
+        totalShifts:
+          type: integer
+        assignedShifts:
+          type: integer
+        normalAssignedShifts:
+          type: integer
+        blankShifts:
+          type: integer
+        blankWithAvailabilityCount:
+          type: integer
+        blankZeroAvailabilityShiftCount:
+          type: integer
+        allowedNoAvailabilityAfpPlaceholderAssignments:
+          type: integer
+        illegalAssignmentsWithoutAvailability:
+          type: integer
+        nonPenalizedGeneralMeanHours:
+          type: number
+        nonPenalizedGeneralStdDevHours:
+          type: number
+        nonPenalizedGeneralRangeHours:
+          type: number
+        fairnessRepairMoveCount:
+          type: integer
+        highStdDevReasonCodes:
+          type: array
+          items:
+            type: string
+        backToBackEmergencyAssignments:
+          type: integer
+        afpCapOverflowAssignments:
+          type: integer
+        noAvailabilityAfpPlaceholderAssignments:
+          type: integer
+        settings:
+          type: object
+          additionalProperties: true
+        assignments:
+          type: array
+          items:
+            $ref: "#/components/schemas/AllocationDryRunAssignment"
+        unallocatedShiftIds:
+          type: array
+          items:
+            type: integer
+      required:
+        - surveyId
+        - dryRun
+        - totalShifts
+        - assignedShifts
+        - normalAssignedShifts
+        - blankShifts
+        - blankWithAvailabilityCount
+        - blankZeroAvailabilityShiftCount
+        - allowedNoAvailabilityAfpPlaceholderAssignments
+        - illegalAssignmentsWithoutAvailability
+        - nonPenalizedGeneralMeanHours
+        - nonPenalizedGeneralStdDevHours
+        - nonPenalizedGeneralRangeHours
+        - fairnessRepairMoveCount
+        - highStdDevReasonCodes
+        - backToBackEmergencyAssignments
+        - afpCapOverflowAssignments
+        - noAvailabilityAfpPlaceholderAssignments
+        - settings
+        - assignments
+        - unallocatedShiftIds
 
     AllocationStats:
       type: object
@@ -1303,6 +1458,16 @@ components:
           type: integer
         noAvailabilityFallbackCount:
           type: integer
+        allowedNoAvailabilityAfpPlaceholderAssignments:
+          type: integer
+        illegalAssignmentsWithoutAvailability:
+          type: integer
+        noAvailabilityAfpPlaceholderCount:
+          type: integer
+        noAvailabilityShiftsStillBlank:
+          type: integer
+        afpNoAvailabilityPlaceholderHours:
+          type: number
         afpCapOverflowCount:
           type: integer
         normalAssignmentsWithoutAvailability:
@@ -1385,6 +1550,11 @@ components:
         - manualAssignmentCount
         - backToBackEmergencyCount
         - noAvailabilityFallbackCount
+        - allowedNoAvailabilityAfpPlaceholderAssignments
+        - illegalAssignmentsWithoutAvailability
+        - noAvailabilityAfpPlaceholderCount
+        - noAvailabilityShiftsStillBlank
+        - afpNoAvailabilityPlaceholderHours
         - afpCapOverflowCount
         - normalAssignmentsWithoutAvailability
         - manualAssignmentsWithoutAvailability

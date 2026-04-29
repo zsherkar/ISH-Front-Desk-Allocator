@@ -18,6 +18,7 @@ import type {
 
 import type {
   AdjustAllocationBody,
+  AllocationDryRunResult,
   AllocationResult,
   AllocationStats,
   CreateRespondentBody,
@@ -800,6 +801,93 @@ export function useGetAllocations<
 
   return { ...query, queryKey: queryOptions.queryKey };
 }
+
+/**
+ * @summary Run a safe allocation dry-run without changing saved allocations or responses
+ */
+export const getDryRunAllocationUrl = (id: number) => {
+  return `/api/surveys/${id}/allocations/dry-run`;
+};
+
+export const dryRunAllocation = async (
+  id: number,
+  runAllocationBody: RunAllocationBody,
+  options?: RequestInit,
+): Promise<AllocationDryRunResult> => {
+  return customFetch<AllocationDryRunResult>(getDryRunAllocationUrl(id), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(runAllocationBody),
+  });
+};
+
+export const getDryRunAllocationMutationOptions = <
+  TError = ErrorType<ErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof dryRunAllocation>>,
+    TError,
+    { id: number; data: BodyType<RunAllocationBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof dryRunAllocation>>,
+  TError,
+  { id: number; data: BodyType<RunAllocationBody> },
+  TContext
+> => {
+  const mutationKey = ["dryRunAllocation"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof dryRunAllocation>>,
+    { id: number; data: BodyType<RunAllocationBody> }
+  > = (props) => {
+    const { id, data } = props ?? {};
+
+    return dryRunAllocation(id, data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type DryRunAllocationMutationResult = NonNullable<
+  Awaited<ReturnType<typeof dryRunAllocation>>
+>;
+export type DryRunAllocationMutationBody = BodyType<RunAllocationBody>;
+export type DryRunAllocationMutationError = ErrorType<ErrorResponse>;
+
+/**
+ * @summary Run a safe allocation dry-run without changing saved allocations or responses
+ */
+export const useDryRunAllocation = <
+  TError = ErrorType<ErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof dryRunAllocation>>,
+    TError,
+    { id: number; data: BodyType<RunAllocationBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof dryRunAllocation>>,
+  TError,
+  { id: number; data: BodyType<RunAllocationBody> },
+  TContext
+> => {
+  return useMutation(getDryRunAllocationMutationOptions(options));
+};
 
 /**
  * @summary Manually adjust a respondent's allocation (penalty override)

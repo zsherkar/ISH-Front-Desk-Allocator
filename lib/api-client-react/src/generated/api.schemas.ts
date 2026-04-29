@@ -227,8 +227,12 @@ export interface UpdateRespondentBody {
 export interface RunAllocationBody {
   /** IDs of respondents to treat as AFP (capped at 10 hours each) */
   afpRespondentIds: number[];
-  /** Deprecated; no-availability shifts now remain blank because availability is mandatory */
+  /** Deprecated alias for noAvailabilityFallbackAfpIds */
   afpUnclaimedShiftRespondentIds?: number[];
+  /** Explicitly allow zero-availability shifts to be assigned to selected AFPs as emergency placeholders */
+  allowNoAvailabilityAfpPlaceholders?: boolean;
+  /** AFP respondents eligible for no-availability emergency placeholder assignments */
+  noAvailabilityFallbackAfpIds?: number[];
   /** IDs of respondents to include in this allocation run */
   includedRespondentIds?: number[];
   /** Allow AFP respondents to exceed their cap for selected-availability shifts only after all normal legal candidates fail */
@@ -252,6 +256,8 @@ export const AllocatedShiftAssignmentSource = {
   engine_normal: "engine_normal",
   engine_back_to_back_emergency: "engine_back_to_back_emergency",
   engine_no_availability_afp_fallback: "engine_no_availability_afp_fallback",
+  admin_no_availability_afp_placeholder:
+    "admin_no_availability_afp_placeholder",
   engine_afp_cap_overflow_available: "engine_afp_cap_overflow_available",
   manual: "manual",
   blank: "blank",
@@ -401,6 +407,8 @@ export interface AdjustAllocationBody {
   shiftIdsToRemove?: number[];
   /** @nullable */
   penaltyNote?: string | null;
+  /** Special mode for assigning zero-availability shifts to AFP placeholders only */
+  noAvailabilityAfpPlaceholder?: boolean;
 }
 
 export type ShiftTypeStatDayType =
@@ -470,7 +478,44 @@ export interface AllocationRespondentStat {
   availableCapacityHours: number;
   deviationFromTargetHours: number;
   sameDayDoubleCount: number;
+  normalHours: number;
+  afpCapOverflowHours: number;
+  noAvailabilityPlaceholderHours: number;
+  manualHours: number;
   fairnessStatus: string;
+}
+
+export interface AllocationDryRunAssignment {
+  respondentId: number;
+  shiftId: number;
+  source: string;
+  explanationCodes: string[];
+}
+
+export type AllocationDryRunResultSettings = { [key: string]: unknown };
+
+export interface AllocationDryRunResult {
+  surveyId: number;
+  dryRun: boolean;
+  totalShifts: number;
+  assignedShifts: number;
+  normalAssignedShifts: number;
+  blankShifts: number;
+  blankWithAvailabilityCount: number;
+  blankZeroAvailabilityShiftCount: number;
+  allowedNoAvailabilityAfpPlaceholderAssignments: number;
+  illegalAssignmentsWithoutAvailability: number;
+  nonPenalizedGeneralMeanHours: number;
+  nonPenalizedGeneralStdDevHours: number;
+  nonPenalizedGeneralRangeHours: number;
+  fairnessRepairMoveCount: number;
+  highStdDevReasonCodes: string[];
+  backToBackEmergencyAssignments: number;
+  afpCapOverflowAssignments: number;
+  noAvailabilityAfpPlaceholderAssignments: number;
+  settings: AllocationDryRunResultSettings;
+  assignments: AllocationDryRunAssignment[];
+  unallocatedShiftIds: number[];
 }
 
 export interface AllocationStats {
@@ -487,6 +532,11 @@ export interface AllocationStats {
   manualAssignmentCount: number;
   backToBackEmergencyCount: number;
   noAvailabilityFallbackCount: number;
+  allowedNoAvailabilityAfpPlaceholderAssignments: number;
+  illegalAssignmentsWithoutAvailability: number;
+  noAvailabilityAfpPlaceholderCount: number;
+  noAvailabilityShiftsStillBlank: number;
+  afpNoAvailabilityPlaceholderHours: number;
   afpCapOverflowCount: number;
   normalAssignmentsWithoutAvailability: number;
   manualAssignmentsWithoutAvailability: number;

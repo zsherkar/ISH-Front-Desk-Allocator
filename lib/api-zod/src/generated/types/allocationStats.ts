@@ -21,6 +21,11 @@ export interface AllocationStats {
   manualAssignmentCount: number;
   backToBackEmergencyCount: number;
   noAvailabilityFallbackCount: number;
+  allowedNoAvailabilityAfpPlaceholderAssignments: number;
+  illegalAssignmentsWithoutAvailability: number;
+  noAvailabilityAfpPlaceholderCount: number;
+  noAvailabilityShiftsStillBlank: number;
+  afpNoAvailabilityPlaceholderHours: number;
   afpCapOverflowCount: number;
   normalAssignmentsWithoutAvailability: number;
   manualAssignmentsWithoutAvailability: number;

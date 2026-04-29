@@ -2,6 +2,7 @@ export type AssignmentSource =
   | "engine_normal"
   | "engine_back_to_back_emergency"
   | "engine_no_availability_afp_fallback"
+  | "admin_no_availability_afp_placeholder"
   | "engine_afp_cap_overflow_available"
   | "manual"
   | "blank";
@@ -19,6 +20,9 @@ export type ExplanationCode =
   | "BLOCKED_BY_MANUAL_LOCK"
   | "BLOCKED_BY_NO_BACK_TO_BACK_OPTION"
   | "HIGH_STD_DEV_NO_LEGAL_REPAIR"
+  | "HIGH_STD_DEV_LEGAL_REPAIR_EXISTS"
+  | "EXTREME_NO_AVAILABILITY_PLACEHOLDER_STACKING"
+  | "EXTREME_STACKING_DISABLED"
   | "NON_AFP_CAPACITY_SHORTFALL"
   | "INSUFFICIENT_AVAILABILITY"
   | "INSUFFICIENT_OVERLAPPING_AVAILABILITY"
@@ -36,6 +40,16 @@ export type ExplanationCode =
   | "RENDERING_ASSIGNMENT_MISMATCH"
   | "AVAILABILITY_SHIFT_KEY_MISMATCH"
   | "UNKNOWN";
+
+export const NO_AVAILABILITY_AFP_PLACEHOLDER_SOURCE: AssignmentSource =
+  "admin_no_availability_afp_placeholder";
+
+export function isNoAvailabilityAfpPlaceholderSource(source: AssignmentSource): boolean {
+  return (
+    source === "admin_no_availability_afp_placeholder" ||
+    source === "engine_no_availability_afp_fallback"
+  );
+}
 
 export interface ShiftTimeWindow {
   date: string;
@@ -147,6 +161,10 @@ export function canAssignShiftToRespondent({
   category,
   currentNormalMinutes = 0,
   afpCapMinutes = Infinity,
+  availabilityCount,
+  allowNoAvailabilityAfpPlaceholder = false,
+  isEligibleNoAvailabilityAfpPlaceholder = false,
+  allowExtremeNoAvailabilityAfpStacking = false,
 }: {
   shiftId: number;
   existingShiftIds: number[];
@@ -156,6 +174,10 @@ export function canAssignShiftToRespondent({
   category: "AFP" | "General";
   currentNormalMinutes?: number;
   afpCapMinutes?: number;
+  availabilityCount?: number;
+  allowNoAvailabilityAfpPlaceholder?: boolean;
+  isEligibleNoAvailabilityAfpPlaceholder?: boolean;
+  allowExtremeNoAvailabilityAfpStacking?: boolean;
 }): AssignmentValidationResult {
   const shift = shiftMap.get(shiftId);
   const reasonCodes: ExplanationCode[] = [];
@@ -172,21 +194,39 @@ export function canAssignShiftToRespondent({
     };
   }
 
-  const requiresAvailability = assignmentSource !== "blank";
+  const isPlaceholderSource = isNoAvailabilityAfpPlaceholderSource(assignmentSource);
+  const isAllowedNoAvailabilityPlaceholder =
+    isPlaceholderSource &&
+    !isAvailable &&
+    availabilityCount === 0 &&
+    category === "AFP" &&
+    allowNoAvailabilityAfpPlaceholder &&
+    isEligibleNoAvailabilityAfpPlaceholder;
+
+  const requiresAvailability = assignmentSource !== "blank" && !isAllowedNoAvailabilityPlaceholder;
   const wouldViolateAvailability = requiresAvailability && !isAvailable;
   if (requiresAvailability && !isAvailable) {
     reasonCodes.push("NO_AVAILABILITY");
+  }
+  if (isPlaceholderSource && !isAllowedNoAvailabilityPlaceholder) {
+    if (availabilityCount !== 0) reasonCodes.push("NO_AVAILABILITY");
+    if (category !== "AFP" || !isEligibleNoAvailabilityAfpPlaceholder) {
+      reasonCodes.push("NO_FALLBACK_AFP_SELECTED");
+    }
   }
 
   const dayTier = sameDayAllocationTier(shiftId, existingShiftIds, shiftMap);
   const sameDayCount = existingShiftIds.filter((id) => shiftMap.get(id)?.date === shift.date).length;
   const wouldCreateTripleShiftDay = sameDayCount >= 2;
   const wouldCreateNonAdjacentSameDayDouble = dayTier === 2 && !wouldCreateTripleShiftDay;
-  if (dayTier === 2) {
+  if (dayTier === 2 && !(isAllowedNoAvailabilityPlaceholder && allowExtremeNoAvailabilityAfpStacking)) {
     reasonCodes.push("BLOCKED_BY_SAME_DAY_RULE");
     reasonCodes.push(
       sameDayCount >= 2 ? "BLOCKED_BY_MAX_TWO_SHIFTS_DAY" : "BLOCKED_BY_NON_ADJACENT_SAME_DAY",
     );
+    if (isAllowedNoAvailabilityPlaceholder) reasonCodes.push("EXTREME_STACKING_DISABLED");
+  } else if (dayTier === 2 && isAllowedNoAvailabilityPlaceholder && allowExtremeNoAvailabilityAfpStacking) {
+    reasonCodes.push("EXTREME_NO_AVAILABILITY_PLACEHOLDER_STACKING");
   }
 
   const wouldExceedAfpCap =
@@ -194,7 +234,7 @@ export function canAssignShiftToRespondent({
     currentNormalMinutes + hoursToMinutes(shift.durationHours) > afpCapMinutes;
   if (
     category === "AFP" &&
-    assignmentSource !== "engine_no_availability_afp_fallback" &&
+    !isNoAvailabilityAfpPlaceholderSource(assignmentSource) &&
     assignmentSource !== "engine_afp_cap_overflow_available" &&
     assignmentSource !== "manual" &&
     wouldExceedAfpCap
@@ -203,7 +243,11 @@ export function canAssignShiftToRespondent({
   }
 
   return {
-    ok: reasonCodes.length === 0,
+    ok: reasonCodes.length === 0 || (
+      isAllowedNoAvailabilityPlaceholder &&
+      allowExtremeNoAvailabilityAfpStacking &&
+      reasonCodes.every((code) => code === "EXTREME_NO_AVAILABILITY_PLACEHOLDER_STACKING")
+    ),
     reasonCodes,
     wouldBeBackToBackEmergency: dayTier === 1,
     wouldExceedAfpCap,

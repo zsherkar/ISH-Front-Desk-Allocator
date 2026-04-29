@@ -1,5 +1,6 @@
 import {
   type AssignmentSource,
+  NO_AVAILABILITY_AFP_PLACEHOLDER_SOURCE,
   canAssignShiftToRespondent,
   deriveShiftSlotIndexes,
   hoursToMinutes,
@@ -14,8 +15,11 @@ export interface AllocationOptions {
   surveyId: number;
   afpRespondentIds: number[];
   afpUnclaimedShiftRespondentIds?: number[];
+  allowNoAvailabilityAfpPlaceholders?: boolean;
+  noAvailabilityFallbackAfpIds?: number[];
   includedRespondentIds?: number[];
   allowAfpOverCapForAvailableShifts?: boolean;
+  allowExtremeNoAvailabilityAfpStacking?: boolean;
   existingManualAssignments?: Array<{ respondentId: number; shiftId: number }>;
 }
 
@@ -82,6 +86,8 @@ export interface PureAllocationInput {
   shifts: AllocationShiftInput[];
   respondents: AllocationRespondentInput[];
   allowAfpOverCapForAvailableShifts?: boolean;
+  allowNoAvailabilityAfpPlaceholders?: boolean;
+  allowExtremeNoAvailabilityAfpStacking?: boolean;
   manualAssignments?: Array<{ respondentId: number; shiftId: number }>;
 }
 
@@ -160,12 +166,14 @@ function assignmentSourceRank(source: AssignmentSource): number {
       return 1;
     case "engine_afp_cap_overflow_available":
       return 2;
-    case "engine_no_availability_afp_fallback":
+    case "admin_no_availability_afp_placeholder":
       return 3;
-    case "manual":
+    case "engine_no_availability_afp_fallback":
       return 4;
-    case "blank":
+    case "manual":
       return 5;
+    case "blank":
+      return 6;
   }
 }
 
@@ -223,6 +231,11 @@ export function runPureAllocation(input: PureAllocationInput): PureAllocationOut
           assignment.source === "engine_normal" ||
           assignment.source === "engine_back_to_back_emergency",
       )
+      .reduce((sum, assignment) => sum + hoursToMinutes(shiftMap.get(assignment.shiftId)?.durationHours ?? 0), 0);
+
+  const noAvailabilityPlaceholderMinutesFor = (respondentId: number) =>
+    (assignmentsByRespondentId.get(respondentId) ?? [])
+      .filter((assignment) => assignment.source === NO_AVAILABILITY_AFP_PLACEHOLDER_SOURCE)
       .reduce((sum, assignment) => sum + hoursToMinutes(shiftMap.get(assignment.shiftId)?.durationHours ?? 0), 0);
 
   const addAssignment = (assignment: AllocationAssignment) => {
@@ -312,6 +325,7 @@ export function runPureAllocation(input: PureAllocationInput): PureAllocationOut
       category: respondent.category,
       currentNormalMinutes: normalAfpMinutesFor(respondent.id),
       afpCapMinutes: hoursToMinutes(respondent.afpHoursCap),
+      availabilityCount: availabilityByShiftId.get(shift.id)?.size ?? 0,
     });
 
     if (!validation.ok) {
@@ -557,7 +571,11 @@ export function runPureAllocation(input: PureAllocationInput): PureAllocationOut
   };
 
   const assignmentCodesFor = (source: AssignmentSource): string[] =>
-    source === "engine_afp_cap_overflow_available" ? ["BLOCKED_BY_AFP_CAP"] : [];
+    source === "engine_afp_cap_overflow_available"
+      ? ["BLOCKED_BY_AFP_CAP"]
+      : source === NO_AVAILABILITY_AFP_PLACEHOLDER_SOURCE
+        ? ["NO_AVAILABILITY"]
+        : [];
 
   const trySingleFairnessMove = (
     repairAttempted: boolean,
@@ -725,6 +743,86 @@ export function runPureAllocation(input: PureAllocationInput): PureAllocationOut
     fairnessRepairMoves += 1;
   }
 
+  const assignNoAvailabilityAfpPlaceholders = () => {
+    if (!input.allowNoAvailabilityAfpPlaceholders) return;
+    const fallbackAfps = respondents
+      .filter((respondent) => respondent.category === "AFP" && respondent.allowNoAvailabilityFallback)
+      .sort((a, b) => a.name.localeCompare(b.name) || a.id - b.id);
+    if (fallbackAfps.length === 0) return;
+
+    const noAvailabilityShifts = shifts
+      .filter((shift) => !assignmentByShiftId.has(shift.id) && (availabilityByShiftId.get(shift.id)?.size ?? 0) === 0)
+      .sort(
+        (a, b) =>
+          a.date.localeCompare(b.date) ||
+          a.slotIndex - b.slotIndex ||
+          hoursToMinutes(b.durationHours) - hoursToMinutes(a.durationHours) ||
+          a.id - b.id,
+      );
+
+    for (const shift of noAvailabilityShifts) {
+      const candidates = fallbackAfps
+        .map((respondent) => {
+          const existingShiftIds = allocatedShiftIdsFor(respondent.id);
+          const validation = canAssignShiftToRespondent({
+            shiftId: shift.id,
+            existingShiftIds,
+            shiftMap,
+            isAvailable: false,
+            availabilityCount: 0,
+            assignmentSource: NO_AVAILABILITY_AFP_PLACEHOLDER_SOURCE,
+            category: "AFP",
+            allowNoAvailabilityAfpPlaceholder: true,
+            isEligibleNoAvailabilityAfpPlaceholder: true,
+            allowExtremeNoAvailabilityAfpStacking: Boolean(input.allowExtremeNoAvailabilityAfpStacking),
+            currentNormalMinutes: normalAfpMinutesFor(respondent.id),
+            afpCapMinutes: hoursToMinutes(respondent.afpHoursCap),
+          });
+          if (!validation.ok) return null;
+          return {
+            respondent,
+            validation,
+            dayTier: sameDayAllocationTier(shift.id, existingShiftIds, shiftMap),
+            placeholderMinutes: noAvailabilityPlaceholderMinutesFor(respondent.id),
+            totalMinutes: calcMinutes(existingShiftIds, shiftMap),
+          };
+        })
+        .filter(
+          (candidate): candidate is {
+            respondent: RespondentInfo;
+            validation: ReturnType<typeof canAssignShiftToRespondent>;
+            dayTier: 0 | 1 | 2;
+            placeholderMinutes: number;
+            totalMinutes: number;
+          } => candidate !== null,
+        )
+        .sort(
+          (a, b) =>
+            a.placeholderMinutes - b.placeholderMinutes ||
+            a.totalMinutes - b.totalMinutes ||
+            a.dayTier - b.dayTier ||
+            a.respondent.name.localeCompare(b.respondent.name) ||
+            a.respondent.id - b.respondent.id,
+        );
+
+      const best = candidates[0];
+      if (!best) continue;
+      addAssignment({
+        respondentId: best.respondent.id,
+        shiftId: shift.id,
+        source: NO_AVAILABILITY_AFP_PLACEHOLDER_SOURCE,
+        explanationCodes: [
+          "NO_AVAILABILITY",
+          ...best.validation.reasonCodes.filter(
+            (code) => code === "EXTREME_NO_AVAILABILITY_PLACEHOLDER_STACKING",
+          ),
+        ],
+      });
+    }
+  };
+
+  assignNoAvailabilityAfpPlaceholders();
+
   const fairnessDiagnostics = currentFairnessScore(
     fairnessRepairAttempted,
     fairnessRepairMoves,
@@ -777,12 +875,15 @@ export async function runAllocation(options: AllocationOptions): Promise<PureAll
     surveyId,
     afpRespondentIds,
     afpUnclaimedShiftRespondentIds,
+    allowNoAvailabilityAfpPlaceholders,
+    noAvailabilityFallbackAfpIds,
     includedRespondentIds,
     allowAfpOverCapForAvailableShifts,
+    allowExtremeNoAvailabilityAfpStacking,
     existingManualAssignments,
   } = options;
   const afpIdSet = new Set(afpRespondentIds);
-  const afpUnclaimedShiftIdSet = new Set(afpUnclaimedShiftRespondentIds ?? []);
+  const afpUnclaimedShiftIdSet = new Set(noAvailabilityFallbackAfpIds ?? afpUnclaimedShiftRespondentIds ?? []);
   const includedIdSet = includedRespondentIds?.length ? new Set(includedRespondentIds) : null;
 
   const shifts = await db.select().from(shiftsTable).where(eq(shiftsTable.surveyId, surveyId));
@@ -835,6 +936,8 @@ export async function runAllocation(options: AllocationOptions): Promise<PureAll
     shifts,
     respondents: Array.from(respondentMap.values()),
     allowAfpOverCapForAvailableShifts,
+    allowNoAvailabilityAfpPlaceholders,
+    allowExtremeNoAvailabilityAfpStacking,
     manualAssignments: existingManualAssignments,
   });
 }

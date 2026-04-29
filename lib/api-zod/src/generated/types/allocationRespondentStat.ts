@@ -25,5 +25,9 @@ export interface AllocationRespondentStat {
   availableCapacityHours: number;
   deviationFromTargetHours: number;
   sameDayDoubleCount: number;
+  normalHours: number;
+  afpCapOverflowHours: number;
+  noAvailabilityPlaceholderHours: number;
+  manualHours: number;
   fairnessStatus: string;
 }

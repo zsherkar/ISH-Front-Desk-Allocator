@@ -1,6 +1,7 @@
 import { useQueryClient } from "@tanstack/react-query";
 import {
   useRunAllocation as useGeneratedRunAllocation,
+  useDryRunAllocation as useGeneratedDryRunAllocation,
   useAdjustAllocation as useGeneratedAdjustAllocation,
   useGetAllocations,
   useGetAllocationStats,
@@ -20,6 +21,10 @@ export function useRunAllocation() {
       }
     }
   });
+}
+
+export function useDryRunAllocation() {
+  return useGeneratedDryRunAllocation();
 }
 
 export function useAdjustAllocation() {

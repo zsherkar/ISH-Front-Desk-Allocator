@@ -122,7 +122,7 @@ test("no unavailable assignment leaves a no-availability shift blank", () => {
   assert.equal(assignmentFor(output, 1), undefined);
 });
 
-test("no_afp_no_availability_fallback_regression leaves no-availability shifts blank", () => {
+test("no_availability_afp_placeholder_off_by_default leaves no-availability shifts blank", () => {
   const output = runPureAllocation({
     shifts: [weekday[0]],
     respondents: [
@@ -136,6 +136,91 @@ test("no_afp_no_availability_fallback_regression leaves no-availability shifts b
 
   assert.deepEqual(output.unallocatedShiftIds, [1]);
   assert.equal(assignmentFor(output, 1), undefined);
+});
+
+test("no_availability_afp_placeholder assigns zero-availability shift only when enabled", () => {
+  const output = runPureAllocation({
+    shifts: [weekday[0]],
+    allowNoAvailabilityAfpPlaceholders: true,
+    respondents: [
+      respondent(1, "Fallback AFP", [], {
+        category: "AFP",
+        afpHoursCap: 0,
+        allowNoAvailabilityFallback: true,
+      }),
+    ],
+  });
+
+  assert.deepEqual(output.unallocatedShiftIds, []);
+  assert.equal(assignmentFor(output, 1)?.respondentId, 1);
+  assert.equal(assignmentFor(output, 1)?.source, "admin_no_availability_afp_placeholder");
+});
+
+test("no_availability_afp_placeholder cannot be assigned to non-AFP", () => {
+  const output = runPureAllocation({
+    shifts: [weekday[0]],
+    allowNoAvailabilityAfpPlaceholders: true,
+    respondents: [
+      respondent(1, "General Fallback", [], {
+        category: "General",
+        allowNoAvailabilityFallback: true,
+      }),
+    ],
+  });
+
+  assert.deepEqual(output.unallocatedShiftIds, [1]);
+  assert.equal(assignmentFor(output, 1), undefined);
+});
+
+test("no_availability_afp_placeholder cannot be used when someone selected the shift", () => {
+  const output = runPureAllocation({
+    shifts: [weekday[0]],
+    allowNoAvailabilityAfpPlaceholders: true,
+    respondents: [
+      respondent(1, "Available General", [1]),
+      respondent(2, "Fallback AFP", [], {
+        category: "AFP",
+        allowNoAvailabilityFallback: true,
+      }),
+    ],
+  });
+
+  assert.equal(assignmentFor(output, 1)?.respondentId, 1);
+  assert.equal(assignmentFor(output, 1)?.source, "engine_normal");
+});
+
+test("no_availability_afp_placeholder may exceed AFP cap without normal cap violation", () => {
+  const output = runPureAllocation({
+    shifts: [weekday[0]],
+    allowNoAvailabilityAfpPlaceholders: true,
+    respondents: [
+      respondent(1, "Fallback AFP", [], {
+        category: "AFP",
+        afpHoursCap: 0,
+        allowNoAvailabilityFallback: true,
+      }),
+    ],
+  });
+
+  assert.equal(assignmentFor(output, 1)?.source, "admin_no_availability_afp_placeholder");
+  assert.deepEqual(assignmentFor(output, 1)?.explanationCodes, ["NO_AVAILABILITY"]);
+});
+
+test("no_availability_afp_placeholder respects same-day rules by default", () => {
+  const output = runPureAllocation({
+    shifts: [weekday[0], weekday[2]],
+    allowNoAvailabilityAfpPlaceholders: true,
+    respondents: [
+      respondent(1, "Fallback AFP", [], {
+        category: "AFP",
+        afpHoursCap: 0,
+        allowNoAvailabilityFallback: true,
+      }),
+    ],
+  });
+
+  assert.equal(output.assignments.length, 1);
+  assert.equal(output.unallocatedShiftIds.length, 1);
 });
 
 test("available AFP cap overflow is explicit and opt-in", () => {
