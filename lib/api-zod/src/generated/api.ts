@@ -168,13 +168,35 @@ export const RunAllocationBody = zod.object({
   afpUnclaimedShiftRespondentIds: zod
     .array(zod.number())
     .optional()
+    .describe("Deprecated alias for noAvailabilityFallbackAfpIds"),
+  allowNoAvailabilityAfpPlaceholders: zod
+    .boolean()
+    .optional()
     .describe(
-      "AFP respondent IDs that should receive shifts nobody selected, even above their cap",
+      "Explicitly allow zero-availability shifts to be assigned to selected AFPs as emergency placeholders",
+    ),
+  noAvailabilityFallbackAfpIds: zod
+    .array(zod.number())
+    .optional()
+    .describe(
+      "AFP respondents eligible for no-availability emergency placeholder assignments",
     ),
   includedRespondentIds: zod
     .array(zod.number())
     .optional()
     .describe("IDs of respondents to include in this allocation run"),
+  allowAfpOverCapForAvailableShifts: zod
+    .boolean()
+    .optional()
+    .describe(
+      "Allow AFP respondents to exceed their cap for selected-availability shifts only after all normal legal candidates fail",
+    ),
+  preserveManualLocks: zod
+    .boolean()
+    .optional()
+    .describe(
+      "Preserve existing manual assignments while rerunning the engine",
+    ),
 });
 
 export const RunAllocationResponse = zod.object({
@@ -187,6 +209,8 @@ export const RunAllocationResponse = zod.object({
       allocatedShifts: zod.array(
         zod.object({
           shiftId: zod.number(),
+          stableShiftKey: zod.string(),
+          slotIndex: zod.number(),
           date: zod.date(),
           label: zod.string(),
           startTime: zod.string(),
@@ -197,6 +221,8 @@ export const RunAllocationResponse = zod.object({
             "engine_normal",
             "engine_back_to_back_emergency",
             "engine_no_availability_afp_fallback",
+            "admin_no_availability_afp_placeholder",
+            "engine_afp_cap_overflow_available",
             "manual",
             "blank",
           ]),
@@ -216,6 +242,8 @@ export const RunAllocationResponse = zod.object({
   blankShiftExplanations: zod.array(
     zod.object({
       shiftId: zod.number(),
+      stableShiftKey: zod.string(),
+      slotIndex: zod.number(),
       date: zod.date(),
       label: zod.string(),
       startTime: zod.string(),
@@ -241,6 +269,43 @@ export const RunAllocationResponse = zod.object({
         "UNKNOWN",
       ]),
       explanationCodes: zod.array(zod.string()),
+      explanationText: zod.string(),
+    }),
+  ),
+  allocationAudit: zod.array(
+    zod.object({
+      shiftId: zod.number(),
+      stableShiftKey: zod.string(),
+      date: zod.date(),
+      dayOfWeek: zod.string(),
+      startTime: zod.string(),
+      endTime: zod.string(),
+      slotIndex: zod.number(),
+      durationMinutes: zod.number(),
+      renderedCellIsBlank: zod.boolean(),
+      allocationRecordExists: zod.boolean(),
+      assignedRespondentId: zod.string().nullable(),
+      assignedRespondentName: zod.string().nullable(),
+      assignmentSource: zod.string().nullable(),
+      availabilityCount: zod.number(),
+      availableRespondents: zod.array(
+        zod.object({
+          respondentId: zod.number(),
+          name: zod.string(),
+          category: zod.enum(["AFP", "General"]),
+          penaltyHours: zod.number(),
+          afpCapHours: zod.number(),
+          alreadyAssignedMinutes: zod.number(),
+          sameDayAssignedShiftIds: zod.array(zod.number()),
+          canTakeNormally: zod.boolean(),
+          canTakeBackToBackEmergency: zod.boolean(),
+          blockers: zod.array(zod.string()),
+        }),
+      ),
+      eligibleNormalCandidateCount: zod.number(),
+      eligibleBackToBackEmergencyCandidateCount: zod.number(),
+      eligibleNoAvailabilityFallbackAfpCount: zod.number(),
+      reasonCategory: zod.string(),
       explanationText: zod.string(),
     }),
   ),
@@ -263,6 +328,8 @@ export const GetAllocationsResponse = zod.object({
       allocatedShifts: zod.array(
         zod.object({
           shiftId: zod.number(),
+          stableShiftKey: zod.string(),
+          slotIndex: zod.number(),
           date: zod.date(),
           label: zod.string(),
           startTime: zod.string(),
@@ -273,6 +340,8 @@ export const GetAllocationsResponse = zod.object({
             "engine_normal",
             "engine_back_to_back_emergency",
             "engine_no_availability_afp_fallback",
+            "admin_no_availability_afp_placeholder",
+            "engine_afp_cap_overflow_available",
             "manual",
             "blank",
           ]),
@@ -292,6 +361,8 @@ export const GetAllocationsResponse = zod.object({
   blankShiftExplanations: zod.array(
     zod.object({
       shiftId: zod.number(),
+      stableShiftKey: zod.string(),
+      slotIndex: zod.number(),
       date: zod.date(),
       label: zod.string(),
       startTime: zod.string(),
@@ -320,6 +391,119 @@ export const GetAllocationsResponse = zod.object({
       explanationText: zod.string(),
     }),
   ),
+  allocationAudit: zod.array(
+    zod.object({
+      shiftId: zod.number(),
+      stableShiftKey: zod.string(),
+      date: zod.date(),
+      dayOfWeek: zod.string(),
+      startTime: zod.string(),
+      endTime: zod.string(),
+      slotIndex: zod.number(),
+      durationMinutes: zod.number(),
+      renderedCellIsBlank: zod.boolean(),
+      allocationRecordExists: zod.boolean(),
+      assignedRespondentId: zod.string().nullable(),
+      assignedRespondentName: zod.string().nullable(),
+      assignmentSource: zod.string().nullable(),
+      availabilityCount: zod.number(),
+      availableRespondents: zod.array(
+        zod.object({
+          respondentId: zod.number(),
+          name: zod.string(),
+          category: zod.enum(["AFP", "General"]),
+          penaltyHours: zod.number(),
+          afpCapHours: zod.number(),
+          alreadyAssignedMinutes: zod.number(),
+          sameDayAssignedShiftIds: zod.array(zod.number()),
+          canTakeNormally: zod.boolean(),
+          canTakeBackToBackEmergency: zod.boolean(),
+          blockers: zod.array(zod.string()),
+        }),
+      ),
+      eligibleNormalCandidateCount: zod.number(),
+      eligibleBackToBackEmergencyCandidateCount: zod.number(),
+      eligibleNoAvailabilityFallbackAfpCount: zod.number(),
+      reasonCategory: zod.string(),
+      explanationText: zod.string(),
+    }),
+  ),
+});
+
+/**
+ * @summary Run a safe allocation dry-run without changing saved allocations or responses
+ */
+export const DryRunAllocationParams = zod.object({
+  id: zod.coerce.number(),
+});
+
+export const DryRunAllocationBody = zod.object({
+  afpRespondentIds: zod
+    .array(zod.number())
+    .describe("IDs of respondents to treat as AFP (capped at 10 hours each)"),
+  afpUnclaimedShiftRespondentIds: zod
+    .array(zod.number())
+    .optional()
+    .describe("Deprecated alias for noAvailabilityFallbackAfpIds"),
+  allowNoAvailabilityAfpPlaceholders: zod
+    .boolean()
+    .optional()
+    .describe(
+      "Explicitly allow zero-availability shifts to be assigned to selected AFPs as emergency placeholders",
+    ),
+  noAvailabilityFallbackAfpIds: zod
+    .array(zod.number())
+    .optional()
+    .describe(
+      "AFP respondents eligible for no-availability emergency placeholder assignments",
+    ),
+  includedRespondentIds: zod
+    .array(zod.number())
+    .optional()
+    .describe("IDs of respondents to include in this allocation run"),
+  allowAfpOverCapForAvailableShifts: zod
+    .boolean()
+    .optional()
+    .describe(
+      "Allow AFP respondents to exceed their cap for selected-availability shifts only after all normal legal candidates fail",
+    ),
+  preserveManualLocks: zod
+    .boolean()
+    .optional()
+    .describe(
+      "Preserve existing manual assignments while rerunning the engine",
+    ),
+});
+
+export const DryRunAllocationResponse = zod.object({
+  surveyId: zod.number(),
+  dryRun: zod.boolean(),
+  totalShifts: zod.number(),
+  assignedShifts: zod.number(),
+  normalAssignedShifts: zod.number(),
+  blankShifts: zod.number(),
+  blankWithAvailabilityCount: zod.number(),
+  blankZeroAvailabilityShiftCount: zod.number(),
+  allowedNoAvailabilityAfpPlaceholderAssignments: zod.number(),
+  illegalAssignmentsWithoutAvailability: zod.number(),
+  nonPenalizedGeneralMeanHours: zod.number(),
+  nonPenalizedGeneralStdDevHours: zod.number(),
+  nonPenalizedGeneralRangeHours: zod.number(),
+  fairnessRepairMoveCount: zod.number(),
+  highStdDevReasonCodes: zod.array(zod.string()),
+  backToBackEmergencyAssignments: zod.number(),
+  afpCapOverflowAssignments: zod.number(),
+  noAvailabilityAfpPlaceholderAssignments: zod.number(),
+  settings: zod.record(zod.string(), zod.unknown()),
+  assignments: zod.array(
+    zod.object({
+      respondentId: zod.number(),
+      shiftId: zod.number(),
+      source: zod.string(),
+      explanationCodes: zod.array(zod.string()),
+    }),
+  ),
+  unallocatedShiftIds: zod.array(zod.number()),
 });
 
 /**
@@ -334,6 +518,12 @@ export const AdjustAllocationBody = zod.object({
   shiftIdsToAdd: zod.array(zod.number()).optional(),
   shiftIdsToRemove: zod.array(zod.number()).optional(),
   penaltyNote: zod.string().nullish(),
+  noAvailabilityAfpPlaceholder: zod
+    .boolean()
+    .optional()
+    .describe(
+      "Special mode for assigning zero-availability shifts to AFP placeholders only",
+    ),
 });
 
 export const AdjustAllocationResponse = zod.object({
@@ -346,6 +536,8 @@ export const AdjustAllocationResponse = zod.object({
       allocatedShifts: zod.array(
         zod.object({
           shiftId: zod.number(),
+          stableShiftKey: zod.string(),
+          slotIndex: zod.number(),
           date: zod.date(),
           label: zod.string(),
           startTime: zod.string(),
@@ -356,6 +548,8 @@ export const AdjustAllocationResponse = zod.object({
             "engine_normal",
             "engine_back_to_back_emergency",
             "engine_no_availability_afp_fallback",
+            "admin_no_availability_afp_placeholder",
+            "engine_afp_cap_overflow_available",
             "manual",
             "blank",
           ]),
@@ -375,6 +569,8 @@ export const AdjustAllocationResponse = zod.object({
   blankShiftExplanations: zod.array(
     zod.object({
       shiftId: zod.number(),
+      stableShiftKey: zod.string(),
+      slotIndex: zod.number(),
       date: zod.date(),
       label: zod.string(),
       startTime: zod.string(),
@@ -400,6 +596,43 @@ export const AdjustAllocationResponse = zod.object({
         "UNKNOWN",
       ]),
       explanationCodes: zod.array(zod.string()),
+      explanationText: zod.string(),
+    }),
+  ),
+  allocationAudit: zod.array(
+    zod.object({
+      shiftId: zod.number(),
+      stableShiftKey: zod.string(),
+      date: zod.date(),
+      dayOfWeek: zod.string(),
+      startTime: zod.string(),
+      endTime: zod.string(),
+      slotIndex: zod.number(),
+      durationMinutes: zod.number(),
+      renderedCellIsBlank: zod.boolean(),
+      allocationRecordExists: zod.boolean(),
+      assignedRespondentId: zod.string().nullable(),
+      assignedRespondentName: zod.string().nullable(),
+      assignmentSource: zod.string().nullable(),
+      availabilityCount: zod.number(),
+      availableRespondents: zod.array(
+        zod.object({
+          respondentId: zod.number(),
+          name: zod.string(),
+          category: zod.enum(["AFP", "General"]),
+          penaltyHours: zod.number(),
+          afpCapHours: zod.number(),
+          alreadyAssignedMinutes: zod.number(),
+          sameDayAssignedShiftIds: zod.array(zod.number()),
+          canTakeNormally: zod.boolean(),
+          canTakeBackToBackEmergency: zod.boolean(),
+          blockers: zod.array(zod.string()),
+        }),
+      ),
+      eligibleNormalCandidateCount: zod.number(),
+      eligibleBackToBackEmergencyCandidateCount: zod.number(),
+      eligibleNoAvailabilityFallbackAfpCount: zod.number(),
+      reasonCategory: zod.string(),
       explanationText: zod.string(),
     }),
   ),
@@ -426,6 +659,18 @@ export const GetAllocationStatsResponse = zod.object({
   manualAssignmentCount: zod.number(),
   backToBackEmergencyCount: zod.number(),
   noAvailabilityFallbackCount: zod.number(),
+  allowedNoAvailabilityAfpPlaceholderAssignments: zod.number(),
+  illegalAssignmentsWithoutAvailability: zod.number(),
+  noAvailabilityAfpPlaceholderCount: zod.number(),
+  noAvailabilityShiftsStillBlank: zod.number(),
+  afpNoAvailabilityPlaceholderHours: zod.number(),
+  afpCapOverflowCount: zod.number(),
+  normalAssignmentsWithoutAvailability: zod.number(),
+  manualAssignmentsWithoutAvailability: zod.number(),
+  fallbackAssignmentsWithoutAvailability: zod.number(),
+  assignmentsWithoutAvailabilityCount: zod.number(),
+  renderedBlankButAssignedCount: zod.number(),
+  availabilityMappingFailureCount: zod.number(),
   nonAdjacentSameDayDoubleCount: zod.number(),
   tripleShiftDayCount: zod.number(),
   respondentStats: zod.array(
@@ -436,11 +681,22 @@ export const GetAllocationStatsResponse = zod.object({
       totalHours: zod.number(),
       weekdayShifts: zod.number(),
       weekendShifts: zod.number(),
+      weekdayHours: zod.number(),
+      weekendHours: zod.number(),
       shiftCount: zod.number(),
       isManuallyAdjusted: zod.boolean(),
       hasPenalty: zod.boolean(),
       penaltyHours: zod.number(),
       penaltyGapHours: zod.number(),
+      targetHours: zod.number(),
+      availableCapacityHours: zod.number(),
+      deviationFromTargetHours: zod.number(),
+      sameDayDoubleCount: zod.number(),
+      normalHours: zod.number(),
+      afpCapOverflowHours: zod.number(),
+      noAvailabilityPlaceholderHours: zod.number(),
+      manualHours: zod.number(),
+      fairnessStatus: zod.string(),
     }),
   ),
   afpStats: zod.array(
@@ -451,11 +707,22 @@ export const GetAllocationStatsResponse = zod.object({
       totalHours: zod.number(),
       weekdayShifts: zod.number(),
       weekendShifts: zod.number(),
+      weekdayHours: zod.number(),
+      weekendHours: zod.number(),
       shiftCount: zod.number(),
       isManuallyAdjusted: zod.boolean(),
       hasPenalty: zod.boolean(),
       penaltyHours: zod.number(),
       penaltyGapHours: zod.number(),
+      targetHours: zod.number(),
+      availableCapacityHours: zod.number(),
+      deviationFromTargetHours: zod.number(),
+      sameDayDoubleCount: zod.number(),
+      normalHours: zod.number(),
+      afpCapOverflowHours: zod.number(),
+      noAvailabilityPlaceholderHours: zod.number(),
+      manualHours: zod.number(),
+      fairnessStatus: zod.string(),
     }),
   ),
   generalStats: zod.array(
@@ -466,11 +733,22 @@ export const GetAllocationStatsResponse = zod.object({
       totalHours: zod.number(),
       weekdayShifts: zod.number(),
       weekendShifts: zod.number(),
+      weekdayHours: zod.number(),
+      weekendHours: zod.number(),
       shiftCount: zod.number(),
       isManuallyAdjusted: zod.boolean(),
       hasPenalty: zod.boolean(),
       penaltyHours: zod.number(),
       penaltyGapHours: zod.number(),
+      targetHours: zod.number(),
+      availableCapacityHours: zod.number(),
+      deviationFromTargetHours: zod.number(),
+      sameDayDoubleCount: zod.number(),
+      normalHours: zod.number(),
+      afpCapOverflowHours: zod.number(),
+      noAvailabilityPlaceholderHours: zod.number(),
+      manualHours: zod.number(),
+      fairnessStatus: zod.string(),
     }),
   ),
   nonPenalizedGeneralStats: zod.array(
@@ -481,11 +759,22 @@ export const GetAllocationStatsResponse = zod.object({
       totalHours: zod.number(),
       weekdayShifts: zod.number(),
       weekendShifts: zod.number(),
+      weekdayHours: zod.number(),
+      weekendHours: zod.number(),
       shiftCount: zod.number(),
       isManuallyAdjusted: zod.boolean(),
       hasPenalty: zod.boolean(),
       penaltyHours: zod.number(),
       penaltyGapHours: zod.number(),
+      targetHours: zod.number(),
+      availableCapacityHours: zod.number(),
+      deviationFromTargetHours: zod.number(),
+      sameDayDoubleCount: zod.number(),
+      normalHours: zod.number(),
+      afpCapOverflowHours: zod.number(),
+      noAvailabilityPlaceholderHours: zod.number(),
+      manualHours: zod.number(),
+      fairnessStatus: zod.string(),
     }),
   ),
   penalizedStats: zod.array(
@@ -496,14 +785,39 @@ export const GetAllocationStatsResponse = zod.object({
       totalHours: zod.number(),
       weekdayShifts: zod.number(),
       weekendShifts: zod.number(),
+      weekdayHours: zod.number(),
+      weekendHours: zod.number(),
       shiftCount: zod.number(),
       isManuallyAdjusted: zod.boolean(),
       hasPenalty: zod.boolean(),
       penaltyHours: zod.number(),
       penaltyGapHours: zod.number(),
+      targetHours: zod.number(),
+      availableCapacityHours: zod.number(),
+      deviationFromTargetHours: zod.number(),
+      sameDayDoubleCount: zod.number(),
+      normalHours: zod.number(),
+      afpCapOverflowHours: zod.number(),
+      noAvailabilityPlaceholderHours: zod.number(),
+      manualHours: zod.number(),
+      fairnessStatus: zod.string(),
     }),
   ),
   nonPenalizedGeneralMeanHours: zod.number(),
+  nonPenalizedGeneralMedianHours: zod.number(),
+  nonPenalizedGeneralMinHours: zod.number(),
+  nonPenalizedGeneralMaxHours: zod.number(),
+  nonPenalizedGeneralRangeHours: zod.number(),
+  nonPenalizedGeneralStdDevHours: zod.number(),
+  fairnessTargetStdDevHours: zod.number(),
+  fairnessWarningStdDevHours: zod.number(),
+  fairnessWarning: zod.boolean(),
+  fairnessRepairAttempted: zod.boolean(),
+  fairnessRepairMoveCount: zod.number(),
+  fairnessHighStdDevReason: zod.string(),
+  maxDeviationFromMeanHours: zod.number(),
+  maxDeviationFromTargetHours: zod.number(),
+  sumSquaredDeviationFromTargetHours: zod.number(),
 });
 
 /**

@@ -2,9 +2,11 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   canAssignShiftToRespondent,
+  deriveShiftSlotIndexes,
   hoursToMinutes,
   minutesToHours,
   solveNonAfpPenaltyTargets,
+  stableShiftKey,
   type CoreShift,
 } from "./allocationCore.js";
 
@@ -40,6 +42,20 @@ test("supports mixed strike penalties", () => {
 
   assert.equal(toHours(result.baselineMinutes), 30);
   assert.deepEqual(result.targets.map((target) => toHours(target.targetMinutes)), [30, 30, 20, 25]);
+});
+
+test("supports everyone penalized with a virtual baseline", () => {
+  const result = solveHours([5, 5, 5], 45);
+
+  assert.equal(toHours(result.baselineMinutes), 20);
+  assert.deepEqual(result.targets.map((target) => toHours(target.targetMinutes)), [15, 15, 15]);
+});
+
+test("supports one non-AFP without treating penalty as an exclusion", () => {
+  const result = solveHours([10], 20);
+
+  assert.equal(toHours(result.baselineMinutes), 30);
+  assert.deepEqual(result.targets.map((target) => toHours(target.targetMinutes)), [20]);
 });
 
 test("supports fractional strike penalties in minute units", () => {
@@ -124,7 +140,21 @@ test("rejects three shifts in one day", () => {
   assert.ok(result.reasonCodes.includes("BLOCKED_BY_MAX_TWO_SHIFTS_DAY"));
 });
 
-test("enforces AFP normal cap and permits only no-availability fallback overage", () => {
+test("manual assignment unavailable block rejects manual shifts without selected availability", () => {
+  const result = canAssignShiftToRespondent({
+    shiftId: 1,
+    existingShiftIds: [],
+    shiftMap: shifts,
+    isAvailable: false,
+    assignmentSource: "manual",
+    category: "General",
+  });
+
+  assert.equal(result.ok, false);
+  assert.ok(result.reasonCodes.includes("NO_AVAILABILITY"));
+});
+
+test("enforces AFP normal cap and rejects no-availability fallback overage", () => {
   const normal = canAssignShiftToRespondent({
     shiftId: 3,
     existingShiftIds: [],
@@ -144,9 +174,80 @@ test("enforces AFP normal cap and permits only no-availability fallback overage"
     category: "AFP",
     currentNormalMinutes: hoursToMinutes(10),
     afpCapMinutes: hoursToMinutes(10),
+    availabilityCount: 0,
   });
 
   assert.equal(normal.ok, false);
   assert.ok(normal.reasonCodes.includes("BLOCKED_BY_AFP_CAP"));
-  assert.equal(fallback.ok, true);
+  assert.equal(fallback.ok, false);
+  assert.ok(fallback.reasonCodes.includes("NO_AVAILABILITY"));
+});
+
+test("allows explicit zero-availability AFP placeholder", () => {
+  const result = canAssignShiftToRespondent({
+    shiftId: 3,
+    existingShiftIds: [],
+    shiftMap: shifts,
+    isAvailable: false,
+    availabilityCount: 0,
+    assignmentSource: "admin_no_availability_afp_placeholder",
+    category: "AFP",
+    currentNormalMinutes: hoursToMinutes(10),
+    afpCapMinutes: hoursToMinutes(10),
+    allowNoAvailabilityAfpPlaceholder: true,
+    isEligibleNoAvailabilityAfpPlaceholder: true,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.wouldViolateAvailability, false);
+});
+
+test("blocks AFP placeholder when shift had availability or respondent is not AFP", () => {
+  const hadAvailability = canAssignShiftToRespondent({
+    shiftId: 3,
+    existingShiftIds: [],
+    shiftMap: shifts,
+    isAvailable: false,
+    availabilityCount: 1,
+    assignmentSource: "admin_no_availability_afp_placeholder",
+    category: "AFP",
+    allowNoAvailabilityAfpPlaceholder: true,
+    isEligibleNoAvailabilityAfpPlaceholder: true,
+  });
+  const notAfp = canAssignShiftToRespondent({
+    shiftId: 3,
+    existingShiftIds: [],
+    shiftMap: shifts,
+    isAvailable: false,
+    availabilityCount: 0,
+    assignmentSource: "admin_no_availability_afp_placeholder",
+    category: "General",
+    allowNoAvailabilityAfpPlaceholder: true,
+    isEligibleNoAvailabilityAfpPlaceholder: true,
+  });
+
+  assert.equal(hadAvailability.ok, false);
+  assert.ok(hadAvailability.reasonCodes.includes("NO_AVAILABILITY"));
+  assert.equal(notAfp.ok, false);
+  assert.ok(notAfp.reasonCodes.includes("NO_FALLBACK_AFP_SELECTED"));
+});
+
+test("unstable_shift_key_response_mapping_regression keeps date-time-slot identity stable across regenerated IDs", () => {
+  const original = [
+    { id: 10, date: "2026-05-04", startTime: "09:00", endTime: "11:00", durationHours: 2 },
+    { id: 11, date: "2026-05-04", startTime: "11:00", endTime: "14:00", durationHours: 3 },
+  ];
+  const regenerated = [
+    { id: 910, date: "2026-05-04", startTime: "09:00", endTime: "11:00", durationHours: 2 },
+    { id: 911, date: "2026-05-04", startTime: "11:00", endTime: "14:00", durationHours: 3 },
+  ];
+
+  const originalSlots = deriveShiftSlotIndexes(original);
+  const regeneratedSlots = deriveShiftSlotIndexes(regenerated);
+
+  const originalKey = stableShiftKey({ ...original[1], slotIndex: originalSlots.get(original[1].id) });
+  const regeneratedKey = stableShiftKey({ ...regenerated[1], slotIndex: regeneratedSlots.get(regenerated[1].id) });
+
+  assert.equal(originalKey, "2026-05-04|11:00|14:00|1");
+  assert.equal(regeneratedKey, originalKey);
 });

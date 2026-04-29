@@ -237,6 +237,43 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
+  /surveys/{id}/allocations/dry-run:
+    post:
+      operationId: dryRunAllocation
+      tags: [allocations]
+      summary: Run a safe allocation dry-run without changing saved allocations or responses
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RunAllocationBody"
+      responses:
+        "200":
+          description: Dry-run allocation audit summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AllocationDryRunResult"
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
   /surveys/{id}/allocations/adjust:
     patch:
       operationId: adjustAllocation
@@ -809,12 +846,26 @@ components:
           type: array
           items:
             type: integer
-          description: AFP respondent IDs that should receive shifts nobody selected, even above their cap
+          description: Deprecated alias for noAvailabilityFallbackAfpIds
+        allowNoAvailabilityAfpPlaceholders:
+          type: boolean
+          description: Explicitly allow zero-availability shifts to be assigned to selected AFPs as emergency placeholders
+        noAvailabilityFallbackAfpIds:
+          type: array
+          items:
+            type: integer
+          description: AFP respondents eligible for no-availability emergency placeholder assignments
         includedRespondentIds:
           type: array
           items:
             type: integer
           description: IDs of respondents to include in this allocation run
+        allowAfpOverCapForAvailableShifts:
+          type: boolean
+          description: Allow AFP respondents to exceed their cap for selected-availability shifts only after all normal legal candidates fail
+        preserveManualLocks:
+          type: boolean
+          description: Preserve existing manual assignments while rerunning the engine
       required:
         - afpRespondentIds
 
@@ -822,6 +873,10 @@ components:
       type: object
       properties:
         shiftId:
+          type: integer
+        stableShiftKey:
+          type: string
+        slotIndex:
           type: integer
         date:
           type: string
@@ -843,6 +898,8 @@ components:
             - engine_normal
             - engine_back_to_back_emergency
             - engine_no_availability_afp_fallback
+            - admin_no_availability_afp_placeholder
+            - engine_afp_cap_overflow_available
             - manual
             - blank
         isManual:
@@ -855,6 +912,8 @@ components:
             type: string
       required:
         - shiftId
+        - stableShiftKey
+        - slotIndex
         - date
         - label
         - startTime
@@ -890,6 +949,10 @@ components:
       type: object
       properties:
         shiftId:
+          type: integer
+        stableShiftKey:
+          type: string
+        slotIndex:
           type: integer
         date:
           type: string
@@ -927,6 +990,8 @@ components:
           type: string
       required:
         - shiftId
+        - stableShiftKey
+        - slotIndex
         - date
         - label
         - startTime
@@ -936,6 +1001,114 @@ components:
         - availableRespondents
         - reasonCategory
         - explanationCodes
+        - explanationText
+
+    AllocationAuditAvailableRespondent:
+      type: object
+      properties:
+        respondentId:
+          type: integer
+        name:
+          type: string
+        category:
+          type: string
+          enum: [AFP, General]
+        penaltyHours:
+          type: number
+        afpCapHours:
+          type: number
+        alreadyAssignedMinutes:
+          type: integer
+        sameDayAssignedShiftIds:
+          type: array
+          items:
+            type: integer
+        canTakeNormally:
+          type: boolean
+        canTakeBackToBackEmergency:
+          type: boolean
+        blockers:
+          type: array
+          items:
+            type: string
+      required:
+        - respondentId
+        - name
+        - category
+        - penaltyHours
+        - afpCapHours
+        - alreadyAssignedMinutes
+        - sameDayAssignedShiftIds
+        - canTakeNormally
+        - canTakeBackToBackEmergency
+        - blockers
+
+    AllocationBlankAuditRow:
+      type: object
+      properties:
+        shiftId:
+          type: integer
+        stableShiftKey:
+          type: string
+        date:
+          type: string
+          format: date
+        dayOfWeek:
+          type: string
+        startTime:
+          type: string
+        endTime:
+          type: string
+        slotIndex:
+          type: integer
+        durationMinutes:
+          type: integer
+        renderedCellIsBlank:
+          type: boolean
+        allocationRecordExists:
+          type: boolean
+        assignedRespondentId:
+          type: ["string", "null"]
+        assignedRespondentName:
+          type: ["string", "null"]
+        assignmentSource:
+          type: ["string", "null"]
+        availabilityCount:
+          type: integer
+        availableRespondents:
+          type: array
+          items:
+            $ref: "#/components/schemas/AllocationAuditAvailableRespondent"
+        eligibleNormalCandidateCount:
+          type: integer
+        eligibleBackToBackEmergencyCandidateCount:
+          type: integer
+        eligibleNoAvailabilityFallbackAfpCount:
+          type: integer
+        reasonCategory:
+          type: string
+        explanationText:
+          type: string
+      required:
+        - shiftId
+        - stableShiftKey
+        - date
+        - dayOfWeek
+        - startTime
+        - endTime
+        - slotIndex
+        - durationMinutes
+        - renderedCellIsBlank
+        - allocationRecordExists
+        - assignedRespondentId
+        - assignedRespondentName
+        - assignmentSource
+        - availabilityCount
+        - availableRespondents
+        - eligibleNormalCandidateCount
+        - eligibleBackToBackEmergencyCandidateCount
+        - eligibleNoAvailabilityFallbackAfpCount
+        - reasonCategory
         - explanationText
 
     RespondentAllocation:
@@ -987,6 +1160,10 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/BlankShiftExplanation"
+        allocationAudit:
+          type: array
+          items:
+            $ref: "#/components/schemas/AllocationBlankAuditRow"
       required:
         - surveyId
         - allocations
@@ -994,6 +1171,7 @@ components:
         - stdDev
         - unallocatedShiftIds
         - blankShiftExplanations
+        - allocationAudit
 
     AdjustAllocationBody:
       type: object
@@ -1010,6 +1188,9 @@ components:
             type: integer
         penaltyNote:
           type: ["string", "null"]
+        noAvailabilityAfpPlaceholder:
+          type: boolean
+          description: Special mode for assigning zero-availability shifts to AFP placeholders only
       required:
         - respondentId
 
@@ -1098,6 +1279,10 @@ components:
           type: integer
         weekendShifts:
           type: integer
+        weekdayHours:
+          type: number
+        weekendHours:
+          type: number
         shiftCount:
           type: integer
         isManuallyAdjusted:
@@ -1108,6 +1293,24 @@ components:
           type: number
         penaltyGapHours:
           type: number
+        targetHours:
+          type: number
+        availableCapacityHours:
+          type: number
+        deviationFromTargetHours:
+          type: number
+        sameDayDoubleCount:
+          type: integer
+        normalHours:
+          type: number
+        afpCapOverflowHours:
+          type: number
+        noAvailabilityPlaceholderHours:
+          type: number
+        manualHours:
+          type: number
+        fairnessStatus:
+          type: string
       required:
         - respondentId
         - name
@@ -1115,11 +1318,116 @@ components:
         - totalHours
         - weekdayShifts
         - weekendShifts
+        - weekdayHours
+        - weekendHours
         - shiftCount
         - isManuallyAdjusted
         - hasPenalty
         - penaltyHours
         - penaltyGapHours
+        - targetHours
+        - availableCapacityHours
+        - deviationFromTargetHours
+        - sameDayDoubleCount
+        - normalHours
+        - afpCapOverflowHours
+        - noAvailabilityPlaceholderHours
+        - manualHours
+        - fairnessStatus
+
+    AllocationDryRunAssignment:
+      type: object
+      properties:
+        respondentId:
+          type: integer
+        shiftId:
+          type: integer
+        source:
+          type: string
+        explanationCodes:
+          type: array
+          items:
+            type: string
+      required:
+        - respondentId
+        - shiftId
+        - source
+        - explanationCodes
+
+    AllocationDryRunResult:
+      type: object
+      properties:
+        surveyId:
+          type: integer
+        dryRun:
+          type: boolean
+        totalShifts:
+          type: integer
+        assignedShifts:
+          type: integer
+        normalAssignedShifts:
+          type: integer
+        blankShifts:
+          type: integer
+        blankWithAvailabilityCount:
+          type: integer
+        blankZeroAvailabilityShiftCount:
+          type: integer
+        allowedNoAvailabilityAfpPlaceholderAssignments:
+          type: integer
+        illegalAssignmentsWithoutAvailability:
+          type: integer
+        nonPenalizedGeneralMeanHours:
+          type: number
+        nonPenalizedGeneralStdDevHours:
+          type: number
+        nonPenalizedGeneralRangeHours:
+          type: number
+        fairnessRepairMoveCount:
+          type: integer
+        highStdDevReasonCodes:
+          type: array
+          items:
+            type: string
+        backToBackEmergencyAssignments:
+          type: integer
+        afpCapOverflowAssignments:
+          type: integer
+        noAvailabilityAfpPlaceholderAssignments:
+          type: integer
+        settings:
+          type: object
+          additionalProperties: true
+        assignments:
+          type: array
+          items:
+            $ref: "#/components/schemas/AllocationDryRunAssignment"
+        unallocatedShiftIds:
+          type: array
+          items:
+            type: integer
+      required:
+        - surveyId
+        - dryRun
+        - totalShifts
+        - assignedShifts
+        - normalAssignedShifts
+        - blankShifts
+        - blankWithAvailabilityCount
+        - blankZeroAvailabilityShiftCount
+        - allowedNoAvailabilityAfpPlaceholderAssignments
+        - illegalAssignmentsWithoutAvailability
+        - nonPenalizedGeneralMeanHours
+        - nonPenalizedGeneralStdDevHours
+        - nonPenalizedGeneralRangeHours
+        - fairnessRepairMoveCount
+        - highStdDevReasonCodes
+        - backToBackEmergencyAssignments
+        - afpCapOverflowAssignments
+        - noAvailabilityAfpPlaceholderAssignments
+        - settings
+        - assignments
+        - unallocatedShiftIds
 
     AllocationStats:
       type: object
@@ -1150,6 +1458,30 @@ components:
           type: integer
         noAvailabilityFallbackCount:
           type: integer
+        allowedNoAvailabilityAfpPlaceholderAssignments:
+          type: integer
+        illegalAssignmentsWithoutAvailability:
+          type: integer
+        noAvailabilityAfpPlaceholderCount:
+          type: integer
+        noAvailabilityShiftsStillBlank:
+          type: integer
+        afpNoAvailabilityPlaceholderHours:
+          type: number
+        afpCapOverflowCount:
+          type: integer
+        normalAssignmentsWithoutAvailability:
+          type: integer
+        manualAssignmentsWithoutAvailability:
+          type: integer
+        fallbackAssignmentsWithoutAvailability:
+          type: integer
+        assignmentsWithoutAvailabilityCount:
+          type: integer
+        renderedBlankButAssignedCount:
+          type: integer
+        availabilityMappingFailureCount:
+          type: integer
         nonAdjacentSameDayDoubleCount:
           type: integer
         tripleShiftDayCount:
@@ -1176,6 +1508,34 @@ components:
             $ref: "#/components/schemas/AllocationRespondentStat"
         nonPenalizedGeneralMeanHours:
           type: number
+        nonPenalizedGeneralMedianHours:
+          type: number
+        nonPenalizedGeneralMinHours:
+          type: number
+        nonPenalizedGeneralMaxHours:
+          type: number
+        nonPenalizedGeneralRangeHours:
+          type: number
+        nonPenalizedGeneralStdDevHours:
+          type: number
+        fairnessTargetStdDevHours:
+          type: number
+        fairnessWarningStdDevHours:
+          type: number
+        fairnessWarning:
+          type: boolean
+        fairnessRepairAttempted:
+          type: boolean
+        fairnessRepairMoveCount:
+          type: integer
+        fairnessHighStdDevReason:
+          type: string
+        maxDeviationFromMeanHours:
+          type: number
+        maxDeviationFromTargetHours:
+          type: number
+        sumSquaredDeviationFromTargetHours:
+          type: number
       required:
         - meanHours
         - averageHours
@@ -1190,6 +1550,18 @@ components:
         - manualAssignmentCount
         - backToBackEmergencyCount
         - noAvailabilityFallbackCount
+        - allowedNoAvailabilityAfpPlaceholderAssignments
+        - illegalAssignmentsWithoutAvailability
+        - noAvailabilityAfpPlaceholderCount
+        - noAvailabilityShiftsStillBlank
+        - afpNoAvailabilityPlaceholderHours
+        - afpCapOverflowCount
+        - normalAssignmentsWithoutAvailability
+        - manualAssignmentsWithoutAvailability
+        - fallbackAssignmentsWithoutAvailability
+        - assignmentsWithoutAvailabilityCount
+        - renderedBlankButAssignedCount
+        - availabilityMappingFailureCount
         - nonAdjacentSameDayDoubleCount
         - tripleShiftDayCount
         - respondentStats
@@ -1198,6 +1570,20 @@ components:
         - nonPenalizedGeneralStats
         - penalizedStats
         - nonPenalizedGeneralMeanHours
+        - nonPenalizedGeneralMedianHours
+        - nonPenalizedGeneralMinHours
+        - nonPenalizedGeneralMaxHours
+        - nonPenalizedGeneralRangeHours
+        - nonPenalizedGeneralStdDevHours
+        - fairnessTargetStdDevHours
+        - fairnessWarningStdDevHours
+        - fairnessWarning
+        - fairnessRepairAttempted
+        - fairnessRepairMoveCount
+        - fairnessHighStdDevReason
+        - maxDeviationFromMeanHours
+        - maxDeviationFromTargetHours
+        - sumSquaredDeviationFromTargetHours
 
     RespondentFdHistoryMonthlyEntry:
       type: object

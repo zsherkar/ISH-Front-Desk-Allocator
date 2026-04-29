@@ -9,8 +9,16 @@
 export interface RunAllocationBody {
   /** IDs of respondents to treat as AFP (capped at 10 hours each) */
   afpRespondentIds: number[];
-  /** AFP respondent IDs that should receive shifts nobody selected, even above their cap */
+  /** Deprecated alias for noAvailabilityFallbackAfpIds */
   afpUnclaimedShiftRespondentIds?: number[];
+  /** Explicitly allow zero-availability shifts to be assigned to selected AFPs as emergency placeholders */
+  allowNoAvailabilityAfpPlaceholders?: boolean;
+  /** AFP respondents eligible for no-availability emergency placeholder assignments */
+  noAvailabilityFallbackAfpIds?: number[];
   /** IDs of respondents to include in this allocation run */
   includedRespondentIds?: number[];
+  /** Allow AFP respondents to exceed their cap for selected-availability shifts only after all normal legal candidates fail */
+  allowAfpOverCapForAvailableShifts?: boolean;
+  /** Preserve existing manual assignments while rerunning the engine */
+  preserveManualLocks?: boolean;
 }

@@ -170,6 +170,8 @@ Important: Railway is convenient, but it is not a permanent zero-cost production
 
 Important: Render is convenient, but it is not the true no-cost ownership path. Use it if you prefer managed hosting over full control.
 
+Deployment note: `render.yaml` currently has `autoDeployTrigger: off`, so pushed commits require a manual Render deploy unless auto deploy is re-enabled.
+
 ## Self-hosted path
 
 Use the existing Docker stack in this repo, then place Caddy in front of it.

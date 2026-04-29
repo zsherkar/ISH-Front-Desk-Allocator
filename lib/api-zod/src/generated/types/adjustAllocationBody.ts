@@ -12,4 +12,6 @@ export interface AdjustAllocationBody {
   shiftIdsToRemove?: number[];
   /** @nullable */
   penaltyNote?: string | null;
+  /** Special mode for assigning zero-availability shifts to AFP placeholders only */
+  noAvailabilityAfpPlaceholder?: boolean;
 }

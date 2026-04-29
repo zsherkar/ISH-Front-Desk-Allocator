@@ -21,6 +21,18 @@ export interface AllocationStats {
   manualAssignmentCount: number;
   backToBackEmergencyCount: number;
   noAvailabilityFallbackCount: number;
+  allowedNoAvailabilityAfpPlaceholderAssignments: number;
+  illegalAssignmentsWithoutAvailability: number;
+  noAvailabilityAfpPlaceholderCount: number;
+  noAvailabilityShiftsStillBlank: number;
+  afpNoAvailabilityPlaceholderHours: number;
+  afpCapOverflowCount: number;
+  normalAssignmentsWithoutAvailability: number;
+  manualAssignmentsWithoutAvailability: number;
+  fallbackAssignmentsWithoutAvailability: number;
+  assignmentsWithoutAvailabilityCount: number;
+  renderedBlankButAssignedCount: number;
+  availabilityMappingFailureCount: number;
   nonAdjacentSameDayDoubleCount: number;
   tripleShiftDayCount: number;
   respondentStats: AllocationRespondentStat[];
@@ -29,4 +41,18 @@ export interface AllocationStats {
   nonPenalizedGeneralStats: AllocationRespondentStat[];
   penalizedStats: AllocationRespondentStat[];
   nonPenalizedGeneralMeanHours: number;
+  nonPenalizedGeneralMedianHours: number;
+  nonPenalizedGeneralMinHours: number;
+  nonPenalizedGeneralMaxHours: number;
+  nonPenalizedGeneralRangeHours: number;
+  nonPenalizedGeneralStdDevHours: number;
+  fairnessTargetStdDevHours: number;
+  fairnessWarningStdDevHours: number;
+  fairnessWarning: boolean;
+  fairnessRepairAttempted: boolean;
+  fairnessRepairMoveCount: number;
+  fairnessHighStdDevReason: string;
+  maxDeviationFromMeanHours: number;
+  maxDeviationFromTargetHours: number;
+  sumSquaredDeviationFromTargetHours: number;
 }

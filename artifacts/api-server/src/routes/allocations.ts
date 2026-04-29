@@ -1,13 +1,20 @@
 import { Router, type IRouter } from "express";
 import { eq, and, inArray } from "drizzle-orm";
 import { db, surveysTable, shiftsTable, respondentsTable, allocationsTable, responsesTable } from "@workspace/db";
-import { runAllocation } from "../lib/allocationEngine.js";
+import { runAllocation, type FairnessDiagnostics } from "../lib/allocationEngine.js";
 import {
   type AssignmentSource,
   type ExplanationCode,
+  NO_AVAILABILITY_AFP_PLACEHOLDER_SOURCE,
+  canAssignShiftToRespondent,
+  deriveShiftSlotIndexes,
   hoursToMinutes,
+  isNoAvailabilityAfpPlaceholderSource,
   isBackToBack,
+  minutesToHours,
   sameDayAllocationTier,
+  solveNonAfpPenaltyTargets,
+  stableShiftKey,
 } from "../lib/allocationCore.js";
 import { computeAverage, computeMedian, computeStdDev } from "../lib/stats.js";
 import {
@@ -22,6 +29,11 @@ import {
 } from "../lib/inputValidation.js";
 
 const router: IRouter = Router();
+const latestFairnessDiagnosticsBySurveyId = new Map<number, FairnessDiagnostics>();
+const latestNoAvailabilityPlaceholderSettingsBySurveyId = new Map<
+  number,
+  { allowNoAvailabilityAfpPlaceholders: boolean; noAvailabilityFallbackAfpIds: number[] }
+>();
 
 async function buildAllocationResult(surveyId: number) {
   const allocations = await db
@@ -38,11 +50,20 @@ async function buildAllocationResult(surveyId: number) {
     .innerJoin(respondentsTable, eq(allocationsTable.respondentId, respondentsTable.id))
     .where(eq(allocationsTable.surveyId, surveyId));
 
-  const shifts = await db
+  const rawShifts = await db
     .select()
     .from(shiftsTable)
     .where(eq(shiftsTable.surveyId, surveyId));
 
+  const slotIndexes = deriveShiftSlotIndexes(rawShifts);
+  const shifts = rawShifts.map((shift) => {
+    const slotIndex = slotIndexes.get(shift.id) ?? 0;
+    return {
+      ...shift,
+      slotIndex,
+      stableShiftKey: stableShiftKey({ ...shift, slotIndex }),
+    };
+  });
   const shiftMap = new Map(shifts.map((s) => [s.id, s]));
   const allShiftIds = new Set(shifts.map((s) => s.id));
   const responseRows = await db
@@ -51,7 +72,10 @@ async function buildAllocationResult(surveyId: number) {
       respondentId: responsesTable.respondentId,
       respondentName: respondentsTable.preferredName,
       respondentFullName: respondentsTable.name,
+      respondentEmail: respondentsTable.email,
       respondentCategory: respondentsTable.category,
+      hasPenalty: responsesTable.hasPenalty,
+      penaltyHours: responsesTable.penaltyHours,
       afpHoursCap: responsesTable.afpHoursCap,
     })
     .from(responsesTable)
@@ -62,19 +86,58 @@ async function buildAllocationResult(surveyId: number) {
     {
       respondentId: number;
       name: string;
+      email: string | null;
       category: string;
+      hasPenalty: boolean;
+      penaltyHours: number;
       afpHoursCap: number;
     }[]
   >();
+  const respondentSettingsById = new Map<
+    number,
+    {
+      respondentId: number;
+      name: string;
+      email: string | null;
+      category: string;
+      hasPenalty: boolean;
+      penaltyHours: number;
+      afpHoursCap: number;
+      availableShiftIds: Set<number>;
+    }
+  >();
   for (const row of responseRows) {
     const respondents = availableRespondentsByShiftId.get(row.shiftId) ?? [];
+    const respondentName = safeDisplayName(row.respondentName, row.respondentFullName);
     respondents.push({
       respondentId: row.respondentId,
-      name: safeDisplayName(row.respondentName, row.respondentFullName),
+      name: respondentName,
+      email: row.respondentEmail,
       category: row.respondentCategory,
+      hasPenalty: Boolean(row.hasPenalty),
+      penaltyHours: row.hasPenalty ? row.penaltyHours ?? 0 : 0,
       afpHoursCap: row.afpHoursCap ?? 10,
     });
     availableRespondentsByShiftId.set(row.shiftId, respondents);
+
+    if (!respondentSettingsById.has(row.respondentId)) {
+      respondentSettingsById.set(row.respondentId, {
+        respondentId: row.respondentId,
+        name: respondentName,
+        email: row.respondentEmail,
+        category: row.respondentCategory,
+        hasPenalty: Boolean(row.hasPenalty),
+        penaltyHours: row.hasPenalty ? row.penaltyHours ?? 0 : 0,
+        afpHoursCap: row.afpHoursCap ?? 10,
+        availableShiftIds: new Set(),
+      });
+    }
+    const setting = respondentSettingsById.get(row.respondentId)!;
+    setting.category = row.respondentCategory;
+    setting.hasPenalty = setting.hasPenalty || Boolean(row.hasPenalty);
+    setting.penaltyHours = Math.max(setting.penaltyHours, row.hasPenalty ? row.penaltyHours ?? 0 : 0);
+    setting.afpHoursCap = Math.max(0, row.afpHoursCap ?? setting.afpHoursCap);
+    setting.availableShiftIds.add(row.shiftId);
   }
 
   const respondentMap = new Map<
@@ -108,32 +171,71 @@ async function buildAllocationResult(surveyId: number) {
       respondentMap.get(a.respondentId)!.manualShiftIds.add(a.shiftId);
     }
   }
+  for (const respondent of respondentSettingsById.values()) {
+    if (!respondentMap.has(respondent.respondentId)) {
+      respondentMap.set(respondent.respondentId, {
+        respondentId: respondent.respondentId,
+        name: respondent.name,
+        category: respondent.category,
+        shiftIds: [],
+        manualShiftIds: new Set(),
+        isManuallyAdjusted: false,
+        penaltyNote: null,
+      });
+    }
+  }
 
   const allocatedShiftIds = new Set(allocations.map((a) => a.shiftId));
   const unallocatedShiftIds = Array.from(allShiftIds).filter((id) => !allocatedShiftIds.has(id));
   const allocationShiftIdsByRespondentId = new Map<number, number[]>();
+  const manualShiftIds = new Set<number>();
   for (const respondent of respondentMap.values()) {
     allocationShiftIdsByRespondentId.set(respondent.respondentId, respondent.shiftIds);
+    for (const shiftId of respondent.manualShiftIds) manualShiftIds.add(shiftId);
   }
 
   const allocationsList = Array.from(respondentMap.values()).map((r) => {
     const totalHours = r.shiftIds.reduce((sum, id) => sum + (shiftMap.get(id)?.durationHours ?? 0), 0);
-    const allocatedShifts = r.shiftIds.map((id) => {
+    let afpNormalMinutes = 0;
+    const allocatedShifts = [...r.shiftIds].sort((a, b) => {
+      const shiftA = shiftMap.get(a)!;
+      const shiftB = shiftMap.get(b)!;
+      return shiftA.date.localeCompare(shiftB.date) || shiftA.slotIndex - shiftB.slotIndex || shiftA.id - shiftB.id;
+    }).map((id) => {
       const shift = shiftMap.get(id)!;
-      const assignmentSource: AssignmentSource = r.manualShiftIds.has(id)
-        ? "manual"
-        : (availableRespondentsByShiftId.get(id)?.length ?? 0) === 0 && r.category === "AFP"
-          ? "engine_no_availability_afp_fallback"
-          : r.shiftIds.some((otherId) => otherId !== id && isBackToBack(shift, shiftMap.get(otherId)!))
-            ? "engine_back_to_back_emergency"
-            : "engine_normal";
+      const availabilityCount = availableRespondentsByShiftId.get(id)?.length ?? 0;
+      const hasBackToBackPair = r.shiftIds.some((otherId) => otherId !== id && isBackToBack(shift, shiftMap.get(otherId)!));
+      const capHours = respondentSettingsById.get(r.respondentId)?.afpHoursCap ?? 10;
+      let assignmentSource: AssignmentSource;
+      if (r.manualShiftIds.has(id)) {
+        assignmentSource = "manual";
+      } else if (availabilityCount === 0 && r.category === "AFP") {
+        assignmentSource = NO_AVAILABILITY_AFP_PLACEHOLDER_SOURCE;
+      } else if (
+        r.category === "AFP" &&
+        afpNormalMinutes + hoursToMinutes(shift.durationHours) > hoursToMinutes(capHours)
+      ) {
+        assignmentSource = "engine_afp_cap_overflow_available";
+      } else {
+        assignmentSource = hasBackToBackPair ? "engine_back_to_back_emergency" : "engine_normal";
+      }
+      if (
+        r.category === "AFP" &&
+        (assignmentSource === "engine_normal" || assignmentSource === "engine_back_to_back_emergency")
+      ) {
+        afpNormalMinutes += hoursToMinutes(shift.durationHours);
+      }
       const explanationCodes: ExplanationCode[] = assignmentSource === "manual"
         ? ["MANUAL_OVERRIDE"]
-        : assignmentSource === "engine_no_availability_afp_fallback"
+        : isNoAvailabilityAfpPlaceholderSource(assignmentSource)
           ? ["NO_AVAILABILITY"]
-          : [];
+          : assignmentSource === "engine_afp_cap_overflow_available"
+            ? ["BLOCKED_BY_AFP_CAP"]
+            : [];
       return {
         shiftId: id,
+        stableShiftKey: shift.stableShiftKey,
+        slotIndex: shift.slotIndex,
         date: shift.date,
         startTime: shift.startTime,
         endTime: shift.endTime,
@@ -142,10 +244,10 @@ async function buildAllocationResult(surveyId: number) {
         dayType: shift.dayType as "weekday" | "weekend",
         assignmentSource,
         isManual: assignmentSource === "manual",
-        isEmergency: assignmentSource === "engine_back_to_back_emergency",
+        isEmergency: hasBackToBackPair,
         explanationCodes,
       };
-    }).sort((a, b) => `${a.date}-${a.startTime}`.localeCompare(`${b.date}-${b.startTime}`));
+    });
     return {
       respondentId: r.respondentId,
       name: r.name,
@@ -157,68 +259,193 @@ async function buildAllocationResult(surveyId: number) {
     };
   }).sort((a, b) => a.name.localeCompare(b.name));
 
-  const blankShiftExplanations = unallocatedShiftIds.map((shiftId) => {
-    const shift = shiftMap.get(shiftId)!;
-    const availableRespondents = availableRespondentsByShiftId.get(shiftId) ?? [];
-    const availableWithBlockers = availableRespondents.map((respondent) => {
-      const existingShiftIds = allocationShiftIdsByRespondentId.get(respondent.respondentId) ?? [];
-      const blockers: ExplanationCode[] = [];
-      const dayTier = sameDayAllocationTier(shiftId, existingShiftIds, shiftMap);
-      if (dayTier === 2) {
-        const sameDayCount = existingShiftIds.filter((id) => shiftMap.get(id)?.date === shift.date).length;
-        blockers.push(
-          sameDayCount >= 2 ? "BLOCKED_BY_MAX_TWO_SHIFTS_DAY" : "BLOCKED_BY_NON_ADJACENT_SAME_DAY",
-        );
-      }
-      const currentMinutes = existingShiftIds.reduce(
+  const allocatedShiftById = new Map(
+    allocationsList.flatMap((allocation) =>
+      allocation.allocatedShifts.map((shift) => [shift.shiftId, { ...shift, respondentId: allocation.respondentId, respondentName: allocation.name }] as const),
+    ),
+  );
+  const renderedStartTimes = {
+    weekday: new Set(["09:00", "11:00", "14:00", "17:00"]),
+    weekend: new Set(["08:00", "12:00", "16:00"]),
+  };
+  const dayNames = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+
+  const allocationAudit = shifts.map((shift) => {
+    const assigned = allocatedShiftById.get(shift.id);
+    const availableRespondents = availableRespondentsByShiftId.get(shift.id) ?? [];
+    const isRenderedSlot =
+      shift.dayType === "weekend"
+        ? renderedStartTimes.weekend.has(shift.startTime)
+        : renderedStartTimes.weekday.has(shift.startTime);
+    const availableWithDiagnostics = availableRespondents.map((respondent) => {
+      const existingShiftIds = (allocationShiftIdsByRespondentId.get(respondent.respondentId) ?? []).filter(
+        (existingShiftId) => existingShiftId !== shift.id,
+      );
+      const sameDayAssignedShiftIds = existingShiftIds.filter((id) => shiftMap.get(id)?.date === shift.date);
+      const alreadyAssignedMinutes = existingShiftIds.reduce(
         (sum, id) => sum + hoursToMinutes(shiftMap.get(id)?.durationHours ?? 0),
         0,
       );
-      if (
-        respondent.category === "AFP" &&
-        currentMinutes + hoursToMinutes(shift.durationHours) > hoursToMinutes(respondent.afpHoursCap)
-      ) {
-        blockers.push("BLOCKED_BY_AFP_CAP");
-      }
-      if (blockers.length === 0) blockers.push("ENGINE_REPAIR_LIMIT_REACHED");
+      const currentNormalMinutes = existingShiftIds
+        .filter((id) => !manualShiftIds.has(id) && (availableRespondentsByShiftId.get(id)?.length ?? 0) > 0)
+        .reduce((sum, id) => sum + hoursToMinutes(shiftMap.get(id)?.durationHours ?? 0), 0);
+      const baseSource = sameDayAllocationTier(shift.id, existingShiftIds, shiftMap) === 1
+        ? "engine_back_to_back_emergency"
+        : "engine_normal";
+      const validation = canAssignShiftToRespondent({
+        shiftId: shift.id,
+        existingShiftIds,
+        shiftMap,
+        isAvailable: true,
+        assignmentSource: baseSource,
+        category: respondent.category as "AFP" | "General",
+        currentNormalMinutes,
+        afpCapMinutes: hoursToMinutes(respondent.afpHoursCap),
+      });
+      const canTakeNormally = validation.ok && !validation.wouldBeBackToBackEmergency;
+      const canTakeBackToBackEmergency = validation.ok && validation.wouldBeBackToBackEmergency;
       return {
         respondentId: respondent.respondentId,
         name: respondent.name,
         category: respondent.category as "AFP" | "General",
-        blockers,
+        penaltyHours: respondent.penaltyHours,
+        afpCapHours: respondent.afpHoursCap,
+        alreadyAssignedMinutes,
+        sameDayAssignedShiftIds,
+        canTakeNormally,
+        canTakeBackToBackEmergency,
+        blockers: validation.ok ? [] : validation.reasonCodes,
       };
     });
-    const reasonCategory =
-      availableRespondents.length === 0
-        ? "NO_FALLBACK_AFP_SELECTED"
-        : availableWithBlockers.every((respondent) =>
-            respondent.blockers.some((blocker) =>
-              blocker === "BLOCKED_BY_MAX_TWO_SHIFTS_DAY" || blocker === "BLOCKED_BY_NON_ADJACENT_SAME_DAY",
-            ),
-          )
-          ? "ALL_AVAILABLE_BLOCKED_BY_SAME_DAY"
-          : availableWithBlockers.every((respondent) => respondent.blockers.includes("BLOCKED_BY_AFP_CAP"))
-            ? "ALL_AVAILABLE_BLOCKED_BY_AFP_CAP"
+
+    const eligibleNormalCandidateCount = availableWithDiagnostics.filter((respondent) => respondent.canTakeNormally).length;
+    const eligibleBackToBackEmergencyCandidateCount = availableWithDiagnostics.filter((respondent) => respondent.canTakeBackToBackEmergency).length;
+    const placeholderSettings = latestNoAvailabilityPlaceholderSettingsBySurveyId.get(surveyId);
+    const eligibleNoAvailabilityFallbackAfpCount =
+      availableRespondents.length === 0 && placeholderSettings?.allowNoAvailabilityAfpPlaceholders
+        ? Array.from(respondentSettingsById.values()).filter(
+            (respondent) =>
+              respondent.category === "AFP" &&
+              placeholderSettings.noAvailabilityFallbackAfpIds.includes(respondent.respondentId),
+          ).length
+        : 0;
+    const renderedCellIsBlank = assigned ? !isRenderedSlot : true;
+    const assignedHasAvailability = assigned
+      ? availableRespondents.some((respondent) => respondent.respondentId === assigned.respondentId)
+      : false;
+    const assignedIsNoAvailabilityPlaceholder =
+      Boolean(assigned) &&
+      isNoAvailabilityAfpPlaceholderSource(assigned!.assignmentSource) &&
+      availableRespondents.length === 0;
+    let reasonCategory = assigned
+      ? assignedIsNoAvailabilityPlaceholder
+        ? "NO_AVAILABILITY_AFP_PLACEHOLDER"
+        : !assignedHasAvailability
+        ? "AVAILABILITY_SHIFT_KEY_MISMATCH"
+        : renderedCellIsBlank
+        ? "RENDERING_ASSIGNMENT_MISMATCH"
+        : "ASSIGNED"
+      : availableRespondents.length === 0
+        ? placeholderSettings?.allowNoAvailabilityAfpPlaceholders
+          ? eligibleNoAvailabilityFallbackAfpCount > 0
+            ? "FALLBACK_AFP_BLOCKED_BY_SAME_DAY_RULE"
+            : "NO_FALLBACK_AFP_SELECTED"
+          : "NO_AVAILABILITY"
+        : eligibleNormalCandidateCount + eligibleBackToBackEmergencyCandidateCount > 0
+          ? "ENGINE_REPAIR_LIMIT_REACHED"
+          : availableWithDiagnostics.every((respondent) => respondent.blockers.includes("BLOCKED_BY_AFP_CAP"))
+            ? "BLOCKED_ONLY_BY_AFP_CAP"
             : "ALL_AVAILABLE_BLOCKED_BY_MIXED_CONSTRAINTS";
+    return {
+      shiftId: shift.id,
+      stableShiftKey: shift.stableShiftKey,
+      date: shift.date,
+      dayOfWeek: dayNames[new Date(`${shift.date}T00:00:00Z`).getUTCDay()] ?? "",
+      startTime: shift.startTime,
+      endTime: shift.endTime,
+      slotIndex: shift.slotIndex,
+      durationMinutes: hoursToMinutes(shift.durationHours),
+      renderedCellIsBlank,
+      allocationRecordExists: Boolean(assigned),
+      assignedRespondentId: assigned ? String(assigned.respondentId) : null,
+      assignedRespondentName: assigned?.respondentName ?? null,
+      assignmentSource: assigned?.assignmentSource ?? null,
+      availabilityCount: availableRespondents.length,
+      availableRespondents: availableWithDiagnostics,
+      eligibleNormalCandidateCount,
+      eligibleBackToBackEmergencyCandidateCount,
+      eligibleNoAvailabilityFallbackAfpCount,
+      reasonCategory,
+      explanationText: assigned
+        ? assignedIsNoAvailabilityPlaceholder
+          ? "No one selected this shift. It is assigned to an AFP as an emergency placeholder for visibility."
+          : !assignedHasAvailability
+          ? "An allocation record exists, but the assigned respondent did not select this shift."
+          : renderedCellIsBlank
+          ? "An allocation record exists, but the schedule renderer does not have a matching visible date/time cell."
+          : "This shift is assigned and should render in the schedule."
+        : availableRespondents.length === 0
+          ? placeholderSettings?.allowNoAvailabilityAfpPlaceholders
+            ? eligibleNoAvailabilityFallbackAfpCount > 0
+              ? "No respondent selected availability for this shift, and selected AFP placeholders were blocked by same-day rules."
+              : "No respondent selected availability for this shift, and no AFP placeholder respondent was selected."
+            : "No respondent selected availability for this shift. It must remain uncovered unless placeholder mode is enabled."
+          : eligibleNormalCandidateCount + eligibleBackToBackEmergencyCandidateCount > 0
+            ? "This blank still has a legal available candidate and should be treated as an engine repair bug."
+            : "Every available respondent is blocked by hard same-day or AFP cap constraints.",
+    };
+  });
+
+  const blankShiftExplanations = unallocatedShiftIds.map((shiftId) => {
+    const shift = shiftMap.get(shiftId)!;
+    const auditRow = allocationAudit.find((row) => row.shiftId === shiftId)!;
+    const reasonCategory =
+      auditRow.reasonCategory === "NO_FALLBACK_AFP_SELECTED"
+        ? "NO_FALLBACK_AFP_SELECTED"
+        : auditRow.reasonCategory === "FALLBACK_AFP_BLOCKED_BY_SAME_DAY_RULE"
+          ? "NO_AVAILABILITY"
+        : auditRow.reasonCategory === "NO_AVAILABILITY"
+          ? "NO_AVAILABILITY"
+          : auditRow.reasonCategory === "BLOCKED_ONLY_BY_AFP_CAP"
+            ? "ALL_AVAILABLE_BLOCKED_BY_AFP_CAP"
+            : auditRow.availableRespondents.every((respondent) =>
+                respondent.blockers.some((blocker) =>
+                  blocker === "BLOCKED_BY_MAX_TWO_SHIFTS_DAY" || blocker === "BLOCKED_BY_NON_ADJACENT_SAME_DAY",
+                ),
+              )
+              ? "ALL_AVAILABLE_BLOCKED_BY_SAME_DAY"
+              : "ALL_AVAILABLE_BLOCKED_BY_MIXED_CONSTRAINTS";
 
     return {
       shiftId,
+      stableShiftKey: shift.stableShiftKey,
+      slotIndex: shift.slotIndex,
       date: shift.date,
       label: shift.label,
       startTime: shift.startTime,
       endTime: shift.endTime,
       durationHours: shift.durationHours,
-      availabilityCount: availableRespondents.length,
-      availableRespondents: availableWithBlockers,
+      availabilityCount: auditRow.availabilityCount,
+      availableRespondents: auditRow.availableRespondents.map((respondent) => ({
+        respondentId: respondent.respondentId,
+        name: respondent.name,
+        category: respondent.category,
+        blockers: respondent.blockers.length > 0 ? respondent.blockers : ["ENGINE_REPAIR_LIMIT_REACHED"],
+      })),
       reasonCategory,
       explanationCodes:
-        availableRespondents.length === 0
-          ? ["NO_AVAILABILITY", "NO_FALLBACK_AFP_SELECTED"] as ExplanationCode[]
-          : Array.from(new Set(availableWithBlockers.flatMap((respondent) => respondent.blockers))),
-      explanationText:
-        availableRespondents.length === 0
-          ? "No respondent selected availability for this shift, and no AFP fallback assignment was available."
-          : "Every available respondent was blocked by same-day, cap, or repair constraints.",
+        auditRow.availabilityCount === 0
+          ? Array.from(
+              new Set([
+                "NO_AVAILABILITY",
+                ...(auditRow.reasonCategory === "NO_FALLBACK_AFP_SELECTED" ||
+                auditRow.reasonCategory === "FALLBACK_AFP_BLOCKED_BY_SAME_DAY_RULE"
+                  ? [auditRow.reasonCategory as ExplanationCode]
+                  : []),
+              ]),
+            ) as ExplanationCode[]
+          : Array.from(new Set(auditRow.availableRespondents.flatMap((respondent) => respondent.blockers.length > 0 ? respondent.blockers : ["ENGINE_REPAIR_LIMIT_REACHED"]))),
+      explanationText: auditRow.explanationText,
     };
   });
 
@@ -233,6 +460,7 @@ async function buildAllocationResult(surveyId: number) {
     stdDev: std,
     unallocatedShiftIds,
     blankShiftExplanations,
+    allocationAudit,
   };
 }
 
@@ -271,9 +499,10 @@ router.post("/surveys/:id/allocate", async (req, res): Promise<void> => {
     parsed.data.includedRespondentIds,
   );
   const afpRespondentIds = dedupePositiveIntegerIds(parsed.data.afpRespondentIds);
-  const afpUnclaimedShiftRespondentIds = dedupePositiveIntegerIds(
-    parsed.data.afpUnclaimedShiftRespondentIds,
+  const noAvailabilityFallbackAfpIds = dedupePositiveIntegerIds(
+    parsed.data.noAvailabilityFallbackAfpIds ?? parsed.data.afpUnclaimedShiftRespondentIds,
   );
+  const allowNoAvailabilityAfpPlaceholders = Boolean(parsed.data.allowNoAvailabilityAfpPlaceholders);
 
   const invalidIncludedRespondentIds = includedRespondentIds.filter(
     (respondentId) => !surveyRespondentIdSet.has(respondentId),
@@ -300,9 +529,9 @@ router.post("/surveys/:id/allocate", async (req, res): Promise<void> => {
   }
 
   if (
-    afpUnclaimedShiftRespondentIds.some((respondentId) => !afpRespondentIds.includes(respondentId))
+    noAvailabilityFallbackAfpIds.some((respondentId) => !afpRespondentIds.includes(respondentId))
   ) {
-    res.status(400).json({ error: "No-availability fallback respondents must be selected AFP respondents." });
+    res.status(400).json({ error: "No-availability AFP placeholder respondents must be selected AFP respondents." });
     return;
   }
 
@@ -320,31 +549,229 @@ router.post("/surveys/:id/allocate", async (req, res): Promise<void> => {
       .where(inArray(respondentsTable.id, afpRespondentIds));
   }
 
-  // Clear existing allocations
-  await db.delete(allocationsTable).where(eq(allocationsTable.surveyId, id));
+  const preserveManualLocks = parsed.data.preserveManualLocks !== false;
+  const existingManualAssignments = preserveManualLocks
+    ? await db
+        .select({
+          respondentId: allocationsTable.respondentId,
+          shiftId: allocationsTable.shiftId,
+        })
+        .from(allocationsTable)
+        .where(and(eq(allocationsTable.surveyId, id), eq(allocationsTable.isManuallyAdjusted, true)))
+    : [];
+
+  if (existingManualAssignments.length > 0) {
+    const responseAvailability = await db
+      .select({ respondentId: responsesTable.respondentId, shiftId: responsesTable.shiftId })
+      .from(responsesTable)
+      .where(eq(responsesTable.surveyId, id));
+    const availableKeys = new Set(
+      responseAvailability.map((row) => `${row.respondentId}:${row.shiftId}`),
+    );
+    const invalidManualLocks = existingManualAssignments.filter(
+      (assignment) => !availableKeys.has(`${assignment.respondentId}:${assignment.shiftId}`),
+    );
+    if (invalidManualLocks.length > 0) {
+      res.status(400).json({
+        error:
+          "Existing manual assignments include shifts the respondent did not select. Turn off manual-lock preservation or remove those manual assignments before rerunning.",
+      });
+      return;
+    }
+  }
+
+  if (preserveManualLocks) {
+    await db
+      .delete(allocationsTable)
+      .where(and(eq(allocationsTable.surveyId, id), eq(allocationsTable.isManuallyAdjusted, false)));
+  } else {
+    await db.delete(allocationsTable).where(eq(allocationsTable.surveyId, id));
+  }
 
   const result = await runAllocation({
     surveyId: id,
     afpRespondentIds,
-    afpUnclaimedShiftRespondentIds,
+    afpUnclaimedShiftRespondentIds: noAvailabilityFallbackAfpIds,
+    noAvailabilityFallbackAfpIds,
+    allowNoAvailabilityAfpPlaceholders,
     includedRespondentIds,
+    allowAfpOverCapForAvailableShifts: parsed.data.allowAfpOverCapForAvailableShifts ?? false,
+    existingManualAssignments,
+  });
+  latestFairnessDiagnosticsBySurveyId.set(id, result.fairnessDiagnostics);
+  latestNoAvailabilityPlaceholderSettingsBySurveyId.set(id, {
+    allowNoAvailabilityAfpPlaceholders,
+    noAvailabilityFallbackAfpIds,
   });
 
   // Save allocations to DB
-  for (const plan of result.plans) {
-    for (const shiftId of plan.shiftIds) {
-      await db.insert(allocationsTable).values({
-        surveyId: id,
-        respondentId: plan.respondentId,
-        shiftId,
-        isManuallyAdjusted: false,
-        penaltyNote: null,
-      });
-    }
+  for (const assignment of result.assignments) {
+    if (assignment.source === "manual") continue;
+    await db.insert(allocationsTable).values({
+      surveyId: id,
+      respondentId: assignment.respondentId,
+      shiftId: assignment.shiftId,
+      isManuallyAdjusted: false,
+      penaltyNote: null,
+    });
   }
 
   const allocationResult = await buildAllocationResult(id);
   res.json(allocationResult);
+});
+
+router.post("/surveys/:id/allocations/dry-run", async (req, res): Promise<void> => {
+  const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+  const id = parseInt(raw, 10);
+  if (isNaN(id)) {
+    res.status(400).json({ error: "Invalid id" });
+    return;
+  }
+
+  const [survey] = await db.select().from(surveysTable).where(eq(surveysTable.id, id));
+  if (!survey) {
+    res.status(404).json({ error: "Survey not found" });
+    return;
+  }
+
+  const parsed = RunAllocationBody.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.message });
+    return;
+  }
+
+  const surveyRespondents = await db
+    .select({ respondentId: responsesTable.respondentId })
+    .from(responsesTable)
+    .where(eq(responsesTable.surveyId, id));
+  const surveyRespondentIdSet = new Set(surveyRespondents.map((entry) => entry.respondentId));
+  const includedRespondentIds = dedupePositiveIntegerIds(parsed.data.includedRespondentIds);
+  const afpRespondentIds = dedupePositiveIntegerIds(parsed.data.afpRespondentIds);
+  const noAvailabilityFallbackAfpIds = dedupePositiveIntegerIds(
+    parsed.data.noAvailabilityFallbackAfpIds ?? parsed.data.afpUnclaimedShiftRespondentIds,
+  );
+  const allowNoAvailabilityAfpPlaceholders = Boolean(parsed.data.allowNoAvailabilityAfpPlaceholders);
+
+  if (includedRespondentIds.some((respondentId) => !surveyRespondentIdSet.has(respondentId))) {
+    res.status(400).json({ error: "Included respondents must belong to this survey." });
+    return;
+  }
+  if (afpRespondentIds.some((respondentId) => !surveyRespondentIdSet.has(respondentId))) {
+    res.status(400).json({ error: "AFP respondents must belong to this survey." });
+    return;
+  }
+  if (noAvailabilityFallbackAfpIds.some((respondentId) => !afpRespondentIds.includes(respondentId))) {
+    res.status(400).json({ error: "No-availability AFP placeholder respondents must be selected AFP respondents." });
+    return;
+  }
+
+  const preserveManualLocks = parsed.data.preserveManualLocks !== false;
+  const existingManualAssignments = preserveManualLocks
+    ? await db
+        .select({
+          respondentId: allocationsTable.respondentId,
+          shiftId: allocationsTable.shiftId,
+        })
+        .from(allocationsTable)
+        .where(and(eq(allocationsTable.surveyId, id), eq(allocationsTable.isManuallyAdjusted, true)))
+    : [];
+
+  if (existingManualAssignments.length > 0) {
+    const responseAvailability = await db
+      .select({ respondentId: responsesTable.respondentId, shiftId: responsesTable.shiftId })
+      .from(responsesTable)
+      .where(eq(responsesTable.surveyId, id));
+    const availableKeys = new Set(responseAvailability.map((row) => `${row.respondentId}:${row.shiftId}`));
+    const invalidManualLocks = existingManualAssignments.filter(
+      (assignment) => !availableKeys.has(`${assignment.respondentId}:${assignment.shiftId}`),
+    );
+    if (invalidManualLocks.length > 0) {
+      res.status(400).json({
+        error:
+          "Existing manual assignments include shifts the respondent did not select. Turn off manual-lock preservation or remove those manual assignments before dry-running.",
+      });
+      return;
+    }
+  }
+
+  const [shifts, responseRows] = await Promise.all([
+    db.select().from(shiftsTable).where(eq(shiftsTable.surveyId, id)),
+    db
+      .select({
+        respondentId: responsesTable.respondentId,
+        shiftId: responsesTable.shiftId,
+      })
+      .from(responsesTable)
+      .where(eq(responsesTable.surveyId, id)),
+  ]);
+  const availabilityByShiftId = new Map<number, Set<number>>();
+  for (const shift of shifts) availabilityByShiftId.set(shift.id, new Set());
+  for (const row of responseRows) {
+    availabilityByShiftId.get(row.shiftId)?.add(row.respondentId);
+  }
+
+  const result = await runAllocation({
+    surveyId: id,
+    afpRespondentIds,
+    afpUnclaimedShiftRespondentIds: noAvailabilityFallbackAfpIds,
+    noAvailabilityFallbackAfpIds,
+    allowNoAvailabilityAfpPlaceholders,
+    includedRespondentIds,
+    allowAfpOverCapForAvailableShifts: parsed.data.allowAfpOverCapForAvailableShifts ?? false,
+    existingManualAssignments,
+  });
+
+  const assignmentByShiftId = new Map(result.assignments.map((assignment) => [assignment.shiftId, assignment]));
+  const unallocatedShiftIds = shifts
+    .map((shift) => shift.id)
+    .filter((shiftId) => !assignmentByShiftId.has(shiftId));
+  const illegalAssignmentsWithoutAvailability = result.assignments.filter((assignment) => {
+    const available = availabilityByShiftId.get(assignment.shiftId) ?? new Set<number>();
+    if (available.has(assignment.respondentId)) return false;
+    return !(assignment.source === NO_AVAILABILITY_AFP_PLACEHOLDER_SOURCE && available.size === 0);
+  });
+  const blankWithAvailabilityCount = unallocatedShiftIds.filter(
+    (shiftId) => (availabilityByShiftId.get(shiftId)?.size ?? 0) > 0,
+  ).length;
+  const blankZeroAvailabilityShiftCount = unallocatedShiftIds.filter(
+    (shiftId) => (availabilityByShiftId.get(shiftId)?.size ?? 0) === 0,
+  ).length;
+  const placeholderAssignments = result.assignments.filter(
+    (assignment) => assignment.source === NO_AVAILABILITY_AFP_PLACEHOLDER_SOURCE,
+  );
+
+  res.json({
+    surveyId: id,
+    dryRun: true,
+    totalShifts: shifts.length,
+    assignedShifts: result.assignments.length,
+    normalAssignedShifts: result.assignments.filter((assignment) => assignment.source === "engine_normal").length,
+    blankShifts: unallocatedShiftIds.length,
+    blankWithAvailabilityCount,
+    blankZeroAvailabilityShiftCount,
+    allowedNoAvailabilityAfpPlaceholderAssignments: placeholderAssignments.length,
+    illegalAssignmentsWithoutAvailability: illegalAssignmentsWithoutAvailability.length,
+    nonPenalizedGeneralMeanHours: result.fairnessDiagnostics.nonPenalizedGeneralMeanHours,
+    nonPenalizedGeneralStdDevHours: result.fairnessDiagnostics.nonPenalizedGeneralStdDevHours,
+    nonPenalizedGeneralRangeHours: result.fairnessDiagnostics.nonPenalizedGeneralRangeHours,
+    fairnessRepairMoveCount: result.fairnessDiagnostics.successfulRepairMoves,
+    highStdDevReasonCodes: result.fairnessDiagnostics.highStdDevReasonCodes,
+    backToBackEmergencyAssignments: result.assignments.filter(
+      (assignment) => assignment.source === "engine_back_to_back_emergency",
+    ).length,
+    afpCapOverflowAssignments: result.assignments.filter(
+      (assignment) => assignment.source === "engine_afp_cap_overflow_available",
+    ).length,
+    noAvailabilityAfpPlaceholderAssignments: placeholderAssignments.length,
+    settings: {
+      allowNoAvailabilityAfpPlaceholders,
+      noAvailabilityFallbackAfpIds,
+      allowAfpOverCapForAvailableShifts: parsed.data.allowAfpOverCapForAvailableShifts ?? false,
+      preserveManualLocks,
+    },
+    assignments: result.assignments,
+    unallocatedShiftIds,
+  });
 });
 
 router.get("/surveys/:id/allocations", async (req, res): Promise<void> => {
@@ -399,7 +826,7 @@ router.patch("/surveys/:id/allocations/adjust", async (req, res): Promise<void> 
 
   const { respondentId } = parsed.data;
   const [respondent] = await db
-    .select({ id: respondentsTable.id })
+    .select({ id: respondentsTable.id, category: respondentsTable.category })
     .from(respondentsTable)
     .where(eq(respondentsTable.id, respondentId))
     .limit(1);
@@ -409,7 +836,7 @@ router.patch("/surveys/:id/allocations/adjust", async (req, res): Promise<void> 
   }
 
   const surveyShiftRows = await db
-    .select({ id: shiftsTable.id })
+    .select()
     .from(shiftsTable)
     .where(eq(shiftsTable.surveyId, id));
   const surveyShiftIdSet = new Set(surveyShiftRows.map((shift) => shift.id));
@@ -419,6 +846,69 @@ router.patch("/surveys/:id/allocations/adjust", async (req, res): Promise<void> 
   if (invalidShiftIds.length > 0) {
     res.status(400).json({ error: "Shift adjustments must belong to this survey." });
     return;
+  }
+
+  const manualSlotIndexes = deriveShiftSlotIndexes(surveyShiftRows);
+  const manualShiftMap = new Map(
+    surveyShiftRows.map((shift) => {
+      const slotIndex = manualSlotIndexes.get(shift.id) ?? 0;
+      return [shift.id, { ...shift, slotIndex }] as const;
+    }),
+  );
+  const availabilityRows = await db
+    .select({ shiftId: responsesTable.shiftId })
+    .from(responsesTable)
+    .where(and(eq(responsesTable.surveyId, id), eq(responsesTable.respondentId, respondentId)));
+  const surveyAvailabilityRows = await db
+    .select({ shiftId: responsesTable.shiftId })
+    .from(responsesTable)
+    .where(eq(responsesTable.surveyId, id));
+  const availabilityCountByShiftId = new Map<number, number>();
+  for (const row of surveyAvailabilityRows) {
+    availabilityCountByShiftId.set(row.shiftId, (availabilityCountByShiftId.get(row.shiftId) ?? 0) + 1);
+  }
+  const availableShiftIdSet = new Set(availabilityRows.map((row) => row.shiftId));
+  const existingTargetAssignments = await db
+    .select({ shiftId: allocationsTable.shiftId })
+    .from(allocationsTable)
+    .where(and(eq(allocationsTable.surveyId, id), eq(allocationsTable.respondentId, respondentId)));
+  const plannedShiftIds = new Set(
+    existingTargetAssignments
+      .map((assignment) => assignment.shiftId)
+      .filter((shiftId) => !shiftIdsToRemove.includes(shiftId)),
+  );
+  const placeholderShiftIdsToAdd = new Set<number>();
+  for (const shiftId of shiftIdsToAdd) {
+    const shiftAvailabilityCount = availabilityCountByShiftId.get(shiftId) ?? 0;
+    const isAvailable = availableShiftIdSet.has(shiftId);
+    const isPlaceholderAdjustment =
+      parsed.data.noAvailabilityAfpPlaceholder === true &&
+      respondent.category === "AFP" &&
+      shiftAvailabilityCount === 0 &&
+      !isAvailable;
+    if (!isAvailable && !isPlaceholderAdjustment) {
+      res.status(400).json({ error: "Manual assignments require that the respondent selected the shift." });
+      return;
+    }
+    const validation = canAssignShiftToRespondent({
+      shiftId,
+      existingShiftIds: Array.from(plannedShiftIds).filter((existingShiftId) => existingShiftId !== shiftId),
+      shiftMap: manualShiftMap,
+      isAvailable,
+      availabilityCount: shiftAvailabilityCount,
+      assignmentSource: isPlaceholderAdjustment ? NO_AVAILABILITY_AFP_PLACEHOLDER_SOURCE : "manual",
+      category: respondent.category as "AFP" | "General",
+      allowNoAvailabilityAfpPlaceholder: isPlaceholderAdjustment,
+      isEligibleNoAvailabilityAfpPlaceholder: isPlaceholderAdjustment,
+    });
+    if (!validation.ok) {
+      res.status(400).json({
+        error: `${isPlaceholderAdjustment ? "No-availability AFP placeholder" : "Manual assignment"} violates hard allocation rules: ${validation.reasonCodes.join(", ")}`,
+      });
+      return;
+    }
+    if (isPlaceholderAdjustment) placeholderShiftIdsToAdd.add(shiftId);
+    plannedShiftIds.add(shiftId);
   }
 
   await db.transaction(async (tx) => {
@@ -460,16 +950,17 @@ router.patch("/surveys/:id/allocations/adjust", async (req, res): Promise<void> 
           surveyId: id,
           respondentId,
           shiftId,
-          isManuallyAdjusted: true,
+          isManuallyAdjusted: !placeholderShiftIdsToAdd.has(shiftId),
           penaltyNote: penaltyNoteResult.value,
         });
       }
     }
 
     if (
+      !parsed.data.noAvailabilityAfpPlaceholder && (
       parsed.data.penaltyNote !== undefined ||
       shiftIdsToAdd.length > 0 ||
-      shiftIdsToRemove.length > 0
+      shiftIdsToRemove.length > 0)
     ) {
       await tx
         .update(allocationsTable)
@@ -506,12 +997,34 @@ router.get("/surveys/:id/allocation-stats", async (req, res): Promise<void> => {
   const allAllocatedShifts = allocations.flatMap((allocation) =>
     allocation.allocatedShifts.map((shift) => ({ ...shift, respondentId: allocation.respondentId })),
   );
+  const assignmentsWithoutAvailability = allocationResult.allocationAudit.filter(
+    (row) => row.allocationRecordExists && row.reasonCategory === "AVAILABILITY_SHIFT_KEY_MISMATCH",
+  );
+  const normalAssignmentsWithoutAvailability = assignmentsWithoutAvailability.filter(
+    (row) =>
+      row.assignmentSource === "engine_normal" ||
+      row.assignmentSource === "engine_back_to_back_emergency" ||
+      row.assignmentSource === "engine_afp_cap_overflow_available",
+  ).length;
+  const manualAssignmentsWithoutAvailability = assignmentsWithoutAvailability.filter(
+    (row) => row.assignmentSource === "manual",
+  ).length;
+  const fallbackAssignmentsWithoutAvailability = assignmentsWithoutAvailability.filter(
+    (row) => row.assignmentSource !== null && isNoAvailabilityAfpPlaceholderSource(row.assignmentSource as AssignmentSource),
+  ).length;
+  const allowedNoAvailabilityAfpPlaceholderAssignments = allAllocatedShifts.filter(
+    (shift) => isNoAvailabilityAfpPlaceholderSource(shift.assignmentSource),
+  ).length;
+  const illegalAssignmentsWithoutAvailability = assignmentsWithoutAvailability.length;
   const manualAssignmentCount = allAllocatedShifts.filter((shift) => shift.isManual).length;
   const backToBackEmergencyCount = allAllocatedShifts.filter(
     (shift) => shift.assignmentSource === "engine_back_to_back_emergency",
   ).length;
   const noAvailabilityFallbackCount = allAllocatedShifts.filter(
-    (shift) => shift.assignmentSource === "engine_no_availability_afp_fallback",
+    (shift) => isNoAvailabilityAfpPlaceholderSource(shift.assignmentSource),
+  ).length;
+  const afpCapOverflowCount = allAllocatedShifts.filter(
+    (shift) => shift.assignmentSource === "engine_afp_cap_overflow_available",
   ).length;
   let nonAdjacentSameDayDoubleCount = 0;
   let tripleShiftDayCount = 0;
@@ -530,15 +1043,25 @@ router.get("/surveys/:id/allocation-stats", async (req, res): Promise<void> => {
       }
     }
   }
+  const statShifts = await db.select().from(shiftsTable).where(eq(shiftsTable.surveyId, id));
+  const statShiftMap = new Map(statShifts.map((shift) => [shift.id, shift]));
   const responseSettings = await db
     .select({
       respondentId: responsesTable.respondentId,
+      shiftId: responsesTable.shiftId,
+      respondentCategory: respondentsTable.category,
       hasPenalty: responsesTable.hasPenalty,
       penaltyHours: responsesTable.penaltyHours,
+      afpHoursCap: responsesTable.afpHoursCap,
     })
     .from(responsesTable)
+    .innerJoin(respondentsTable, eq(responsesTable.respondentId, respondentsTable.id))
     .where(eq(responsesTable.surveyId, id));
   const penaltyByRespondentId = new Map<number, { hasPenalty: boolean; penaltyHours: number }>();
+  const capacityByRespondentId = new Map<number, number>();
+  const categoryByRespondentId = new Map<number, string>();
+  const afpCapByRespondentId = new Map<number, number>();
+  const availabilityByShiftId = new Map<number, number>();
   for (const response of responseSettings) {
     const current = penaltyByRespondentId.get(response.respondentId) ?? {
       hasPenalty: false,
@@ -548,10 +1071,68 @@ router.get("/surveys/:id/allocation-stats", async (req, res): Promise<void> => {
       hasPenalty: current.hasPenalty || Boolean(response.hasPenalty),
       penaltyHours: Math.max(current.penaltyHours, response.hasPenalty ? response.penaltyHours ?? 0 : 0),
     });
+    categoryByRespondentId.set(response.respondentId, response.respondentCategory);
+    afpCapByRespondentId.set(response.respondentId, Math.max(0, response.afpHoursCap ?? 10));
+    capacityByRespondentId.set(
+      response.respondentId,
+      (capacityByRespondentId.get(response.respondentId) ?? 0) +
+        hoursToMinutes(statShiftMap.get(response.shiftId)?.durationHours ?? 0),
+    );
+    availabilityByShiftId.set(response.shiftId, (availabilityByShiftId.get(response.shiftId) ?? 0) + 1);
   }
+
+  const totalNormalAssignableMinutes = statShifts
+    .filter((shift) => (availabilityByShiftId.get(shift.id) ?? 0) > 0)
+    .reduce((sum, shift) => sum + hoursToMinutes(shift.durationHours), 0);
+  const intendedAfpNormalMinutes = Array.from(capacityByRespondentId.entries()).reduce(
+    (sum, [respondentId, capacity]) =>
+      categoryByRespondentId.get(respondentId) === "AFP"
+        ? sum + Math.min(capacity, hoursToMinutes(afpCapByRespondentId.get(respondentId) ?? 10))
+        : sum,
+    0,
+  );
+  const targetResult = solveNonAfpPenaltyTargets(
+    Array.from(capacityByRespondentId.entries())
+      .filter(([respondentId]) => categoryByRespondentId.get(respondentId) !== "AFP")
+      .map(([respondentId, capacityMinutes]) => ({
+        respondentId,
+        capacityMinutes,
+        penaltyMinutes: hoursToMinutes(penaltyByRespondentId.get(respondentId)?.penaltyHours ?? 0),
+      })),
+    Math.max(0, totalNormalAssignableMinutes - intendedAfpNormalMinutes),
+  );
+  const targetMinutesByRespondentId = new Map(
+    targetResult.targets.map((target) => [target.respondentId, target.targetMinutes] as const),
+  );
 
   const toStat = (a: typeof allocations[0]) => {
     const penalty = penaltyByRespondentId.get(a.respondentId) ?? { hasPenalty: false, penaltyHours: 0 };
+    const targetHours = minutesToHours(targetMinutesByRespondentId.get(a.respondentId) ?? 0);
+    const weekdayHours = a.allocatedShifts
+      .filter((s) => s.dayType === "weekday")
+      .reduce((sum, shift) => sum + shift.durationHours, 0);
+    const weekendHours = a.allocatedShifts
+      .filter((s) => s.dayType === "weekend")
+      .reduce((sum, shift) => sum + shift.durationHours, 0);
+    const noAvailabilityPlaceholderHours = a.allocatedShifts
+      .filter((s) => isNoAvailabilityAfpPlaceholderSource(s.assignmentSource))
+      .reduce((sum, shift) => sum + shift.durationHours, 0);
+    const normalHours = a.allocatedShifts
+      .filter((s) => s.assignmentSource === "engine_normal" || s.assignmentSource === "engine_back_to_back_emergency")
+      .reduce((sum, shift) => sum + shift.durationHours, 0);
+    const afpCapOverflowHours = a.allocatedShifts
+      .filter((s) => s.assignmentSource === "engine_afp_cap_overflow_available")
+      .reduce((sum, shift) => sum + shift.durationHours, 0);
+    const manualHours = a.allocatedShifts
+      .filter((s) => s.assignmentSource === "manual")
+      .reduce((sum, shift) => sum + shift.durationHours, 0);
+    const sameDayDoubleCount = Array.from(
+      a.allocatedShifts.reduce((map, shift) => {
+        map.set(shift.date, (map.get(shift.date) ?? 0) + 1);
+        return map;
+      }, new Map<string, number>()).values(),
+    ).filter((count) => count === 2).length;
+    const deviationFromTargetHours = a.category === "General" ? a.totalHours - targetHours : 0;
     return {
       respondentId: a.respondentId,
       name: a.name,
@@ -559,11 +1140,29 @@ router.get("/surveys/:id/allocation-stats", async (req, res): Promise<void> => {
       totalHours: a.totalHours,
       weekdayShifts: a.allocatedShifts.filter((s) => s.dayType === "weekday").length,
       weekendShifts: a.allocatedShifts.filter((s) => s.dayType === "weekend").length,
+      weekdayHours,
+      weekendHours,
       shiftCount: a.allocatedShifts.length,
       isManuallyAdjusted: a.isManuallyAdjusted,
       hasPenalty: penalty.hasPenalty,
       penaltyHours: penalty.penaltyHours,
       penaltyGapHours: 0,
+      targetHours,
+      availableCapacityHours: minutesToHours(capacityByRespondentId.get(a.respondentId) ?? 0),
+      deviationFromTargetHours,
+      sameDayDoubleCount,
+      normalHours,
+      afpCapOverflowHours,
+      noAvailabilityPlaceholderHours,
+      manualHours,
+      fairnessStatus:
+        a.category !== "General"
+          ? "AFP"
+          : Math.abs(deviationFromTargetHours) <= 1
+            ? "ON_TARGET"
+            : deviationFromTargetHours > 0
+              ? "OVER_TARGET"
+              : "UNDER_TARGET",
     };
   };
 
@@ -581,6 +1180,33 @@ router.get("/surveys/:id/allocation-stats", async (req, res): Promise<void> => {
   const generalStats = respondentStats.filter((a) => a.category === "General");
   const nonPenalizedGeneralStats = generalStats.filter((a) => !a.hasPenalty);
   const penalizedStats = generalStats.filter((a) => a.hasPenalty);
+  const nonPenalizedHours = nonPenalizedGeneralStats.map((stat) => stat.totalHours);
+  const nonPenalizedMean = computeAverage(nonPenalizedHours);
+  const nonPenalizedMedian = computeMedian(nonPenalizedHours);
+  const nonPenalizedStdDev = computeStdDev(nonPenalizedHours, nonPenalizedMean);
+  const nonPenalizedMin = nonPenalizedHours.length > 0 ? Math.min(...nonPenalizedHours) : 0;
+  const nonPenalizedMax = nonPenalizedHours.length > 0 ? Math.max(...nonPenalizedHours) : 0;
+  const maxDeviationFromMeanHours =
+    nonPenalizedHours.length > 0
+      ? Math.max(...nonPenalizedHours.map((hours) => Math.abs(hours - nonPenalizedMean)))
+      : 0;
+  const maxDeviationFromTargetHours =
+    generalStats.length > 0
+      ? Math.max(...generalStats.map((stat) => Math.abs(stat.deviationFromTargetHours)))
+      : 0;
+  const sumSquaredDeviationFromTargetHours = generalStats.reduce(
+    (sum, stat) => sum + Math.pow(stat.deviationFromTargetHours, 2),
+    0,
+  );
+  const targetStdDevHours = 2;
+  const warningStdDevHours = 4;
+  const latestFairnessDiagnostics = latestFairnessDiagnosticsBySurveyId.get(id);
+  const fairnessHighStdDevReason =
+    latestFairnessDiagnostics?.highStdDevReasonCodes.length
+      ? latestFairnessDiagnostics.highStdDevReasonCodes.join("; ")
+      : nonPenalizedStdDev > targetStdDevHours
+      ? "HIGH_STD_DEV_NO_LEGAL_REPAIR; INSUFFICIENT_OVERLAPPING_AVAILABILITY; SAME_DAY_CONSTRAINT; SHIFT_GRANULARITY_LIMIT"
+      : "";
 
   const allHours = respondentStats.map((r) => r.totalHours);
   const avg = computeAverage(allHours);
@@ -608,14 +1234,48 @@ router.get("/surveys/:id/allocation-stats", async (req, res): Promise<void> => {
     manualAssignmentCount,
     backToBackEmergencyCount,
     noAvailabilityFallbackCount,
+    allowedNoAvailabilityAfpPlaceholderAssignments,
+    illegalAssignmentsWithoutAvailability,
+    noAvailabilityAfpPlaceholderCount: allowedNoAvailabilityAfpPlaceholderAssignments,
+    noAvailabilityShiftsStillBlank: allocationResult.blankShiftExplanations.filter(
+      (shift) => shift.availabilityCount === 0,
+    ).length,
+    afpNoAvailabilityPlaceholderHours: allAllocatedShifts
+      .filter((shift) => isNoAvailabilityAfpPlaceholderSource(shift.assignmentSource))
+      .reduce((sum, shift) => sum + shift.durationHours, 0),
+    afpCapOverflowCount,
+    normalAssignmentsWithoutAvailability,
+    manualAssignmentsWithoutAvailability,
+    fallbackAssignmentsWithoutAvailability,
+    assignmentsWithoutAvailabilityCount: assignmentsWithoutAvailability.length,
     nonAdjacentSameDayDoubleCount,
     tripleShiftDayCount,
+    renderedBlankButAssignedCount: allocationResult.allocationAudit.filter(
+      (row) => row.allocationRecordExists && row.renderedCellIsBlank,
+    ).length,
+    availabilityMappingFailureCount: allocationResult.allocationAudit.filter(
+      (row) => row.reasonCategory === "AVAILABILITY_SHIFT_KEY_MISMATCH",
+    ).length,
     respondentStats,
     afpStats,
     generalStats,
     nonPenalizedGeneralStats,
     penalizedStats,
     nonPenalizedGeneralMeanHours,
+    nonPenalizedGeneralMedianHours: nonPenalizedMedian,
+    nonPenalizedGeneralMinHours: nonPenalizedMin,
+    nonPenalizedGeneralMaxHours: nonPenalizedMax,
+    nonPenalizedGeneralRangeHours: nonPenalizedMax - nonPenalizedMin,
+    nonPenalizedGeneralStdDevHours: nonPenalizedStdDev,
+    fairnessTargetStdDevHours: targetStdDevHours,
+    fairnessWarningStdDevHours: warningStdDevHours,
+    fairnessWarning: nonPenalizedStdDev > warningStdDevHours,
+    fairnessRepairAttempted: latestFairnessDiagnostics?.repairAttempted ?? nonPenalizedStdDev > targetStdDevHours,
+    fairnessRepairMoveCount: latestFairnessDiagnostics?.successfulRepairMoves ?? 0,
+    fairnessHighStdDevReason,
+    maxDeviationFromMeanHours,
+    maxDeviationFromTargetHours,
+    sumSquaredDeviationFromTargetHours,
   });
 });
 

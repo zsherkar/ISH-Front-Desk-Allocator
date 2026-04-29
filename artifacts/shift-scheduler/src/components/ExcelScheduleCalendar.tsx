@@ -3,6 +3,8 @@ import { format, parseISO } from "date-fns";
 
 interface AllocatedShift {
   shiftId: number;
+  stableShiftKey?: string;
+  slotIndex?: number;
   date: string;
   label: string;
   durationHours: number;
@@ -32,6 +34,8 @@ interface ScheduleCalendarProps {
     endTime: string;
     durationHours: number;
     label: string;
+    stableShiftKey?: string;
+    slotIndex?: number;
   }>;
 }
 
@@ -127,6 +131,30 @@ function formatDateHeader(dateStr: string | null): string {
 
 function getPerson(personMap: Map<string, string>, date: string | null, startTime: string): string {
   return date ? personMap.get(`${date}|${startTime}`) ?? "" : "";
+}
+
+function getStableShiftKey(shift: { date: string; startTime: string; endTime: string; slotIndex?: number }) {
+  return `${shift.date}|${shift.startTime}|${shift.endTime}|${shift.slotIndex ?? 0}`;
+}
+
+function getSlotIndexes(shifts: ScheduleCalendarProps["shifts"]) {
+  const byDate = new Map<string, ScheduleCalendarProps["shifts"]>();
+  for (const shift of shifts) {
+    byDate.set(shift.date, [...(byDate.get(shift.date) ?? []), shift]);
+  }
+
+  const slotIndexes = new Map<number, number>();
+  for (const shiftsForDate of byDate.values()) {
+    shiftsForDate
+      .sort(
+        (a, b) =>
+          a.startTime.localeCompare(b.startTime) ||
+          a.endTime.localeCompare(b.endTime) ||
+          a.id - b.id,
+      )
+      .forEach((shift, index) => slotIndexes.set(shift.id, index));
+  }
+  return slotIndexes;
 }
 
 const scheduleWidth = 1252;
@@ -238,15 +266,36 @@ function renderCellText(
 export const ExcelScheduleCalendar = forwardRef<HTMLDivElement, ScheduleCalendarProps>(
   ({ month, year, allocations, shifts }, ref) => {
     const personMap = new Map<string, string>();
+    const legacyPersonMap = new Map<string, string>();
     const shiftInfoMap = new Map(shifts.map((shift) => [shift.id, shift]));
+    const slotIndexes = getSlotIndexes(shifts);
+    const stableKeyByShiftId = new Map(
+      shifts.map((shift) => {
+        const slotIndex = shift.slotIndex ?? slotIndexes.get(shift.id) ?? 0;
+        return [shift.id, shift.stableShiftKey ?? getStableShiftKey({ ...shift, slotIndex })] as const;
+      }),
+    );
+    const shiftByDateStart = new Map(shifts.map((shift) => [`${shift.date}|${shift.startTime}`, shift] as const));
 
     for (const entry of allocations) {
       for (const shift of entry.allocatedShifts) {
         const startTime = shift.startTime ?? shiftInfoMap.get(shift.shiftId)?.startTime;
         if (!startTime) continue;
-        personMap.set(`${shift.date}|${startTime}`, entry.name);
+        const stableKey = shift.stableShiftKey ?? stableKeyByShiftId.get(shift.shiftId);
+        if (stableKey) personMap.set(stableKey, entry.name);
+        legacyPersonMap.set(`${shift.date}|${startTime}`, entry.name);
       }
     }
+
+    const getRenderedPerson = (date: string | null, startTime: string) => {
+      if (!date) return "";
+      const shift = shiftByDateStart.get(`${date}|${startTime}`);
+      if (shift) {
+        const stableKey = stableKeyByShiftId.get(shift.id);
+        if (stableKey && personMap.has(stableKey)) return personMap.get(stableKey) ?? "";
+      }
+      return getPerson(legacyPersonMap, date, startTime);
+    };
 
     const weeks = getCalendarWeeks(year, month);
 
@@ -364,7 +413,7 @@ export const ExcelScheduleCalendar = forwardRef<HTMLDivElement, ScheduleCalendar
                     {week.weekdays.map((date, dayIndex) => (
                       <td key={`weekday-person-${dayIndex}`} style={nameCellStyle}>
                         {renderCellText(
-                          getPerson(personMap, date, slot.startTime),
+                          getRenderedPerson(date, slot.startTime),
                           nameCellStyle,
                         )}
                       </td>
@@ -379,7 +428,7 @@ export const ExcelScheduleCalendar = forwardRef<HTMLDivElement, ScheduleCalendar
                       <td key={`weekend-person-${dayIndex}`} style={nameCellStyle}>
                         {renderCellText(
                           weekendSlot
-                            ? getPerson(personMap, date, weekendSlot.startTime)
+                            ? getRenderedPerson(date, weekendSlot.startTime)
                             : "",
                           nameCellStyle,
                         )}
