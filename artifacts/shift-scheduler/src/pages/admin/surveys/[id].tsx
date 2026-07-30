@@ -9,6 +9,8 @@ import {
   useGetSurveyResponses,
   useGetSurveyStats,
   useDeleteSurveyResponse,
+  useDeletedSurveyResponses,
+  useRestoreSurveyResponse,
   useUpdateSurveyResponse,
 } from "@/hooks/use-surveys";
 import {
@@ -29,6 +31,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import {
   ArrowLeft, Lock, LockOpen, Calendar, Users, BarChart3,
   Clock, Settings, BrainCircuit, CheckCircle2, Download, FileSpreadsheet, Image,
+  Trash2, Undo2,
 } from "lucide-react";
 import { Link } from "wouter";
 import { clsx } from "clsx";
@@ -177,6 +180,7 @@ export function AdminSurveyDetail() {
 
   const { data: survey, isLoading: isSurveyLoading } = useGetSurvey(surveyId);
   const { data: responses, refetch: refetchResponses } = useGetSurveyResponses(surveyId);
+  const { data: deletedResponses = [] } = useDeletedSurveyResponses(surveyId);
   const { data: stats, refetch: refetchStats } = useGetSurveyStats(surveyId);
   const { data: allocations, refetch: refetchAllocations } = useGetAllocations(surveyId);
   const { data: allocStats, refetch: refetchAllocationStats } = useGetAllocationStats(surveyId);
@@ -186,6 +190,7 @@ export function AdminSurveyDetail() {
   const dryRunAllocationMutation = useDryRunAllocation();
   const adjustAllocationMutation = useAdjustAllocation();
   const updateResponseMutation = useUpdateSurveyResponse();
+  const restoreResponseMutation = useRestoreSurveyResponse();
   const updateRespondentMutation = useUpdateRespondent();
 
   const [afpIds, setAfpIds] = useState<Set<number>>(new Set());
@@ -782,6 +787,10 @@ export function AdminSurveyDetail() {
       <Tabs defaultValue="responses" className="w-full">
         <TabsList className="bg-slate-100/50 p-1 rounded-xl mb-6 inline-flex w-full overflow-x-auto justify-start">
           <TabsTrigger value="responses" className="rounded-lg px-4 py-2 data-[state=active]:bg-white data-[state=active]:shadow-sm">Responses</TabsTrigger>
+          <TabsTrigger value="deleted" className="rounded-lg px-4 py-2 data-[state=active]:bg-white data-[state=active]:shadow-sm">
+            <Trash2 className="mr-2 h-4 w-4" />
+            Deleted ({deletedResponses.length})
+          </TabsTrigger>
           <TabsTrigger value="stats" className="rounded-lg px-4 py-2 data-[state=active]:bg-white data-[state=active]:shadow-sm">Availability Stats</TabsTrigger>
           <TabsTrigger value="allocation" className="rounded-lg px-4 py-2 data-[state=active]:bg-white data-[state=active]:shadow-sm">Allocation</TabsTrigger>
           {hasExistingAllocations && allocStats && (
@@ -890,6 +899,82 @@ export function AdminSurveyDetail() {
                       </td>
                       <td className="px-6 py-4 text-slate-600">{r.selectedShiftIds.length} shifts</td>
                       <td className="px-6 py-4 font-semibold text-slate-700">{r.totalAvailableHours} hrs</td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </TabsContent>
+
+        <TabsContent value="deleted" className="animate-in fade-in duration-300">
+          <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+            <table className="w-full text-left text-sm">
+              <thead className="border-b border-slate-200 bg-slate-50 text-slate-500">
+                <tr>
+                  <th className="px-6 py-4 font-medium">Respondent</th>
+                  <th className="px-6 py-4 font-medium">Deleted</th>
+                  <th className="px-6 py-4 font-medium">Shifts</th>
+                  <th className="px-6 py-4 font-medium">Allocations</th>
+                  <th className="px-6 py-4 text-right font-medium">Action</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {deletedResponses.length === 0 ? (
+                  <tr>
+                    <td colSpan={5} className="px-6 py-12 text-center text-slate-500">
+                      No deleted responses.
+                    </td>
+                  </tr>
+                ) : (
+                  deletedResponses.map((response) => (
+                    <tr key={response.id} className="hover:bg-slate-50">
+                      <td className="px-6 py-4">
+                        <div className="font-medium text-slate-900">
+                          {displayRespondentName(response)}
+                        </div>
+                        <div className="mt-1 text-xs text-slate-500">
+                          {response.name}{response.email ? ` | ${response.email}` : ""}
+                        </div>
+                      </td>
+                      <td className="whitespace-nowrap px-6 py-4 text-slate-600">
+                        {format(parseISO(response.deletedAt), "MMM d, yyyy h:mm a")}
+                      </td>
+                      <td className="px-6 py-4 text-slate-600">
+                        {response.selectedShiftIds.length}
+                      </td>
+                      <td className="px-6 py-4 text-slate-600">
+                        {response.allocationCount}
+                      </td>
+                      <td className="px-6 py-4 text-right">
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          disabled={restoreResponseMutation.isPending}
+                          onClick={async () => {
+                            if (!confirm(`Restore ${displayRespondentName(response)}'s response?`)) {
+                              return;
+                            }
+                            try {
+                              const result = await restoreResponseMutation.mutateAsync({
+                                surveyId,
+                                deletedResponseId: response.id,
+                              });
+                              if (result.skippedAllocationCount > 0) {
+                                alert(
+                                  `Response restored. ${result.skippedAllocationCount} allocation(s) were already assigned to someone else and were not overwritten.`,
+                                );
+                              }
+                            } catch (error) {
+                              alert(error instanceof Error ? error.message : "Failed to restore response");
+                            }
+                          }}
+                        >
+                          <Undo2 className="mr-2 h-4 w-4" />
+                          Restore
+                        </Button>
+                      </td>
                     </tr>
                   ))
                 )}
@@ -1900,14 +1985,26 @@ export function AdminSurveyDetail() {
                 <Button
                   variant="destructive"
                   onClick={async () => {
-                    await deleteResponseMutation.mutateAsync({
-                      surveyId,
-                      respondentId: selectedResponse.respondentId,
-                    });
-                    setSelectedResponse(null);
+                    if (
+                      !confirm(
+                        `Move ${displayRespondentName(selectedResponse)}'s response to Deleted?`,
+                      )
+                    ) {
+                      return;
+                    }
+                    try {
+                      await deleteResponseMutation.mutateAsync({
+                        surveyId,
+                        respondentId: selectedResponse.respondentId,
+                      });
+                      setSelectedResponse(null);
+                    } catch (error) {
+                      alert(error instanceof Error ? error.message : "Failed to delete response");
+                    }
                   }}
                 >
-                  Delete This Response
+                  <Trash2 className="mr-2 h-4 w-4" />
+                  Move to Deleted
                 </Button>
               </div>
             </div>
