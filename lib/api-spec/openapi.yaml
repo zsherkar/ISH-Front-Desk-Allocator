@@ -700,6 +700,8 @@ components:
           type: boolean
         afpHoursCap:
           type: number
+        includedInLatestAllocation:
+          type: boolean
       required:
         - respondentId
         - name
@@ -712,6 +714,7 @@ components:
         - penaltyHours
         - hasAfpCap
         - afpHoursCap
+        - includedInLatestAllocation
 
     PublicSurvey:
       type: object

@@ -113,6 +113,7 @@ export interface RespondentWithResponses {
   penaltyHours: number;
   hasAfpCap: boolean;
   afpHoursCap: number;
+  includedInLatestAllocation: boolean;
 }
 
 export type PublicSurveyStatus =

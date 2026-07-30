@@ -118,6 +118,7 @@ export const GetSurveyResponsesResponseItem = zod.object({
   penaltyHours: zod.number(),
   hasAfpCap: zod.boolean(),
   afpHoursCap: zod.number(),
+  includedInLatestAllocation: zod.boolean(),
 });
 export const GetSurveyResponsesResponse = zod.array(
   GetSurveyResponsesResponseItem,

@@ -25,6 +25,7 @@ import {
   FIELD_LIMITS,
   normalizeRequiredText,
 } from "../lib/inputValidation.js";
+import { getEffectiveAllocationRespondentIds } from "../lib/allocationMembership.js";
 
 const router: IRouter = Router();
 
@@ -274,6 +275,9 @@ router.get("/surveys/:id/responses", async (req, res): Promise<void> => {
     .from(responsesTable)
     .innerJoin(respondentsTable, eq(responsesTable.respondentId, respondentsTable.id))
     .where(eq(responsesTable.surveyId, id));
+  const includedRespondentIds = new Set(
+    await getEffectiveAllocationRespondentIds(id),
+  );
 
   // Group by respondent
   const respondentMap = new Map<
@@ -289,6 +293,7 @@ router.get("/surveys/:id/responses", async (req, res): Promise<void> => {
       penaltyHours: number;
       hasAfpCap: boolean;
       afpHoursCap: number;
+      includedInLatestAllocation: boolean;
     }
   >();
 
@@ -305,6 +310,7 @@ router.get("/surveys/:id/responses", async (req, res): Promise<void> => {
           penaltyHours: r.penaltyHours,
           hasAfpCap: r.hasAfpCap,
           afpHoursCap: r.afpHoursCap,
+          includedInLatestAllocation: includedRespondentIds.has(r.respondentId),
         });
     }
     respondentMap.get(r.respondentId)!.selectedShiftIds.push(r.shiftId);
@@ -692,13 +698,19 @@ router.get("/surveys/:id/stats", async (req, res): Promise<void> => {
     .from(responsesTable)
     .innerJoin(respondentsTable, eq(responsesTable.respondentId, respondentsTable.id))
     .where(eq(responsesTable.surveyId, id));
+  const allocationRespondentIds = new Set(
+    await getEffectiveAllocationRespondentIds(id),
+  );
+  const includedResponses = responses.filter((response) =>
+    allocationRespondentIds.has(response.respondentId),
+  );
 
   const respondentMap = new Map<
     number,
     { respondentId: number; name: string; category: string; shiftIds: number[] }
   >();
 
-  for (const r of responses) {
+  for (const r of includedResponses) {
     if (!respondentMap.has(r.respondentId)) {
       respondentMap.set(r.respondentId, {
         respondentId: r.respondentId,
@@ -726,7 +738,7 @@ router.get("/surveys/:id/stats", async (req, res): Promise<void> => {
 
   // Shift type stats - group by time slot label
   const shiftTypeMap = new Map<string, { label: string; dayType: string; count: number }>();
-  for (const r of responses) {
+  for (const r of includedResponses) {
     const shift = shiftMap.get(r.shiftId);
     if (!shift) continue;
     const timeKey = `${shift.dayType}|${shift.startTime}-${shift.endTime}`;

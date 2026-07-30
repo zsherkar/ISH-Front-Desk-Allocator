@@ -228,7 +228,9 @@ export function AdminSurveyDetail() {
     source === "engine_no_availability_afp_fallback";
   const availabilityCountByShiftId = useMemo(() => {
     const map = new Map<number, number>();
-    for (const response of responses ?? []) {
+    for (const response of (responses ?? []).filter(
+      (entry) => entry.includedInLatestAllocation,
+    )) {
       for (const shiftId of response.selectedShiftIds) {
         map.set(shiftId, (map.get(shiftId) ?? 0) + 1);
       }
@@ -263,7 +265,11 @@ export function AdminSurveyDetail() {
       const responseIds = new Set(responses.map((r) => r.respondentId));
       if (!didInitializeIncludedIds.current) {
         didInitializeIncludedIds.current = true;
-        return responseIds;
+        return new Set(
+          responses
+            .filter((response) => response.includedInLatestAllocation)
+            .map((response) => response.respondentId),
+        );
       }
       return new Set(Array.from(prev).filter((id) => responseIds.has(id)));
     });
@@ -466,7 +472,9 @@ export function AdminSurveyDetail() {
 
   const shiftStatsByShift = useMemo(() => {
     if (!survey?.shifts) return [];
-    const responseList = responses ?? [];
+    const responseList = (responses ?? []).filter(
+      (response) => response.includedInLatestAllocation,
+    );
     const respondentById = new Map(responseList.map((r) => [r.respondentId, r]));
     return survey.shifts.map((shift) => {
       const selectedBy = responseList

@@ -17,6 +17,7 @@ import {
   stableShiftKey,
 } from "../lib/allocationCore.js";
 import { computeAverage, computeMedian, computeStdDev } from "../lib/stats.js";
+import { getEffectiveAllocationRespondentIds } from "../lib/allocationMembership.js";
 import {
   RunAllocationBody,
   AdjustAllocationBody,
@@ -36,7 +37,10 @@ const latestNoAvailabilityPlaceholderSettingsBySurveyId = new Map<
 >();
 
 async function buildAllocationResult(surveyId: number) {
-  const allocations = await db
+  const includedRespondentIds = new Set(
+    await getEffectiveAllocationRespondentIds(surveyId),
+  );
+  const allocations = (await db
     .select({
       respondentId: allocationsTable.respondentId,
       shiftId: allocationsTable.shiftId,
@@ -48,7 +52,8 @@ async function buildAllocationResult(surveyId: number) {
     })
     .from(allocationsTable)
     .innerJoin(respondentsTable, eq(allocationsTable.respondentId, respondentsTable.id))
-    .where(eq(allocationsTable.surveyId, surveyId));
+    .where(eq(allocationsTable.surveyId, surveyId)))
+    .filter((allocation) => includedRespondentIds.has(allocation.respondentId));
 
   const rawShifts = await db
     .select()
@@ -66,7 +71,7 @@ async function buildAllocationResult(surveyId: number) {
   });
   const shiftMap = new Map(shifts.map((s) => [s.id, s]));
   const allShiftIds = new Set(shifts.map((s) => s.id));
-  const responseRows = await db
+  const responseRows = (await db
     .select({
       shiftId: responsesTable.shiftId,
       respondentId: responsesTable.respondentId,
@@ -81,7 +86,8 @@ async function buildAllocationResult(surveyId: number) {
     })
     .from(responsesTable)
     .innerJoin(respondentsTable, eq(responsesTable.respondentId, respondentsTable.id))
-    .where(eq(responsesTable.surveyId, surveyId));
+    .where(eq(responsesTable.surveyId, surveyId)))
+    .filter((response) => includedRespondentIds.has(response.respondentId));
   const availableRespondentsByShiftId = new Map<
     number,
     {
@@ -515,6 +521,10 @@ router.post("/surveys/:id/allocate", async (req, res): Promise<void> => {
   const includedRespondentIds = dedupePositiveIntegerIds(
     parsed.data.includedRespondentIds,
   );
+  const effectiveIncludedRespondentIds =
+    includedRespondentIds.length > 0
+      ? includedRespondentIds
+      : Array.from(surveyRespondentIdSet);
   const afpRespondentIds = dedupePositiveIntegerIds(parsed.data.afpRespondentIds);
   const noAvailabilityFallbackAfpIds = dedupePositiveIntegerIds(
     parsed.data.noAvailabilityFallbackAfpIds ?? parsed.data.afpUnclaimedShiftRespondentIds,
@@ -561,14 +571,20 @@ router.post("/surveys/:id/allocate", async (req, res): Promise<void> => {
   }
 
   const preserveManualLocks = parsed.data.preserveManualLocks !== false;
-  const existingManualAssignments = preserveManualLocks
+  const existingManualAssignments = preserveManualLocks && effectiveIncludedRespondentIds.length > 0
     ? await db
         .select({
           respondentId: allocationsTable.respondentId,
           shiftId: allocationsTable.shiftId,
         })
         .from(allocationsTable)
-        .where(and(eq(allocationsTable.surveyId, id), eq(allocationsTable.isManuallyAdjusted, true)))
+        .where(
+          and(
+            eq(allocationsTable.surveyId, id),
+            eq(allocationsTable.isManuallyAdjusted, true),
+            inArray(allocationsTable.respondentId, effectiveIncludedRespondentIds),
+          ),
+        )
     : [];
 
   if (existingManualAssignments.length > 0) {
@@ -592,6 +608,19 @@ router.post("/surveys/:id/allocate", async (req, res): Promise<void> => {
   }
 
   if (preserveManualLocks) {
+    const excludedRespondentIds = Array.from(surveyRespondentIdSet).filter(
+      (respondentId) => !effectiveIncludedRespondentIds.includes(respondentId),
+    );
+    if (excludedRespondentIds.length > 0) {
+      await db
+        .delete(allocationsTable)
+        .where(
+          and(
+            eq(allocationsTable.surveyId, id),
+            inArray(allocationsTable.respondentId, excludedRespondentIds),
+          ),
+        );
+    }
     await db
       .delete(allocationsTable)
       .where(and(eq(allocationsTable.surveyId, id), eq(allocationsTable.isManuallyAdjusted, false)));
@@ -605,7 +634,7 @@ router.post("/surveys/:id/allocate", async (req, res): Promise<void> => {
     afpUnclaimedShiftRespondentIds: noAvailabilityFallbackAfpIds,
     noAvailabilityFallbackAfpIds,
     allowNoAvailabilityAfpPlaceholders,
-    includedRespondentIds,
+    includedRespondentIds: effectiveIncludedRespondentIds,
     allowAfpOverCapForAvailableShifts: parsed.data.allowAfpOverCapForAvailableShifts ?? false,
     existingManualAssignments,
   });
@@ -626,6 +655,10 @@ router.post("/surveys/:id/allocate", async (req, res): Promise<void> => {
       penaltyNote: null,
     });
   }
+  await db
+    .update(surveysTable)
+    .set({ allocationIncludedRespondentIds: effectiveIncludedRespondentIds })
+    .where(eq(surveysTable.id, id));
 
   const allocationResult = await buildAllocationResult(id);
   res.json(allocationResult);
@@ -666,6 +699,10 @@ router.post("/surveys/:id/allocations/dry-run", async (req, res): Promise<void> 
       .map((entry) => entry.respondentId),
   );
   const includedRespondentIds = dedupePositiveIntegerIds(parsed.data.includedRespondentIds);
+  const effectiveIncludedRespondentIds =
+    includedRespondentIds.length > 0
+      ? includedRespondentIds
+      : Array.from(surveyRespondentIdSet);
   const afpRespondentIds = dedupePositiveIntegerIds(parsed.data.afpRespondentIds);
   const noAvailabilityFallbackAfpIds = dedupePositiveIntegerIds(
     parsed.data.noAvailabilityFallbackAfpIds ?? parsed.data.afpUnclaimedShiftRespondentIds,
@@ -700,14 +737,20 @@ router.post("/surveys/:id/allocations/dry-run", async (req, res): Promise<void> 
   }
 
   const preserveManualLocks = parsed.data.preserveManualLocks !== false;
-  const existingManualAssignments = preserveManualLocks
+  const existingManualAssignments = preserveManualLocks && effectiveIncludedRespondentIds.length > 0
     ? await db
         .select({
           respondentId: allocationsTable.respondentId,
           shiftId: allocationsTable.shiftId,
         })
         .from(allocationsTable)
-        .where(and(eq(allocationsTable.surveyId, id), eq(allocationsTable.isManuallyAdjusted, true)))
+        .where(
+          and(
+            eq(allocationsTable.surveyId, id),
+            eq(allocationsTable.isManuallyAdjusted, true),
+            inArray(allocationsTable.respondentId, effectiveIncludedRespondentIds),
+          ),
+        )
     : [];
 
   if (existingManualAssignments.length > 0) {
@@ -740,7 +783,10 @@ router.post("/surveys/:id/allocations/dry-run", async (req, res): Promise<void> 
   ]);
   const availabilityByShiftId = new Map<number, Set<number>>();
   for (const shift of shifts) availabilityByShiftId.set(shift.id, new Set());
-  for (const row of responseRows) {
+  const effectiveIncludedIdSet = new Set(effectiveIncludedRespondentIds);
+  for (const row of responseRows.filter((response) =>
+    effectiveIncludedIdSet.has(response.respondentId),
+  )) {
     availabilityByShiftId.get(row.shiftId)?.add(row.respondentId);
   }
 
@@ -750,7 +796,7 @@ router.post("/surveys/:id/allocations/dry-run", async (req, res): Promise<void> 
     afpUnclaimedShiftRespondentIds: noAvailabilityFallbackAfpIds,
     noAvailabilityFallbackAfpIds,
     allowNoAvailabilityAfpPlaceholders,
-    includedRespondentIds,
+    includedRespondentIds: effectiveIncludedRespondentIds,
     allowAfpOverCapForAvailableShifts: parsed.data.allowAfpOverCapForAvailableShifts ?? false,
     existingManualAssignments,
   });
@@ -893,10 +939,17 @@ router.patch("/surveys/:id/allocations/adjust", async (req, res): Promise<void> 
     .select({ shiftId: responsesTable.shiftId })
     .from(responsesTable)
     .where(and(eq(responsesTable.surveyId, id), eq(responsesTable.respondentId, respondentId)));
-  const surveyAvailabilityRows = await db
-    .select({ shiftId: responsesTable.shiftId })
+  const effectiveAllocationRespondentIds = new Set(
+    await getEffectiveAllocationRespondentIds(id),
+  );
+  const surveyAvailabilityRows = (await db
+    .select({
+      respondentId: responsesTable.respondentId,
+      shiftId: responsesTable.shiftId,
+    })
     .from(responsesTable)
-    .where(eq(responsesTable.surveyId, id));
+    .where(eq(responsesTable.surveyId, id)))
+    .filter((row) => effectiveAllocationRespondentIds.has(row.respondentId));
   const availabilityCountByShiftId = new Map<number, number>();
   for (const row of surveyAvailabilityRows) {
     availabilityCountByShiftId.set(row.shiftId, (availabilityCountByShiftId.get(row.shiftId) ?? 0) + 1);
@@ -1079,7 +1132,10 @@ router.get("/surveys/:id/allocation-stats", async (req, res): Promise<void> => {
   }
   const statShifts = await db.select().from(shiftsTable).where(eq(shiftsTable.surveyId, id));
   const statShiftMap = new Map(statShifts.map((shift) => [shift.id, shift]));
-  const responseSettings = await db
+  const effectiveStatRespondentIds = new Set(
+    await getEffectiveAllocationRespondentIds(id),
+  );
+  const responseSettings = (await db
     .select({
       respondentId: responsesTable.respondentId,
       shiftId: responsesTable.shiftId,
@@ -1090,7 +1146,8 @@ router.get("/surveys/:id/allocation-stats", async (req, res): Promise<void> => {
     })
     .from(responsesTable)
     .innerJoin(respondentsTable, eq(responsesTable.respondentId, respondentsTable.id))
-    .where(eq(responsesTable.surveyId, id));
+    .where(eq(responsesTable.surveyId, id)))
+    .filter((response) => effectiveStatRespondentIds.has(response.respondentId));
   const penaltyByRespondentId = new Map<number, { hasPenalty: boolean; penaltyHours: number }>();
   const capacityByRespondentId = new Map<number, number>();
   const hasAfpCapByRespondentId = new Map<number, boolean>();
