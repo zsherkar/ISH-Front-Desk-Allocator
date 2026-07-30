@@ -696,6 +696,8 @@ components:
           type: boolean
         penaltyHours:
           type: number
+        hasAfpCap:
+          type: boolean
         afpHoursCap:
           type: number
       required:
@@ -708,6 +710,7 @@ components:
         - totalAvailableHours
         - hasPenalty
         - penaltyHours
+        - hasAfpCap
         - afpHoursCap
 
     PublicSurvey:
@@ -841,7 +844,7 @@ components:
           type: array
           items:
             type: integer
-          description: IDs of respondents to treat as AFP (capped at 10 hours each)
+          description: IDs of AFP respondents whose saved per-survey AFP cap is enabled
         afpUnclaimedShiftRespondentIds:
           type: array
           items:

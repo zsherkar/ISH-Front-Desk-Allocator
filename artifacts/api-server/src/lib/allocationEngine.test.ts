@@ -31,13 +31,15 @@ function respondent(
   availableShiftIds: number[],
   overrides: Partial<AllocationRespondentInput> = {},
 ): AllocationRespondentInput {
+  const category = overrides.category ?? "General";
   return {
     id,
     name,
-    category: overrides.category ?? "General",
+    category,
     availableShiftIds: new Set(availableShiftIds),
     hasPenalty: overrides.hasPenalty ?? false,
     penaltyHours: overrides.penaltyHours ?? 0,
+    hasAfpCap: overrides.hasAfpCap ?? category === "AFP",
     afpHoursCap: overrides.afpHoursCap ?? 10,
     allowNoAvailabilityFallback: overrides.allowNoAvailabilityFallback ?? false,
   };
@@ -239,6 +241,23 @@ test("available AFP cap overflow is explicit and opt-in", () => {
 
   assert.deepEqual(capped.unallocatedShiftIds, [1]);
   assert.equal(assignmentFor(overflow, 1)?.source, "engine_afp_cap_overflow_available");
+});
+
+test("AFP without an enabled cap participates in normal equal allocation", () => {
+  const output = runPureAllocation({
+    shifts: [weekday[0]],
+    respondents: [
+      respondent(1, "Uncapped AFP", [1], {
+        category: "AFP",
+        hasAfpCap: false,
+        afpHoursCap: 0,
+      }),
+    ],
+  });
+
+  assert.equal(assignmentFor(output, 1)?.respondentId, 1);
+  assert.equal(assignmentFor(output, 1)?.source, "engine_normal");
+  assert.deepEqual(output.unallocatedShiftIds, []);
 });
 
 test("AFP cap respected for normal and back-to-back emergency assignments", () => {

@@ -268,6 +268,7 @@ router.get("/surveys/:id/responses", async (req, res): Promise<void> => {
       respondentCategory: respondentsTable.category,
       hasPenalty: responsesTable.hasPenalty,
       penaltyHours: responsesTable.penaltyHours,
+      hasAfpCap: responsesTable.hasAfpCap,
       afpHoursCap: responsesTable.afpHoursCap,
     })
     .from(responsesTable)
@@ -286,6 +287,7 @@ router.get("/surveys/:id/responses", async (req, res): Promise<void> => {
       selectedShiftIds: number[];
       hasPenalty: boolean;
       penaltyHours: number;
+      hasAfpCap: boolean;
       afpHoursCap: number;
     }
   >();
@@ -301,6 +303,7 @@ router.get("/surveys/:id/responses", async (req, res): Promise<void> => {
           selectedShiftIds: [],
           hasPenalty: r.hasPenalty,
           penaltyHours: r.penaltyHours,
+          hasAfpCap: r.hasAfpCap,
           afpHoursCap: r.afpHoursCap,
         });
     }
@@ -348,6 +351,7 @@ router.get("/surveys/:id/deleted-responses", async (req, res): Promise<void> => 
       selectedShiftIds: response.shiftIds,
       hasPenalty: response.hasPenalty,
       penaltyHours: response.penaltyHours,
+      hasAfpCap: response.hasAfpCap,
       afpHoursCap: response.afpHoursCap,
       allocationCount: response.allocations.length,
       deletedAt: response.deletedAt,
@@ -418,6 +422,7 @@ router.delete("/surveys/:id/responses/:respondentId", async (req, res): Promise<
         shiftIds: existingResponses.map((response) => response.shiftId),
         hasPenalty: firstResponse.hasPenalty,
         penaltyHours: firstResponse.penaltyHours,
+        hasAfpCap: firstResponse.hasAfpCap,
         afpHoursCap: firstResponse.afpHoursCap,
         responseCreatedAt,
         allocations: existingAllocations.map((allocation) => ({
@@ -520,6 +525,7 @@ router.post("/surveys/:id/deleted-responses/:deletedResponseId/restore", async (
         shiftId,
         hasPenalty: archivedResponse.hasPenalty,
         penaltyHours: archivedResponse.penaltyHours,
+        hasAfpCap: archivedResponse.hasAfpCap,
         afpHoursCap: archivedResponse.afpHoursCap,
         createdAt: archivedResponse.responseCreatedAt,
       })),
@@ -616,6 +622,7 @@ router.put("/surveys/:id/responses/:respondentId", async (req, res): Promise<voi
     .select({
       hasPenalty: responsesTable.hasPenalty,
       penaltyHours: responsesTable.penaltyHours,
+      hasAfpCap: responsesTable.hasAfpCap,
       afpHoursCap: responsesTable.afpHoursCap,
     })
     .from(responsesTable)
@@ -628,6 +635,9 @@ router.put("/surveys/:id/responses/:respondentId", async (req, res): Promise<voi
   const penaltyHours = Number.isFinite(incomingPenaltyHours)
     ? Math.max(0, incomingPenaltyHours)
     : existingResponse?.penaltyHours ?? 0;
+  const hasAfpCap = typeof req.body?.hasAfpCap === "boolean"
+    ? req.body.hasAfpCap
+    : existingResponse?.hasAfpCap ?? false;
   const afpHoursCap = Number.isFinite(incomingAfpHoursCap)
     ? Math.max(0, incomingAfpHoursCap)
     : existingResponse?.afpHoursCap ?? 10;
@@ -647,6 +657,7 @@ router.put("/surveys/:id/responses/:respondentId", async (req, res): Promise<voi
         shiftId,
         hasPenalty,
         penaltyHours: hasPenalty ? penaltyHours : 0,
+        hasAfpCap,
         afpHoursCap,
       });
     }

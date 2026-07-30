@@ -40,6 +40,7 @@ import jsPDF from "jspdf";
 import type { Borders, Fill, Style } from "exceljs";
 import { format, parseISO } from "date-fns";
 import { buildCalendarWorkbook } from "@/lib/calendarXlsx";
+import { formatAllocationDisplayName } from "@/lib/allocationDisplay";
 
 function formatTime12(time: string) {
   const [h, m] = time.split(":").map(Number);
@@ -208,6 +209,7 @@ export function AdminSurveyDetail() {
   const [selectedCategory, setSelectedCategory] = useState<"AFP" | "General">("General");
   const [selectedHasPenalty, setSelectedHasPenalty] = useState(false);
   const [selectedPenaltyHours, setSelectedPenaltyHours] = useState(0);
+  const [selectedHasAfpCap, setSelectedHasAfpCap] = useState(false);
   const [selectedAfpHoursCap, setSelectedAfpHoursCap] = useState(10);
   const [includedRespondentIds, setIncludedRespondentIds] = useState<Set<number>>(new Set());
   const [statsShift, setStatsShift] = useState<{ id: number; label: string; names: string[] } | null>(null);
@@ -217,7 +219,6 @@ export function AdminSurveyDetail() {
   const deleteResponseMutation = useDeleteSurveyResponse();
   const calendarRef = useRef<HTMLDivElement>(null);
   const didInitializeIncludedIds = useRef(false);
-  const didInitializeAfpIds = useRef(false);
   const { data: respondentHistory } = useGetRespondentFdHistory(selectedRespondentId ?? 0);
   const hasExistingAllocations = (allocations?.allocations.length ?? 0) > 0;
   const blankShiftExplanations = allocations?.blankShiftExplanations ?? [];
@@ -269,23 +270,9 @@ export function AdminSurveyDetail() {
   }, [responses]);
 
   useEffect(() => {
-    if (!responses?.length || didInitializeAfpIds.current) return;
-    setAfpIds(new Set(responses.filter((r) => r.category === "AFP").map((r) => r.respondentId)));
-    didInitializeAfpIds.current = true;
+    if (!responses) return;
+    setAfpIds(new Set(responses.filter((r) => r.hasAfpCap).map((r) => r.respondentId)));
   }, [responses]);
-
-  const toggleAfp = (id: number) => {
-    const next = new Set(afpIds);
-    const nextFallback = new Set(noAvailabilityFallbackAfpIds);
-    if (next.has(id)) {
-      next.delete(id);
-      nextFallback.delete(id);
-    } else {
-      next.add(id);
-    }
-    setAfpIds(next);
-    setNoAvailabilityFallbackAfpIds(nextFallback);
-  };
 
   const toggleNoAvailabilityFallbackAfp = (id: number) => {
     const next = new Set(noAvailabilityFallbackAfpIds);
@@ -317,6 +304,7 @@ export function AdminSurveyDetail() {
     setSelectedCategory(response.category);
     setSelectedHasPenalty(Boolean(response.hasPenalty));
     setSelectedPenaltyHours(Number(response.penaltyHours ?? 0));
+    setSelectedHasAfpCap(Boolean(response.hasAfpCap));
     setSelectedAfpHoursCap(Number(response.afpHoursCap ?? 10));
   };
 
@@ -348,20 +336,27 @@ export function AdminSurveyDetail() {
     setSelectedPreferredName(updatedRespondent.preferredName);
     setSelectedEmail(updatedRespondent.email || "");
     setSelectedCategory(updatedRespondent.category);
-    setAfpIds((prev) => {
-      const next = new Set(prev);
-      if (updatedRespondent.category === "AFP") next.add(selectedResponse.respondentId);
-      else next.delete(selectedResponse.respondentId);
-      return next;
-    });
+    if (updatedRespondent.category !== "AFP" && selectedHasAfpCap) {
+      await updateResponseMutation.mutateAsync({
+        surveyId,
+        respondentId: selectedResponse.respondentId,
+        selectedShiftIds: Array.from(selectedShiftIds),
+        hasPenalty: selectedHasPenalty,
+        penaltyHours: selectedHasPenalty ? selectedPenaltyHours : 0,
+        hasAfpCap: false,
+        afpHoursCap: selectedAfpHoursCap,
+      });
+      setSelectedHasAfpCap(false);
+    }
   };
 
   const updateResponseSettings = async (
     response: NonNullable<typeof responses>[number],
-    updates: { hasPenalty?: boolean; penaltyHours?: number; afpHoursCap?: number },
+    updates: { hasPenalty?: boolean; penaltyHours?: number; hasAfpCap?: boolean; afpHoursCap?: number },
   ) => {
     const nextHasPenalty = updates.hasPenalty ?? Boolean(response.hasPenalty);
     const nextPenaltyHours = updates.penaltyHours ?? Number(response.penaltyHours ?? 0);
+    const nextHasAfpCap = updates.hasAfpCap ?? Boolean(response.hasAfpCap);
     const nextAfpHoursCap = updates.afpHoursCap ?? Number(response.afpHoursCap ?? 10);
     await updateResponseMutation.mutateAsync({
       surveyId,
@@ -369,8 +364,35 @@ export function AdminSurveyDetail() {
       selectedShiftIds: response.selectedShiftIds,
       hasPenalty: nextHasPenalty,
       penaltyHours: nextHasPenalty ? nextPenaltyHours : 0,
+      hasAfpCap: nextHasAfpCap,
       afpHoursCap: nextAfpHoursCap,
     });
+  };
+
+  const toggleAfp = async (response: NonNullable<typeof responses>[number]) => {
+    const id = response.respondentId;
+    const enabled = !afpIds.has(id);
+    setAfpIds((current) => {
+      const next = new Set(current);
+      if (enabled) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+
+    try {
+      await updateResponseSettings(response, {
+        hasAfpCap: enabled,
+        afpHoursCap: Number(response.afpHoursCap ?? 10),
+      });
+    } catch (error) {
+      setAfpIds((current) => {
+        const next = new Set(current);
+        if (enabled) next.delete(id);
+        else next.add(id);
+        return next;
+      });
+      alert(error instanceof Error ? error.message : "Failed to update AFP cap");
+    }
   };
 
   const handleCloseSurvey = () => {
@@ -573,7 +595,7 @@ export function AdminSurveyDetail() {
       const respondent = respondentById.get(allocation.respondentId);
       for (const shift of allocation.allocatedShifts) {
         allocationByShiftId.set(shift.shiftId, {
-          name: allocation.name,
+          name: formatAllocationDisplayName(allocation.name, shift.assignmentSource),
           email: respondent?.email ?? "",
           category: allocation.category,
           totalHours: allocation.totalHours,
@@ -874,14 +896,24 @@ export function AdminSurveyDetail() {
                         </div>
                       </td>
                       <td className="px-6 py-4">
-                        {r.category === "AFP" || afpIds.has(r.respondentId) ? (
-                          <>
-                            <div className="flex items-center gap-2">
+                        {r.category === "AFP" ? (
+                          <div className="flex items-center gap-2">
+                            <label className="flex items-center gap-2 text-xs font-medium text-slate-600">
+                              <Checkbox
+                                checked={afpIds.has(r.respondentId)}
+                                disabled={updateResponseMutation.isPending}
+                                onCheckedChange={() => void toggleAfp(r)}
+                              />
+                              Add
+                            </label>
+                            {afpIds.has(r.respondentId) && (
+                              <>
                               <Input
                                 type="number"
                                 min={0}
                                 step={0.5}
                                 defaultValue={r.afpHoursCap ?? 10}
+                                disabled={updateResponseMutation.isPending}
                                 className="h-8 w-20 rounded-md"
                                 onBlur={(event) => {
                                   const value = Math.max(0, Number(event.currentTarget.value || 10));
@@ -891,8 +923,9 @@ export function AdminSurveyDetail() {
                                 }}
                               />
                               <span className="text-xs text-slate-500">hrs</span>
-                            </div>
-                          </>
+                              </>
+                            )}
+                          </div>
                         ) : (
                           <span className="text-slate-400">-</span>
                         )}
@@ -1063,15 +1096,15 @@ export function AdminSurveyDetail() {
 
           {survey.status === "closed" && !hasExistingAllocations && (
             <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
-              <h3 className="font-bold text-slate-900 mb-1 text-lg">Select AFP Members</h3>
+              <h3 className="font-bold text-slate-900 mb-1 text-lg">AFP Hour Caps</h3>
               <p className="text-sm text-slate-500 mb-4">
-                AFP members are capped at <strong>10 hours</strong> each. Everyone else gets shifts distributed equitably.
+                Enable a cap only for AFPs who should be limited this month. Unchecked AFPs join the equal-allocation pool.
               </p>
-              {!responses?.length ? (
-                <p className="text-slate-400 italic text-sm">No responses yet.</p>
+              {(responses ?? []).filter((response) => response.category === "AFP").length === 0 ? (
+                <p className="text-slate-400 italic text-sm">No AFP responses yet.</p>
               ) : (
                 <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3 mb-6">
-                  {responses.map((r) => (
+                  {(responses ?? []).filter((response) => response.category === "AFP").map((r) => (
                     <label
                       key={r.respondentId}
                       className={clsx(
@@ -1083,7 +1116,8 @@ export function AdminSurveyDetail() {
                     >
                       <Checkbox
                         checked={afpIds.has(r.respondentId)}
-                        onCheckedChange={() => toggleAfp(r.respondentId)}
+                        disabled={updateResponseMutation.isPending}
+                        onCheckedChange={() => void toggleAfp(r)}
                         className="rounded data-[state=checked]:bg-indigo-600 data-[state=checked]:border-indigo-600"
                       />
                       <div>
@@ -1156,7 +1190,7 @@ export function AdminSurveyDetail() {
                     </p>
                     <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
                       {(responses ?? [])
-                        .filter((response) => afpIds.has(response.respondentId))
+                        .filter((response) => response.category === "AFP")
                         .map((response) => (
                           <label key={response.respondentId} className="flex items-center gap-2 rounded-md border border-slate-200 px-3 py-2">
                             <Checkbox
@@ -1167,8 +1201,8 @@ export function AdminSurveyDetail() {
                           </label>
                         ))}
                     </div>
-                    {afpIds.size === 0 && (
-                      <p className="text-xs text-slate-500">Select AFP members above before choosing placeholder recipients.</p>
+                    {(responses ?? []).every((response) => response.category !== "AFP") && (
+                      <p className="text-xs text-slate-500">No AFP responses are available for placeholder assignment.</p>
                     )}
                   </div>
                 )}
@@ -1193,7 +1227,7 @@ export function AdminSurveyDetail() {
                 </Button>
                 {afpIds.size > 0 && (
                   <span className="text-sm text-indigo-700 font-medium">
-                    {afpIds.size} AFP member{afpIds.size !== 1 ? "s" : ""} selected
+                    {afpIds.size} AFP cap{afpIds.size !== 1 ? "s" : ""} enabled
                   </span>
                 )}
               </div>
@@ -1213,8 +1247,8 @@ export function AdminSurveyDetail() {
                     <div><p className="text-xs text-slate-500">Blank zero availability</p><p className="font-bold">{dryRunAllocationMutation.data.blankZeroAvailabilityShiftCount}</p></div>
                     <div><p className="text-xs text-slate-500">AFP placeholders</p><p className="font-bold">{dryRunAllocationMutation.data.allowedNoAvailabilityAfpPlaceholderAssignments}</p></div>
                     <div><p className="text-xs text-slate-500">Illegal unavailable</p><p className="font-bold">{dryRunAllocationMutation.data.illegalAssignmentsWithoutAvailability}</p></div>
-                    <div><p className="text-xs text-slate-500">Non-AFP mean</p><p className="font-bold">{dryRunAllocationMutation.data.nonPenalizedGeneralMeanHours.toFixed(1)} hrs</p></div>
-                    <div><p className="text-xs text-slate-500">Non-AFP std dev</p><p className="font-bold">{dryRunAllocationMutation.data.nonPenalizedGeneralStdDevHours.toFixed(2)} hrs</p></div>
+                    <div><p className="text-xs text-slate-500">Equal-pool mean</p><p className="font-bold">{dryRunAllocationMutation.data.nonPenalizedGeneralMeanHours.toFixed(1)} hrs</p></div>
+                    <div><p className="text-xs text-slate-500">Equal-pool std dev</p><p className="font-bold">{dryRunAllocationMutation.data.nonPenalizedGeneralStdDevHours.toFixed(2)} hrs</p></div>
                     <div><p className="text-xs text-slate-500">Fairness repairs</p><p className="font-bold">{dryRunAllocationMutation.data.fairnessRepairMoveCount}</p></div>
                     <div><p className="text-xs text-slate-500">B2B emergency</p><p className="font-bold">{dryRunAllocationMutation.data.backToBackEmergencyAssignments}</p></div>
                   </div>
@@ -1231,7 +1265,7 @@ export function AdminSurveyDetail() {
                   <div>
                     <h3 className="font-bold text-indigo-900">Allocation Complete</h3>
                     <p className="text-sm text-indigo-700">
-                      Non-penalized non-AFP avg: {generalAllocationSummary.average.toFixed(1)} hrs | Std Dev: {generalAllocationSummary.stdDev.toFixed(2)} | AFP cap: 10 hrs
+                      Equal-allocation avg: {generalAllocationSummary.average.toFixed(1)} hrs | Std Dev: {generalAllocationSummary.stdDev.toFixed(2)} | AFP caps enabled: {afpIds.size}
                     </p>
                   </div>
                 </div>
@@ -1317,7 +1351,7 @@ export function AdminSurveyDetail() {
                 {allowNoAvailabilityAfpPlaceholders && (
                   <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
                     {(responses ?? [])
-                      .filter((response) => afpIds.has(response.respondentId))
+                      .filter((response) => response.category === "AFP")
                       .map((response) => (
                         <label key={response.respondentId} className="flex items-center gap-2 rounded-md border border-slate-200 px-3 py-2">
                           <Checkbox
@@ -1347,8 +1381,8 @@ export function AdminSurveyDetail() {
                     <div><p className="text-xs text-indigo-700/80">Blank zero availability</p><p className="font-bold">{dryRunAllocationMutation.data.blankZeroAvailabilityShiftCount}</p></div>
                     <div><p className="text-xs text-indigo-700/80">AFP placeholders</p><p className="font-bold">{dryRunAllocationMutation.data.allowedNoAvailabilityAfpPlaceholderAssignments}</p></div>
                     <div><p className="text-xs text-indigo-700/80">Illegal unavailable</p><p className="font-bold">{dryRunAllocationMutation.data.illegalAssignmentsWithoutAvailability}</p></div>
-                    <div><p className="text-xs text-indigo-700/80">Non-AFP mean</p><p className="font-bold">{dryRunAllocationMutation.data.nonPenalizedGeneralMeanHours.toFixed(1)} hrs</p></div>
-                    <div><p className="text-xs text-indigo-700/80">Non-AFP std dev</p><p className="font-bold">{dryRunAllocationMutation.data.nonPenalizedGeneralStdDevHours.toFixed(2)} hrs</p></div>
+                    <div><p className="text-xs text-indigo-700/80">Equal-pool mean</p><p className="font-bold">{dryRunAllocationMutation.data.nonPenalizedGeneralMeanHours.toFixed(1)} hrs</p></div>
+                    <div><p className="text-xs text-indigo-700/80">Equal-pool std dev</p><p className="font-bold">{dryRunAllocationMutation.data.nonPenalizedGeneralStdDevHours.toFixed(2)} hrs</p></div>
                     <div><p className="text-xs text-indigo-700/80">Fairness repairs</p><p className="font-bold">{dryRunAllocationMutation.data.fairnessRepairMoveCount}</p></div>
                     <div><p className="text-xs text-indigo-700/80">B2B emergency</p><p className="font-bold">{dryRunAllocationMutation.data.backToBackEmergencyAssignments}</p></div>
                   </div>
@@ -1540,7 +1574,7 @@ export function AdminSurveyDetail() {
                   <div>
                     <h3 className="font-bold text-slate-900">Fairness Diagnostics</h3>
                     <p className="mt-1 text-sm text-slate-600">
-                      Non-AFP, non-penalized standard deviation target: {allocStats.fairnessTargetStdDevHours.toFixed(1)} hrs; warning: {allocStats.fairnessWarningStdDevHours.toFixed(1)} hrs.
+                      Equal-allocation, non-penalized standard deviation target: {allocStats.fairnessTargetStdDevHours.toFixed(1)} hrs; warning: {allocStats.fairnessWarningStdDevHours.toFixed(1)} hrs.
                     </p>
                     {allocStats.fairnessHighStdDevReason && (
                       <p className="mt-2 text-sm font-medium text-amber-800">{allocStats.fairnessHighStdDevReason}</p>
@@ -1587,18 +1621,18 @@ export function AdminSurveyDetail() {
               </div>
               <div className="grid gap-4 xl:grid-cols-3">
                 <AllocationSummaryPanel
-                  title="Non-Penalized Non-AFP"
+                  title="Equal Allocation, No Strike"
                   note="This mean is the baseline used to check strike gaps."
                   summary={generalAllocationSummary}
                 />
                 <AllocationSummaryPanel
-                  title="Penalized Non-AFP"
+                  title="Equal Allocation, Strike"
                   note="Each person here should sit roughly their strike hours below the non-penalized mean."
                   summary={penalizedAllocationSummary}
                 />
                 <AllocationSummaryPanel
                   title="AFP Allocation"
-                  note="AFP respondents are tracked separately so the 10-hour cap does not distort the main allocation stats."
+                  note="All AFP respondents are shown here; only those explicitly enabled in Responses use an hours cap."
                   summary={afpAllocationSummary}
                 />
               </div>
@@ -1607,7 +1641,7 @@ export function AdminSurveyDetail() {
                   <div className="p-4 border-b border-slate-100 bg-slate-50/50">
                     <h3 className="font-bold text-slate-900">Strike Gap Check</h3>
                     <p className="mt-1 text-sm text-slate-500">
-                      Non-penalized non-AFP mean: {allocStats.nonPenalizedGeneralMeanHours.toFixed(1)} hrs
+                      Equal-allocation non-penalized mean: {allocStats.nonPenalizedGeneralMeanHours.toFixed(1)} hrs
                     </p>
                   </div>
                   <table className="w-full text-sm text-left">
@@ -1861,7 +1895,13 @@ export function AdminSurveyDetail() {
                 </div>
                 <div className="space-y-1.5">
                   <label className="text-sm font-medium text-slate-700">Category</label>
-                  <Select value={selectedCategory} onValueChange={(value: "AFP" | "General") => setSelectedCategory(value)}>
+                  <Select
+                    value={selectedCategory}
+                    onValueChange={(value: "AFP" | "General") => {
+                      setSelectedCategory(value);
+                      if (value !== "AFP") setSelectedHasAfpCap(false);
+                    }}
+                  >
                     <SelectTrigger className="h-9 rounded-md">
                       <SelectValue />
                     </SelectTrigger>
@@ -1923,10 +1963,18 @@ export function AdminSurveyDetail() {
                   />
                   hours
                 </label>
-                {(selectedCategory === "AFP" || afpIds.has(selectedResponse.respondentId)) && (
-                  <div className="space-y-2 sm:col-span-2">
+                {selectedCategory === "AFP" && (
+                  <div className="flex flex-wrap items-center gap-4 sm:col-span-2">
                     <label className="flex items-center gap-2 text-sm text-slate-700">
-                      AFP cap
+                      <Checkbox
+                        checked={selectedHasAfpCap}
+                        onCheckedChange={(checked) => setSelectedHasAfpCap(checked === true)}
+                      />
+                      Add AFP cap
+                    </label>
+                    {selectedHasAfpCap && (
+                      <label className="flex items-center gap-2 text-sm text-slate-700">
+                        Cap
                       <Input
                         type="number"
                         min={0}
@@ -1935,8 +1983,9 @@ export function AdminSurveyDetail() {
                         onChange={(event) => setSelectedAfpHoursCap(Math.max(0, Number(event.target.value || 0)))}
                         className="h-8 w-20 rounded-md"
                       />
-                      hours for this survey
-                    </label>
+                        hours for this survey
+                      </label>
+                    )}
                   </div>
                 )}
               </div>
@@ -1975,6 +2024,7 @@ export function AdminSurveyDetail() {
                       selectedShiftIds: Array.from(selectedShiftIds),
                       hasPenalty: selectedHasPenalty,
                       penaltyHours: selectedHasPenalty ? selectedPenaltyHours : 0,
+                      hasAfpCap: selectedCategory === "AFP" && selectedHasAfpCap,
                       afpHoursCap: selectedAfpHoursCap,
                     });
                     setSelectedResponse(null);

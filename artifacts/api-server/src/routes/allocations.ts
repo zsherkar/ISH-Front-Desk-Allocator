@@ -76,6 +76,7 @@ async function buildAllocationResult(surveyId: number) {
       respondentCategory: respondentsTable.category,
       hasPenalty: responsesTable.hasPenalty,
       penaltyHours: responsesTable.penaltyHours,
+      hasAfpCap: responsesTable.hasAfpCap,
       afpHoursCap: responsesTable.afpHoursCap,
     })
     .from(responsesTable)
@@ -90,6 +91,7 @@ async function buildAllocationResult(surveyId: number) {
       category: string;
       hasPenalty: boolean;
       penaltyHours: number;
+      hasAfpCap: boolean;
       afpHoursCap: number;
     }[]
   >();
@@ -102,6 +104,7 @@ async function buildAllocationResult(surveyId: number) {
       category: string;
       hasPenalty: boolean;
       penaltyHours: number;
+      hasAfpCap: boolean;
       afpHoursCap: number;
       availableShiftIds: Set<number>;
     }
@@ -116,6 +119,7 @@ async function buildAllocationResult(surveyId: number) {
       category: row.respondentCategory,
       hasPenalty: Boolean(row.hasPenalty),
       penaltyHours: row.hasPenalty ? row.penaltyHours ?? 0 : 0,
+      hasAfpCap: Boolean(row.hasAfpCap),
       afpHoursCap: row.afpHoursCap ?? 10,
     });
     availableRespondentsByShiftId.set(row.shiftId, respondents);
@@ -128,6 +132,7 @@ async function buildAllocationResult(surveyId: number) {
         category: row.respondentCategory,
         hasPenalty: Boolean(row.hasPenalty),
         penaltyHours: row.hasPenalty ? row.penaltyHours ?? 0 : 0,
+        hasAfpCap: Boolean(row.hasAfpCap),
         afpHoursCap: row.afpHoursCap ?? 10,
         availableShiftIds: new Set(),
       });
@@ -136,6 +141,7 @@ async function buildAllocationResult(surveyId: number) {
     setting.category = row.respondentCategory;
     setting.hasPenalty = setting.hasPenalty || Boolean(row.hasPenalty);
     setting.penaltyHours = Math.max(setting.penaltyHours, row.hasPenalty ? row.penaltyHours ?? 0 : 0);
+    setting.hasAfpCap = setting.hasAfpCap || Boolean(row.hasAfpCap);
     setting.afpHoursCap = Math.max(0, row.afpHoursCap ?? setting.afpHoursCap);
     setting.availableShiftIds.add(row.shiftId);
   }
@@ -205,14 +211,16 @@ async function buildAllocationResult(surveyId: number) {
       const shift = shiftMap.get(id)!;
       const availabilityCount = availableRespondentsByShiftId.get(id)?.length ?? 0;
       const hasBackToBackPair = r.shiftIds.some((otherId) => otherId !== id && isBackToBack(shift, shiftMap.get(otherId)!));
-      const capHours = respondentSettingsById.get(r.respondentId)?.afpHoursCap ?? 10;
+      const respondentSettings = respondentSettingsById.get(r.respondentId);
+      const capHours = respondentSettings?.afpHoursCap ?? 10;
+      const hasAfpCap = respondentSettings?.hasAfpCap ?? false;
       let assignmentSource: AssignmentSource;
       if (r.manualShiftIds.has(id)) {
         assignmentSource = "manual";
       } else if (availabilityCount === 0 && r.category === "AFP") {
         assignmentSource = NO_AVAILABILITY_AFP_PLACEHOLDER_SOURCE;
       } else if (
-        r.category === "AFP" &&
+        hasAfpCap &&
         afpNormalMinutes + hoursToMinutes(shift.durationHours) > hoursToMinutes(capHours)
       ) {
         assignmentSource = "engine_afp_cap_overflow_available";
@@ -220,7 +228,7 @@ async function buildAllocationResult(surveyId: number) {
         assignmentSource = hasBackToBackPair ? "engine_back_to_back_emergency" : "engine_normal";
       }
       if (
-        r.category === "AFP" &&
+        hasAfpCap &&
         (assignmentSource === "engine_normal" || assignmentSource === "engine_back_to_back_emergency")
       ) {
         afpNormalMinutes += hoursToMinutes(shift.durationHours);
@@ -298,7 +306,7 @@ async function buildAllocationResult(surveyId: number) {
         shiftMap,
         isAvailable: true,
         assignmentSource: baseSource,
-        category: respondent.category as "AFP" | "General",
+        category: respondent.hasAfpCap ? "AFP" : "General",
         currentNormalMinutes,
         afpCapMinutes: hoursToMinutes(respondent.afpHoursCap),
       });
@@ -489,11 +497,20 @@ router.post("/surveys/:id/allocate", async (req, res): Promise<void> => {
     return;
   }
   const surveyRespondents = await db
-    .select({ respondentId: responsesTable.respondentId })
+    .select({
+      respondentId: responsesTable.respondentId,
+      category: respondentsTable.category,
+    })
     .from(responsesTable)
+    .innerJoin(respondentsTable, eq(responsesTable.respondentId, respondentsTable.id))
     .where(eq(responsesTable.surveyId, id));
   const surveyRespondentIdSet = new Set(
     surveyRespondents.map((entry) => entry.respondentId),
+  );
+  const surveyAfpRespondentIdSet = new Set(
+    surveyRespondents
+      .filter((entry) => entry.category === "AFP")
+      .map((entry) => entry.respondentId),
   );
   const includedRespondentIds = dedupePositiveIntegerIds(
     parsed.data.includedRespondentIds,
@@ -513,10 +530,10 @@ router.post("/surveys/:id/allocate", async (req, res): Promise<void> => {
   }
 
   const invalidAfpRespondentIds = afpRespondentIds.filter(
-    (respondentId) => !surveyRespondentIdSet.has(respondentId),
+    (respondentId) => !surveyAfpRespondentIdSet.has(respondentId),
   );
   if (invalidAfpRespondentIds.length > 0) {
-    res.status(400).json({ error: "AFP respondents must belong to this survey." });
+    res.status(400).json({ error: "AFP cap can only be enabled for AFP respondents in this survey." });
     return;
   }
 
@@ -529,24 +546,18 @@ router.post("/surveys/:id/allocate", async (req, res): Promise<void> => {
   }
 
   if (
-    noAvailabilityFallbackAfpIds.some((respondentId) => !afpRespondentIds.includes(respondentId))
+    noAvailabilityFallbackAfpIds.some((respondentId) => !surveyAfpRespondentIdSet.has(respondentId))
   ) {
-    res.status(400).json({ error: "No-availability AFP placeholder respondents must be selected AFP respondents." });
+    res.status(400).json({ error: "No-availability placeholder respondents must be AFP respondents." });
     return;
   }
 
-  if (includedRespondentIds?.length) {
-    await db
-      .update(respondentsTable)
-      .set({ category: "General" })
-      .where(inArray(respondentsTable.id, includedRespondentIds));
-  }
-
-  if (afpRespondentIds.length > 0) {
-    await db
-      .update(respondentsTable)
-      .set({ category: "AFP" })
-      .where(inArray(respondentsTable.id, afpRespondentIds));
+  if (
+    includedRespondentIds.length > 0 &&
+    noAvailabilityFallbackAfpIds.some((respondentId) => !includedRespondentIds.includes(respondentId))
+  ) {
+    res.status(400).json({ error: "No-availability AFP respondents must also be included in this allocation run." });
+    return;
   }
 
   const preserveManualLocks = parsed.data.preserveManualLocks !== false;
@@ -641,10 +652,19 @@ router.post("/surveys/:id/allocations/dry-run", async (req, res): Promise<void> 
   }
 
   const surveyRespondents = await db
-    .select({ respondentId: responsesTable.respondentId })
+    .select({
+      respondentId: responsesTable.respondentId,
+      category: respondentsTable.category,
+    })
     .from(responsesTable)
+    .innerJoin(respondentsTable, eq(responsesTable.respondentId, respondentsTable.id))
     .where(eq(responsesTable.surveyId, id));
   const surveyRespondentIdSet = new Set(surveyRespondents.map((entry) => entry.respondentId));
+  const surveyAfpRespondentIdSet = new Set(
+    surveyRespondents
+      .filter((entry) => entry.category === "AFP")
+      .map((entry) => entry.respondentId),
+  );
   const includedRespondentIds = dedupePositiveIntegerIds(parsed.data.includedRespondentIds);
   const afpRespondentIds = dedupePositiveIntegerIds(parsed.data.afpRespondentIds);
   const noAvailabilityFallbackAfpIds = dedupePositiveIntegerIds(
@@ -656,12 +676,26 @@ router.post("/surveys/:id/allocations/dry-run", async (req, res): Promise<void> 
     res.status(400).json({ error: "Included respondents must belong to this survey." });
     return;
   }
-  if (afpRespondentIds.some((respondentId) => !surveyRespondentIdSet.has(respondentId))) {
-    res.status(400).json({ error: "AFP respondents must belong to this survey." });
+  if (afpRespondentIds.some((respondentId) => !surveyAfpRespondentIdSet.has(respondentId))) {
+    res.status(400).json({ error: "AFP cap can only be enabled for AFP respondents in this survey." });
     return;
   }
-  if (noAvailabilityFallbackAfpIds.some((respondentId) => !afpRespondentIds.includes(respondentId))) {
-    res.status(400).json({ error: "No-availability AFP placeholder respondents must be selected AFP respondents." });
+  if (noAvailabilityFallbackAfpIds.some((respondentId) => !surveyAfpRespondentIdSet.has(respondentId))) {
+    res.status(400).json({ error: "No-availability placeholder respondents must be AFP respondents." });
+    return;
+  }
+  if (
+    includedRespondentIds.length > 0 &&
+    afpRespondentIds.some((respondentId) => !includedRespondentIds.includes(respondentId))
+  ) {
+    res.status(400).json({ error: "AFP respondents with a cap must also be included in this allocation run." });
+    return;
+  }
+  if (
+    includedRespondentIds.length > 0 &&
+    noAvailabilityFallbackAfpIds.some((respondentId) => !includedRespondentIds.includes(respondentId))
+  ) {
+    res.status(400).json({ error: "No-availability AFP respondents must also be included in this allocation run." });
     return;
   }
 
@@ -1049,9 +1083,9 @@ router.get("/surveys/:id/allocation-stats", async (req, res): Promise<void> => {
     .select({
       respondentId: responsesTable.respondentId,
       shiftId: responsesTable.shiftId,
-      respondentCategory: respondentsTable.category,
       hasPenalty: responsesTable.hasPenalty,
       penaltyHours: responsesTable.penaltyHours,
+      hasAfpCap: responsesTable.hasAfpCap,
       afpHoursCap: responsesTable.afpHoursCap,
     })
     .from(responsesTable)
@@ -1059,7 +1093,7 @@ router.get("/surveys/:id/allocation-stats", async (req, res): Promise<void> => {
     .where(eq(responsesTable.surveyId, id));
   const penaltyByRespondentId = new Map<number, { hasPenalty: boolean; penaltyHours: number }>();
   const capacityByRespondentId = new Map<number, number>();
-  const categoryByRespondentId = new Map<number, string>();
+  const hasAfpCapByRespondentId = new Map<number, boolean>();
   const afpCapByRespondentId = new Map<number, number>();
   const availabilityByShiftId = new Map<number, number>();
   for (const response of responseSettings) {
@@ -1071,7 +1105,10 @@ router.get("/surveys/:id/allocation-stats", async (req, res): Promise<void> => {
       hasPenalty: current.hasPenalty || Boolean(response.hasPenalty),
       penaltyHours: Math.max(current.penaltyHours, response.hasPenalty ? response.penaltyHours ?? 0 : 0),
     });
-    categoryByRespondentId.set(response.respondentId, response.respondentCategory);
+    hasAfpCapByRespondentId.set(
+      response.respondentId,
+      (hasAfpCapByRespondentId.get(response.respondentId) ?? false) || Boolean(response.hasAfpCap),
+    );
     afpCapByRespondentId.set(response.respondentId, Math.max(0, response.afpHoursCap ?? 10));
     capacityByRespondentId.set(
       response.respondentId,
@@ -1086,14 +1123,14 @@ router.get("/surveys/:id/allocation-stats", async (req, res): Promise<void> => {
     .reduce((sum, shift) => sum + hoursToMinutes(shift.durationHours), 0);
   const intendedAfpNormalMinutes = Array.from(capacityByRespondentId.entries()).reduce(
     (sum, [respondentId, capacity]) =>
-      categoryByRespondentId.get(respondentId) === "AFP"
+      hasAfpCapByRespondentId.get(respondentId)
         ? sum + Math.min(capacity, hoursToMinutes(afpCapByRespondentId.get(respondentId) ?? 10))
         : sum,
     0,
   );
   const targetResult = solveNonAfpPenaltyTargets(
     Array.from(capacityByRespondentId.entries())
-      .filter(([respondentId]) => categoryByRespondentId.get(respondentId) !== "AFP")
+      .filter(([respondentId]) => !hasAfpCapByRespondentId.get(respondentId))
       .map(([respondentId, capacityMinutes]) => ({
         respondentId,
         capacityMinutes,
@@ -1104,9 +1141,18 @@ router.get("/surveys/:id/allocation-stats", async (req, res): Promise<void> => {
   const targetMinutesByRespondentId = new Map(
     targetResult.targets.map((target) => [target.respondentId, target.targetMinutes] as const),
   );
+  for (const [respondentId, hasAfpCap] of hasAfpCapByRespondentId) {
+    if (hasAfpCap) {
+      targetMinutesByRespondentId.set(
+        respondentId,
+        hoursToMinutes(afpCapByRespondentId.get(respondentId) ?? 10),
+      );
+    }
+  }
 
   const toStat = (a: typeof allocations[0]) => {
     const penalty = penaltyByRespondentId.get(a.respondentId) ?? { hasPenalty: false, penaltyHours: 0 };
+    const hasAfpCap = hasAfpCapByRespondentId.get(a.respondentId) ?? false;
     const targetHours = minutesToHours(targetMinutesByRespondentId.get(a.respondentId) ?? 0);
     const weekdayHours = a.allocatedShifts
       .filter((s) => s.dayType === "weekday")
@@ -1132,7 +1178,7 @@ router.get("/surveys/:id/allocation-stats", async (req, res): Promise<void> => {
         return map;
       }, new Map<string, number>()).values(),
     ).filter((count) => count === 2).length;
-    const deviationFromTargetHours = a.category === "General" ? a.totalHours - targetHours : 0;
+    const deviationFromTargetHours = hasAfpCap ? 0 : a.totalHours - targetHours;
     return {
       respondentId: a.respondentId,
       name: a.name,
@@ -1146,6 +1192,7 @@ router.get("/surveys/:id/allocation-stats", async (req, res): Promise<void> => {
       isManuallyAdjusted: a.isManuallyAdjusted,
       hasPenalty: penalty.hasPenalty,
       penaltyHours: penalty.penaltyHours,
+      hasAfpCap,
       penaltyGapHours: 0,
       targetHours,
       availableCapacityHours: minutesToHours(capacityByRespondentId.get(a.respondentId) ?? 0),
@@ -1156,7 +1203,7 @@ router.get("/surveys/:id/allocation-stats", async (req, res): Promise<void> => {
       noAvailabilityPlaceholderHours,
       manualHours,
       fairnessStatus:
-        a.category !== "General"
+        hasAfpCap
           ? "AFP"
           : Math.abs(deviationFromTargetHours) <= 1
             ? "ON_TARGET"
@@ -1169,7 +1216,7 @@ router.get("/surveys/:id/allocation-stats", async (req, res): Promise<void> => {
   const baseRespondentStats = allocations.map(toStat);
   const nonPenalizedGeneralMeanHours = computeAverage(
     baseRespondentStats
-      .filter((stat) => stat.category === "General" && !stat.hasPenalty)
+      .filter((stat) => !stat.hasAfpCap && !stat.hasPenalty)
       .map((stat) => stat.totalHours),
   );
   const respondentStats = baseRespondentStats.map((stat) => ({
@@ -1177,7 +1224,7 @@ router.get("/surveys/:id/allocation-stats", async (req, res): Promise<void> => {
     penaltyGapHours: stat.hasPenalty ? nonPenalizedGeneralMeanHours - stat.totalHours : 0,
   }));
   const afpStats = respondentStats.filter((a) => a.category === "AFP");
-  const generalStats = respondentStats.filter((a) => a.category === "General");
+  const generalStats = respondentStats.filter((a) => !a.hasAfpCap);
   const nonPenalizedGeneralStats = generalStats.filter((a) => !a.hasPenalty);
   const penalizedStats = generalStats.filter((a) => a.hasPenalty);
   const nonPenalizedHours = nonPenalizedGeneralStats.map((stat) => stat.totalHours);

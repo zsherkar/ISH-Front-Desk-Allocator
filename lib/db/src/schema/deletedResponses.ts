@@ -36,6 +36,7 @@ export const deletedResponsesTable = pgTable(
     shiftIds: integer("shift_ids").array().notNull(),
     hasPenalty: boolean("has_penalty").notNull().default(false),
     penaltyHours: real("penalty_hours").notNull().default(0),
+    hasAfpCap: boolean("has_afp_cap").notNull().default(false),
     afpHoursCap: real("afp_hours_cap").notNull().default(10),
     responseCreatedAt: timestamp("response_created_at", { withTimezone: true }).notNull(),
     allocations: jsonb("allocations").$type<DeletedResponseAllocation[]>().notNull(),

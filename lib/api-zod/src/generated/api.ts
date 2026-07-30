@@ -116,6 +116,7 @@ export const GetSurveyResponsesResponseItem = zod.object({
   totalAvailableHours: zod.number(),
   hasPenalty: zod.boolean(),
   penaltyHours: zod.number(),
+  hasAfpCap: zod.boolean(),
   afpHoursCap: zod.number(),
 });
 export const GetSurveyResponsesResponse = zod.array(
@@ -164,7 +165,9 @@ export const RunAllocationParams = zod.object({
 export const RunAllocationBody = zod.object({
   afpRespondentIds: zod
     .array(zod.number())
-    .describe("IDs of respondents to treat as AFP (capped at 10 hours each)"),
+    .describe(
+      "IDs of AFP respondents whose saved per-survey AFP cap is enabled",
+    ),
   afpUnclaimedShiftRespondentIds: zod
     .array(zod.number())
     .optional()
@@ -440,7 +443,9 @@ export const DryRunAllocationParams = zod.object({
 export const DryRunAllocationBody = zod.object({
   afpRespondentIds: zod
     .array(zod.number())
-    .describe("IDs of respondents to treat as AFP (capped at 10 hours each)"),
+    .describe(
+      "IDs of AFP respondents whose saved per-survey AFP cap is enabled",
+    ),
   afpUnclaimedShiftRespondentIds: zod
     .array(zod.number())
     .optional()

@@ -32,6 +32,7 @@ export type DeletedSurveyResponse = {
   selectedShiftIds: number[];
   hasPenalty: boolean;
   penaltyHours: number;
+  hasAfpCap: boolean;
   afpHoursCap: number;
   allocationCount: number;
   deletedAt: string;
@@ -150,6 +151,7 @@ export function useUpdateSurveyResponse() {
       selectedShiftIds,
       hasPenalty,
       penaltyHours,
+      hasAfpCap,
       afpHoursCap,
     }: {
       surveyId: number;
@@ -157,12 +159,13 @@ export function useUpdateSurveyResponse() {
       selectedShiftIds: number[];
       hasPenalty?: boolean;
       penaltyHours?: number;
+      hasAfpCap?: boolean;
       afpHoursCap?: number;
     }) => {
       const response = await fetch(`/api/surveys/${surveyId}/responses/${respondentId}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ selectedShiftIds, hasPenalty, penaltyHours, afpHoursCap }),
+        body: JSON.stringify({ selectedShiftIds, hasPenalty, penaltyHours, hasAfpCap, afpHoursCap }),
       });
       if (!response.ok) throw new Error("Failed to update response");
     },

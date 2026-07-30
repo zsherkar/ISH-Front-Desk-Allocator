@@ -111,6 +111,7 @@ export interface RespondentWithResponses {
   totalAvailableHours: number;
   hasPenalty: boolean;
   penaltyHours: number;
+  hasAfpCap: boolean;
   afpHoursCap: number;
 }
 
@@ -225,7 +226,7 @@ export interface UpdateRespondentBody {
 }
 
 export interface RunAllocationBody {
-  /** IDs of respondents to treat as AFP (capped at 10 hours each) */
+  /** IDs of AFP respondents whose saved per-survey AFP cap is enabled */
   afpRespondentIds: number[];
   /** Deprecated alias for noAvailabilityFallbackAfpIds */
   afpUnclaimedShiftRespondentIds?: number[];
