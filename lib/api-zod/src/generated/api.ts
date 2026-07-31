@@ -313,6 +313,9 @@ export const RunAllocationResponse = zod.object({
       explanationText: zod.string(),
     }),
   ),
+  createdSnapshotId: zod.number().nullish(),
+  restoredSnapshotId: zod.number().optional(),
+  undoSnapshotId: zod.number().nullish(),
 });
 
 /**
@@ -432,6 +435,9 @@ export const GetAllocationsResponse = zod.object({
       explanationText: zod.string(),
     }),
   ),
+  createdSnapshotId: zod.number().nullish(),
+  restoredSnapshotId: zod.number().optional(),
+  undoSnapshotId: zod.number().nullish(),
 });
 
 /**
@@ -497,6 +503,10 @@ export const DryRunAllocationResponse = zod.object({
   nonPenalizedGeneralRangeHours: zod.number(),
   fairnessRepairMoveCount: zod.number(),
   highStdDevReasonCodes: zod.array(zod.string()),
+  optimizationMethod: zod.enum(["global_milp", "greedy_fallback"]),
+  optimizerStatus: zod.string(),
+  optimalCoverageProven: zod.boolean(),
+  backToBackPairDays: zod.number(),
   backToBackEmergencyAssignments: zod.number(),
   afpCapOverflowAssignments: zod.number(),
   noAvailabilityAfpPlaceholderAssignments: zod.number(),
@@ -642,6 +652,151 @@ export const AdjustAllocationResponse = zod.object({
       explanationText: zod.string(),
     }),
   ),
+  createdSnapshotId: zod.number().nullish(),
+  restoredSnapshotId: zod.number().optional(),
+  undoSnapshotId: zod.number().nullish(),
+});
+
+/**
+ * @summary List recent restorable allocation snapshots for a survey
+ */
+export const GetAllocationSnapshotsParams = zod.object({
+  id: zod.coerce.number(),
+});
+
+export const GetAllocationSnapshotsResponseItem = zod.object({
+  id: zod.number(),
+  surveyId: zod.number(),
+  label: zod.string(),
+  reason: zod.string(),
+  allocationCount: zod.number(),
+  createdAt: zod.date(),
+});
+export const GetAllocationSnapshotsResponse = zod.array(
+  GetAllocationSnapshotsResponseItem,
+);
+
+/**
+ * @summary Restore a saved allocation snapshot and preserve the replaced state
+ */
+export const RestoreAllocationSnapshotParams = zod.object({
+  id: zod.coerce.number(),
+  snapshotId: zod.coerce.number(),
+});
+
+export const RestoreAllocationSnapshotResponse = zod.object({
+  surveyId: zod.number(),
+  allocations: zod.array(
+    zod.object({
+      respondentId: zod.number(),
+      name: zod.string(),
+      category: zod.enum(["AFP", "General"]),
+      allocatedShifts: zod.array(
+        zod.object({
+          shiftId: zod.number(),
+          stableShiftKey: zod.string(),
+          slotIndex: zod.number(),
+          date: zod.date(),
+          label: zod.string(),
+          startTime: zod.string(),
+          endTime: zod.string(),
+          durationHours: zod.number(),
+          dayType: zod.enum(["weekday", "weekend"]),
+          assignmentSource: zod.enum([
+            "engine_normal",
+            "engine_back_to_back_emergency",
+            "engine_no_availability_afp_fallback",
+            "admin_no_availability_afp_placeholder",
+            "engine_afp_cap_overflow_available",
+            "manual",
+            "blank",
+          ]),
+          isManual: zod.boolean(),
+          isEmergency: zod.boolean(),
+          explanationCodes: zod.array(zod.string()),
+        }),
+      ),
+      totalHours: zod.number(),
+      isManuallyAdjusted: zod.boolean(),
+      penaltyNote: zod.string().nullish(),
+    }),
+  ),
+  averageHours: zod.number(),
+  stdDev: zod.number(),
+  unallocatedShiftIds: zod.array(zod.number()),
+  blankShiftExplanations: zod.array(
+    zod.object({
+      shiftId: zod.number(),
+      stableShiftKey: zod.string(),
+      slotIndex: zod.number(),
+      date: zod.date(),
+      label: zod.string(),
+      startTime: zod.string(),
+      endTime: zod.string(),
+      durationHours: zod.number(),
+      availabilityCount: zod.number(),
+      availableRespondents: zod.array(
+        zod.object({
+          respondentId: zod.number(),
+          name: zod.string(),
+          category: zod.enum(["AFP", "General"]),
+          blockers: zod.array(zod.string()),
+        }),
+      ),
+      reasonCategory: zod.enum([
+        "NO_AVAILABILITY",
+        "NO_FALLBACK_AFP_SELECTED",
+        "ALL_AVAILABLE_BLOCKED_BY_SAME_DAY",
+        "ALL_AVAILABLE_BLOCKED_BY_AFP_CAP",
+        "ALL_AVAILABLE_BLOCKED_BY_MANUAL_LOCK",
+        "ALL_AVAILABLE_BLOCKED_BY_MIXED_CONSTRAINTS",
+        "ENGINE_REPAIR_LIMIT_REACHED",
+        "UNKNOWN",
+      ]),
+      explanationCodes: zod.array(zod.string()),
+      explanationText: zod.string(),
+    }),
+  ),
+  allocationAudit: zod.array(
+    zod.object({
+      shiftId: zod.number(),
+      stableShiftKey: zod.string(),
+      date: zod.date(),
+      dayOfWeek: zod.string(),
+      startTime: zod.string(),
+      endTime: zod.string(),
+      slotIndex: zod.number(),
+      durationMinutes: zod.number(),
+      renderedCellIsBlank: zod.boolean(),
+      allocationRecordExists: zod.boolean(),
+      assignedRespondentId: zod.string().nullable(),
+      assignedRespondentName: zod.string().nullable(),
+      assignmentSource: zod.string().nullable(),
+      availabilityCount: zod.number(),
+      availableRespondents: zod.array(
+        zod.object({
+          respondentId: zod.number(),
+          name: zod.string(),
+          category: zod.enum(["AFP", "General"]),
+          penaltyHours: zod.number(),
+          afpCapHours: zod.number(),
+          alreadyAssignedMinutes: zod.number(),
+          sameDayAssignedShiftIds: zod.array(zod.number()),
+          canTakeNormally: zod.boolean(),
+          canTakeBackToBackEmergency: zod.boolean(),
+          blockers: zod.array(zod.string()),
+        }),
+      ),
+      eligibleNormalCandidateCount: zod.number(),
+      eligibleBackToBackEmergencyCandidateCount: zod.number(),
+      eligibleNoAvailabilityFallbackAfpCount: zod.number(),
+      reasonCategory: zod.string(),
+      explanationText: zod.string(),
+    }),
+  ),
+  createdSnapshotId: zod.number().nullish(),
+  restoredSnapshotId: zod.number().optional(),
+  undoSnapshotId: zod.number().nullish(),
 });
 
 /**

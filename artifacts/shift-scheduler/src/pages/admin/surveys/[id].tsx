@@ -15,10 +15,12 @@ import {
 } from "@/hooks/use-surveys";
 import {
   useGetAllocations,
+  useGetAllocationSnapshots,
   useRunAllocation,
   useDryRunAllocation,
   useGetAllocationStats,
   useAdjustAllocation,
+  useRestoreAllocationSnapshot,
 } from "@/hooks/use-allocations";
 import { useGetRespondentFdHistory, useUpdateRespondent } from "@/hooks/use-respondents";
 import { Button } from "@/components/ui/button";
@@ -29,9 +31,22 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import {
-  ArrowLeft, Lock, LockOpen, Calendar, Users, BarChart3,
-  Clock, Settings, BrainCircuit, CheckCircle2, Download, FileSpreadsheet, Image,
-  Trash2, Undo2,
+  ArrowLeft,
+  Lock,
+  LockOpen,
+  Calendar,
+  Users,
+  BarChart3,
+  Clock,
+  Settings,
+  BrainCircuit,
+  CheckCircle2,
+  Download,
+  FileSpreadsheet,
+  Image,
+  History,
+  Trash2,
+  Undo2,
 } from "lucide-react";
 import { Link } from "wouter";
 import { clsx } from "clsx";
@@ -89,18 +104,10 @@ function summarizeAllocationStats(stats: Array<{ totalHours: number }>): Allocat
   const count = hours.length;
   const average = count > 0 ? total / count : 0;
   const midpoint = Math.floor(count / 2);
-  const median = count === 0
-    ? 0
-    : count % 2 === 0
-      ? (hours[midpoint - 1] + hours[midpoint]) / 2
-      : hours[midpoint];
-  const variance = count > 0
-    ? hours.reduce((sum, value) => sum + Math.pow(value - average, 2), 0) / count
-    : 0;
+  const median = count === 0 ? 0 : count % 2 === 0 ? (hours[midpoint - 1] + hours[midpoint]) / 2 : hours[midpoint];
+  const variance = count > 0 ? hours.reduce((sum, value) => sum + Math.pow(value - average, 2), 0) / count : 0;
   const stdDev = Math.sqrt(variance);
-  const maxDeviation = count > 0
-    ? Math.max(...hours.map((value) => Math.abs(value - average)))
-    : 0;
+  const maxDeviation = count > 0 ? Math.max(...hours.map((value) => Math.abs(value - average))) : 0;
 
   return {
     count,
@@ -123,8 +130,7 @@ function AllocationSummaryPanel({
   note: string;
   summary: AllocationStatSummary;
 }) {
-  const withinOneDeviation =
-    summary.count <= 2 || summary.maxDeviation <= summary.stdDev + 0.01;
+  const withinOneDeviation = summary.count <= 2 || summary.maxDeviation <= summary.stdDev + 0.01;
 
   return (
     <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
@@ -156,7 +162,9 @@ function AllocationSummaryPanel({
         </div>
         <div className="rounded-xl bg-slate-50 p-3">
           <p className="text-slate-500">Range</p>
-          <p className="text-lg font-bold text-slate-900">{summary.min}-{summary.max} hrs</p>
+          <p className="text-lg font-bold text-slate-900">
+            {summary.min}-{summary.max} hrs
+          </p>
         </div>
         <div className="rounded-xl bg-slate-50 p-3">
           <p className="text-slate-500">Median</p>
@@ -184,12 +192,14 @@ export function AdminSurveyDetail() {
   const { data: deletedResponses = [] } = useDeletedSurveyResponses(surveyId);
   const { data: stats, refetch: refetchStats } = useGetSurveyStats(surveyId);
   const { data: allocations, refetch: refetchAllocations } = useGetAllocations(surveyId);
+  const { data: allocationSnapshots = [] } = useGetAllocationSnapshots(surveyId);
   const { data: allocStats, refetch: refetchAllocationStats } = useGetAllocationStats(surveyId);
 
   const updateMutation = useUpdateSurvey();
   const runAllocMutation = useRunAllocation();
   const dryRunAllocationMutation = useDryRunAllocation();
   const adjustAllocationMutation = useAdjustAllocation();
+  const restoreAllocationSnapshotMutation = useRestoreAllocationSnapshot();
   const updateResponseMutation = useUpdateSurveyResponse();
   const restoreResponseMutation = useRestoreSurveyResponse();
   const updateRespondentMutation = useUpdateRespondent();
@@ -212,7 +222,11 @@ export function AdminSurveyDetail() {
   const [selectedHasAfpCap, setSelectedHasAfpCap] = useState(false);
   const [selectedAfpHoursCap, setSelectedAfpHoursCap] = useState(10);
   const [includedRespondentIds, setIncludedRespondentIds] = useState<Set<number>>(new Set());
-  const [statsShift, setStatsShift] = useState<{ id: number; label: string; names: string[] } | null>(null);
+  const [statsShift, setStatsShift] = useState<{
+    id: number;
+    label: string;
+    names: string[];
+  } | null>(null);
   const [adjustTarget, setAdjustTarget] = useState<number | null>(null);
   const [adjustShiftIds, setAdjustShiftIds] = useState<Set<number>>(new Set());
   const [adjustNoAvailabilityPlaceholder, setAdjustNoAvailabilityPlaceholder] = useState(false);
@@ -224,13 +238,10 @@ export function AdminSurveyDetail() {
   const blankShiftExplanations = allocations?.blankShiftExplanations ?? [];
   const allocationAudit = allocations?.allocationAudit ?? [];
   const isPlaceholderSource = (source: string | null | undefined) =>
-    source === "admin_no_availability_afp_placeholder" ||
-    source === "engine_no_availability_afp_fallback";
+    source === "admin_no_availability_afp_placeholder" || source === "engine_no_availability_afp_fallback";
   const availabilityCountByShiftId = useMemo(() => {
     const map = new Map<number, number>();
-    for (const response of (responses ?? []).filter(
-      (entry) => entry.includedInLatestAllocation,
-    )) {
+    for (const response of (responses ?? []).filter((entry) => entry.includedInLatestAllocation)) {
       for (const shiftId of response.selectedShiftIds) {
         map.set(shiftId, (map.get(shiftId) ?? 0) + 1);
       }
@@ -238,12 +249,13 @@ export function AdminSurveyDetail() {
     return map;
   }, [responses]);
   const generalAllocationSummary = useMemo(
-    () => summarizeAllocationStats(
-      allocStats?.nonPenalizedGeneralStats ??
-      allocStats?.generalStats ??
-      allocations?.allocations.filter((allocation) => allocation.category === "General") ??
-      [],
-    ),
+    () =>
+      summarizeAllocationStats(
+        allocStats?.nonPenalizedGeneralStats ??
+          allocStats?.generalStats ??
+          allocations?.allocations.filter((allocation) => allocation.category === "General") ??
+          [],
+      ),
     [allocStats?.generalStats, allocStats?.nonPenalizedGeneralStats, allocations?.allocations],
   );
   const penalizedAllocationSummary = useMemo(
@@ -251,11 +263,10 @@ export function AdminSurveyDetail() {
     [allocStats?.penalizedStats],
   );
   const afpAllocationSummary = useMemo(
-    () => summarizeAllocationStats(
-      allocStats?.afpStats ??
-      allocations?.allocations.filter((allocation) => allocation.category === "AFP") ??
-      [],
-    ),
+    () =>
+      summarizeAllocationStats(
+        allocStats?.afpStats ?? allocations?.allocations.filter((allocation) => allocation.category === "AFP") ?? [],
+      ),
     [allocStats?.afpStats, allocations?.allocations],
   );
 
@@ -266,9 +277,7 @@ export function AdminSurveyDetail() {
       if (!didInitializeIncludedIds.current) {
         didInitializeIncludedIds.current = true;
         return new Set(
-          responses
-            .filter((response) => response.includedInLatestAllocation)
-            .map((response) => response.respondentId),
+          responses.filter((response) => response.includedInLatestAllocation).map((response) => response.respondentId),
         );
       }
       return new Set(Array.from(prev).filter((id) => responseIds.has(id)));
@@ -325,12 +334,7 @@ export function AdminSurveyDetail() {
         category: selectedCategory,
       },
     });
-    await Promise.all([
-      refetchResponses(),
-      refetchStats(),
-      refetchAllocations(),
-      refetchAllocationStats(),
-    ]);
+    await Promise.all([refetchResponses(), refetchStats(), refetchAllocations(), refetchAllocationStats()]);
     setSelectedResponse({
       ...selectedResponse,
       name: updatedRespondent.name,
@@ -358,7 +362,12 @@ export function AdminSurveyDetail() {
 
   const updateResponseSettings = async (
     response: NonNullable<typeof responses>[number],
-    updates: { hasPenalty?: boolean; penaltyHours?: number; hasAfpCap?: boolean; afpHoursCap?: number },
+    updates: {
+      hasPenalty?: boolean;
+      penaltyHours?: number;
+      hasAfpCap?: boolean;
+      afpHoursCap?: number;
+    },
   ) => {
     const nextHasPenalty = updates.hasPenalty ?? Boolean(response.hasPenalty);
     const nextPenaltyHours = updates.penaltyHours ?? Number(response.penaltyHours ?? 0);
@@ -409,7 +418,10 @@ export function AdminSurveyDetail() {
 
   const handleReopenSurvey = () => {
     if (confirm("Reopen this survey? Respondents will be able to submit availability again.")) {
-      updateMutation.mutate({ id: surveyId, data: { status: "open", closesAt: null } });
+      updateMutation.mutate({
+        id: surveyId,
+        data: { status: "open", closesAt: null },
+      });
     }
   };
 
@@ -420,6 +432,12 @@ export function AdminSurveyDetail() {
     }
     if (includedRespondentIds.size === 0) {
       alert("Select at least one respondent to include in allocation.");
+      return;
+    }
+    if (
+      hasExistingAllocations &&
+      !confirm("Run a new allocation? The current schedule will be saved as a recovery point first.")
+    ) {
       return;
     }
     runAllocMutation.mutate(
@@ -439,8 +457,26 @@ export function AdminSurveyDetail() {
           preserveManualLocks,
         },
       },
-      { onSuccess: () => setShowCalendar(true) }
+      { onSuccess: () => setShowCalendar(true) },
     );
+  };
+
+  const handleRestoreAllocationSnapshot = async (snapshot: NonNullable<typeof allocationSnapshots>[number]) => {
+    const createdAt = format(new Date(snapshot.createdAt), "MMM d, yyyy h:mm a");
+    if (
+      !confirm(`Restore the ${createdAt} allocation? The current schedule will be saved as a new recovery point first.`)
+    ) {
+      return;
+    }
+    try {
+      await restoreAllocationSnapshotMutation.mutateAsync({
+        id: surveyId,
+        snapshotId: snapshot.id,
+      });
+      setShowCalendar(true);
+    } catch (error) {
+      alert(error instanceof Error ? error.message : "Failed to restore allocation");
+    }
   };
 
   const handleDryRunAllocation = () => {
@@ -472,9 +508,7 @@ export function AdminSurveyDetail() {
 
   const shiftStatsByShift = useMemo(() => {
     if (!survey?.shifts) return [];
-    const responseList = (responses ?? []).filter(
-      (response) => response.includedInLatestAllocation,
-    );
+    const responseList = (responses ?? []).filter((response) => response.includedInLatestAllocation);
     const respondentById = new Map(responseList.map((r) => [r.respondentId, r]));
     return survey.shifts.map((shift) => {
       const selectedBy = responseList
@@ -495,7 +529,7 @@ export function AdminSurveyDetail() {
       (survey?.shifts || [])
         .filter((shift) => selectedShiftIds.has(shift.id))
         .reduce((sum, shift) => sum + shift.durationHours, 0),
-    [selectedShiftIds, survey?.shifts]
+    [selectedShiftIds, survey?.shifts],
   );
 
   const renderCalendarCanvas = async () => {
@@ -737,7 +771,10 @@ export function AdminSurveyDetail() {
         row.eligibleNoAvailabilityFallbackAfpCount,
         row.reasonCategory,
         row.availableRespondents
-          .map((respondent) => `${respondent.name}: ${respondent.blockers.length ? respondent.blockers.join("|") : "eligible"}`)
+          .map(
+            (respondent) =>
+              `${respondent.name}: ${respondent.blockers.length ? respondent.blockers.join("|") : "eligible"}`,
+          )
           .join("; "),
         row.explanationText,
       ]),
@@ -773,10 +810,7 @@ export function AdminSurveyDetail() {
           <div>
             <div className="flex items-center gap-3">
               <h1 className="text-3xl font-display font-bold text-slate-900">{survey.title}</h1>
-              <Badge
-                variant={survey.status === "open" ? "default" : "secondary"}
-                className="rounded-md"
-              >
+              <Badge variant={survey.status === "open" ? "default" : "secondary"} className="rounded-md">
                 {survey.status}
               </Badge>
             </div>
@@ -816,17 +850,45 @@ export function AdminSurveyDetail() {
 
       <Tabs defaultValue="responses" className="w-full">
         <TabsList className="bg-slate-100/50 p-1 rounded-xl mb-6 inline-flex w-full overflow-x-auto justify-start">
-          <TabsTrigger value="responses" className="rounded-lg px-4 py-2 data-[state=active]:bg-white data-[state=active]:shadow-sm">Responses</TabsTrigger>
-          <TabsTrigger value="deleted" className="rounded-lg px-4 py-2 data-[state=active]:bg-white data-[state=active]:shadow-sm">
+          <TabsTrigger
+            value="responses"
+            className="rounded-lg px-4 py-2 data-[state=active]:bg-white data-[state=active]:shadow-sm"
+          >
+            Responses
+          </TabsTrigger>
+          <TabsTrigger
+            value="deleted"
+            className="rounded-lg px-4 py-2 data-[state=active]:bg-white data-[state=active]:shadow-sm"
+          >
             <Trash2 className="mr-2 h-4 w-4" />
             Deleted ({deletedResponses.length})
           </TabsTrigger>
-          <TabsTrigger value="stats" className="rounded-lg px-4 py-2 data-[state=active]:bg-white data-[state=active]:shadow-sm">Availability Stats</TabsTrigger>
-          <TabsTrigger value="allocation" className="rounded-lg px-4 py-2 data-[state=active]:bg-white data-[state=active]:shadow-sm">Allocation</TabsTrigger>
+          <TabsTrigger
+            value="stats"
+            className="rounded-lg px-4 py-2 data-[state=active]:bg-white data-[state=active]:shadow-sm"
+          >
+            Availability Stats
+          </TabsTrigger>
+          <TabsTrigger
+            value="allocation"
+            className="rounded-lg px-4 py-2 data-[state=active]:bg-white data-[state=active]:shadow-sm"
+          >
+            Allocation
+          </TabsTrigger>
           {hasExistingAllocations && allocStats && (
             <>
-              <TabsTrigger value="alloc-stats" className="rounded-lg px-4 py-2 data-[state=active]:bg-white data-[state=active]:shadow-sm">Post-Alloc Stats</TabsTrigger>
-              <TabsTrigger value="alloc-audit" className="rounded-lg px-4 py-2 data-[state=active]:bg-white data-[state=active]:shadow-sm">Allocation Audit</TabsTrigger>
+              <TabsTrigger
+                value="alloc-stats"
+                className="rounded-lg px-4 py-2 data-[state=active]:bg-white data-[state=active]:shadow-sm"
+              >
+                Post-Alloc Stats
+              </TabsTrigger>
+              <TabsTrigger
+                value="alloc-audit"
+                className="rounded-lg px-4 py-2 data-[state=active]:bg-white data-[state=active]:shadow-sm"
+              >
+                Allocation Audit
+              </TabsTrigger>
             </>
           )}
         </TabsList>
@@ -835,7 +897,9 @@ export function AdminSurveyDetail() {
         <TabsContent value="responses" className="animate-in fade-in duration-300">
           <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
             <div className="px-6 py-4 border-b border-slate-200 bg-slate-50/80 text-sm text-slate-600">
-              Keep a respondent checked under <strong>Use</strong> to include their saved availability in allocation. Clicking a respondent lets you add or remove shifts from that saved availability before you run the schedule.
+              Keep a respondent checked under <strong>Use</strong> to include their saved availability in allocation.
+              Clicking a respondent lets you add or remove shifts from that saved availability before you run the
+              schedule.
             </div>
             <table className="w-full text-sm text-left">
               <thead className="bg-slate-50 text-slate-500 font-medium border-b border-slate-200">
@@ -851,7 +915,9 @@ export function AdminSurveyDetail() {
               <tbody className="divide-y divide-slate-100">
                 {!responses?.length ? (
                   <tr>
-                    <td colSpan={6} className="px-6 py-12 text-center text-slate-500">No responses yet.</td>
+                    <td colSpan={6} className="px-6 py-12 text-center text-slate-500">
+                      No responses yet.
+                    </td>
                   </tr>
                 ) : (
                   responses.map((r) => (
@@ -872,7 +938,8 @@ export function AdminSurveyDetail() {
                           {displayRespondentName(r)}
                         </button>
                         <div className="mt-1 text-xs font-normal text-slate-500">
-                          {r.name}{r.email ? ` | ${r.email}` : ""}
+                          {r.name}
+                          {r.email ? ` | ${r.email}` : ""}
                         </div>
                       </td>
                       <td className="px-6 py-4">
@@ -896,7 +963,10 @@ export function AdminSurveyDetail() {
                             onBlur={(event) => {
                               const value = Math.max(0, Number(event.currentTarget.value || 0));
                               if (value !== Number(r.penaltyHours ?? 0)) {
-                                void updateResponseSettings(r, { hasPenalty: value > 0, penaltyHours: value });
+                                void updateResponseSettings(r, {
+                                  hasPenalty: value > 0,
+                                  penaltyHours: value,
+                                });
                               }
                             }}
                           />
@@ -916,21 +986,23 @@ export function AdminSurveyDetail() {
                             </label>
                             {afpIds.has(r.respondentId) && (
                               <>
-                              <Input
-                                type="number"
-                                min={0}
-                                step={0.5}
-                                defaultValue={r.afpHoursCap ?? 10}
-                                disabled={updateResponseMutation.isPending}
-                                className="h-8 w-20 rounded-md"
-                                onBlur={(event) => {
-                                  const value = Math.max(0, Number(event.currentTarget.value || 10));
-                                  if (value !== Number(r.afpHoursCap ?? 10)) {
-                                    void updateResponseSettings(r, { afpHoursCap: value });
-                                  }
-                                }}
-                              />
-                              <span className="text-xs text-slate-500">hrs</span>
+                                <Input
+                                  type="number"
+                                  min={0}
+                                  step={0.5}
+                                  defaultValue={r.afpHoursCap ?? 10}
+                                  disabled={updateResponseMutation.isPending}
+                                  className="h-8 w-20 rounded-md"
+                                  onBlur={(event) => {
+                                    const value = Math.max(0, Number(event.currentTarget.value || 10));
+                                    if (value !== Number(r.afpHoursCap ?? 10)) {
+                                      void updateResponseSettings(r, {
+                                        afpHoursCap: value,
+                                      });
+                                    }
+                                  }}
+                                />
+                                <span className="text-xs text-slate-500">hrs</span>
                               </>
                             )}
                           </div>
@@ -971,22 +1043,17 @@ export function AdminSurveyDetail() {
                   deletedResponses.map((response) => (
                     <tr key={response.id} className="hover:bg-slate-50">
                       <td className="px-6 py-4">
-                        <div className="font-medium text-slate-900">
-                          {displayRespondentName(response)}
-                        </div>
+                        <div className="font-medium text-slate-900">{displayRespondentName(response)}</div>
                         <div className="mt-1 text-xs text-slate-500">
-                          {response.name}{response.email ? ` | ${response.email}` : ""}
+                          {response.name}
+                          {response.email ? ` | ${response.email}` : ""}
                         </div>
                       </td>
                       <td className="whitespace-nowrap px-6 py-4 text-slate-600">
                         {format(parseISO(response.deletedAt), "MMM d, yyyy h:mm a")}
                       </td>
-                      <td className="px-6 py-4 text-slate-600">
-                        {response.selectedShiftIds.length}
-                      </td>
-                      <td className="px-6 py-4 text-slate-600">
-                        {response.allocationCount}
-                      </td>
+                      <td className="px-6 py-4 text-slate-600">{response.selectedShiftIds.length}</td>
+                      <td className="px-6 py-4 text-slate-600">{response.allocationCount}</td>
                       <td className="px-6 py-4 text-right">
                         <Button
                           type="button"
@@ -1032,14 +1099,18 @@ export function AdminSurveyDetail() {
                 <div className="w-12 h-12 bg-blue-50 text-blue-500 rounded-full flex items-center justify-center mb-3">
                   <Clock className="w-6 h-6" />
                 </div>
-                <h3 className="text-3xl font-display font-bold text-slate-900">{stats.averageAvailableHours.toFixed(1)}</h3>
+                <h3 className="text-3xl font-display font-bold text-slate-900">
+                  {stats.averageAvailableHours.toFixed(1)}
+                </h3>
                 <p className="text-sm font-medium text-slate-500">Avg Available Hours</p>
               </div>
               <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 flex flex-col items-center justify-center text-center">
                 <div className="w-12 h-12 bg-indigo-50 text-indigo-500 rounded-full flex items-center justify-center mb-3">
                   <BarChart3 className="w-6 h-6" />
                 </div>
-                <h3 className="text-3xl font-display font-bold text-slate-900">+/-{stats.stdDevAvailableHours.toFixed(1)}</h3>
+                <h3 className="text-3xl font-display font-bold text-slate-900">
+                  +/-{stats.stdDevAvailableHours.toFixed(1)}
+                </h3>
                 <p className="text-sm font-medium text-slate-500">Standard Deviation</p>
               </div>
               <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 flex flex-col items-center justify-center text-center">
@@ -1068,7 +1139,13 @@ export function AdminSurveyDetail() {
                         <td className="px-6 py-3 font-medium text-slate-900">
                           <button
                             className="underline decoration-dotted underline-offset-4 hover:text-indigo-700"
-                            onClick={() => setStatsShift({ id: s.id, label: s.label, names: s.selectedBy })}
+                            onClick={() =>
+                              setStatsShift({
+                                id: s.id,
+                                label: s.label,
+                                names: s.selectedBy,
+                              })
+                            }
                           >
                             {s.label}
                           </button>
@@ -1080,7 +1157,9 @@ export function AdminSurveyDetail() {
                             <div className="w-24 h-2 bg-slate-100 rounded-full overflow-hidden">
                               <div className="h-full bg-primary" style={{ width: `${s.selectionRate * 100}%` }} />
                             </div>
-                            <span className="text-xs font-medium text-slate-500">{(s.selectionRate * 100).toFixed(0)}%</span>
+                            <span className="text-xs font-medium text-slate-500">
+                              {(s.selectionRate * 100).toFixed(0)}%
+                            </span>
                           </div>
                         </td>
                       </tr>
@@ -1106,56 +1185,63 @@ export function AdminSurveyDetail() {
             <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
               <h3 className="font-bold text-slate-900 mb-1 text-lg">AFP Hour Caps</h3>
               <p className="text-sm text-slate-500 mb-4">
-                Enable a cap only for AFPs who should be limited this month. Unchecked AFPs join the equal-allocation pool.
+                Enable a cap only for AFPs who should be limited this month. Unchecked AFPs join the equal-allocation
+                pool.
               </p>
               {(responses ?? []).filter((response) => response.category === "AFP").length === 0 ? (
                 <p className="text-slate-400 italic text-sm">No AFP responses yet.</p>
               ) : (
                 <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3 mb-6">
-                  {(responses ?? []).filter((response) => response.category === "AFP").map((r) => (
-                    <label
-                      key={r.respondentId}
-                      className={clsx(
-                        "flex items-center gap-3 p-3 rounded-xl border cursor-pointer transition-all",
-                        afpIds.has(r.respondentId)
-                          ? "border-indigo-400 bg-indigo-50"
-                          : "border-slate-200 hover:border-indigo-200 hover:bg-slate-50"
-                      )}
-                    >
-                      <Checkbox
-                        checked={afpIds.has(r.respondentId)}
-                        disabled={updateResponseMutation.isPending}
-                        onCheckedChange={() => void toggleAfp(r)}
-                        className="rounded data-[state=checked]:bg-indigo-600 data-[state=checked]:border-indigo-600"
-                      />
-                      <div>
-                        <p className="font-medium text-slate-900 text-sm leading-tight">{r.preferredName || r.name}</p>
-                        <p className="text-xs text-slate-400">{r.totalAvailableHours} hrs avail.</p>
-                        {afpIds.has(r.respondentId) && (
-                          <>
-                            <div className="mt-2 flex items-center gap-2">
-                              <span className="text-xs text-slate-500">Cap</span>
-                              <Input
-                                type="number"
-                                min={0}
-                                step={0.5}
-                                defaultValue={r.afpHoursCap ?? 10}
-                                className="h-7 w-20 rounded-md bg-white"
-                                onClick={(event) => event.stopPropagation()}
-                                onBlur={(event) => {
-                                  const value = Math.max(0, Number(event.currentTarget.value || 10));
-                                  if (value !== Number(r.afpHoursCap ?? 10)) {
-                                    void updateResponseSettings(r, { afpHoursCap: value });
-                                  }
-                                }}
-                              />
-                              <span className="text-xs text-slate-500">hrs</span>
-                            </div>
-                          </>
+                  {(responses ?? [])
+                    .filter((response) => response.category === "AFP")
+                    .map((r) => (
+                      <label
+                        key={r.respondentId}
+                        className={clsx(
+                          "flex items-center gap-3 p-3 rounded-xl border cursor-pointer transition-all",
+                          afpIds.has(r.respondentId)
+                            ? "border-indigo-400 bg-indigo-50"
+                            : "border-slate-200 hover:border-indigo-200 hover:bg-slate-50",
                         )}
-                      </div>
-                    </label>
-                  ))}
+                      >
+                        <Checkbox
+                          checked={afpIds.has(r.respondentId)}
+                          disabled={updateResponseMutation.isPending}
+                          onCheckedChange={() => void toggleAfp(r)}
+                          className="rounded data-[state=checked]:bg-indigo-600 data-[state=checked]:border-indigo-600"
+                        />
+                        <div>
+                          <p className="font-medium text-slate-900 text-sm leading-tight">
+                            {r.preferredName || r.name}
+                          </p>
+                          <p className="text-xs text-slate-400">{r.totalAvailableHours} hrs avail.</p>
+                          {afpIds.has(r.respondentId) && (
+                            <>
+                              <div className="mt-2 flex items-center gap-2">
+                                <span className="text-xs text-slate-500">Cap</span>
+                                <Input
+                                  type="number"
+                                  min={0}
+                                  step={0.5}
+                                  defaultValue={r.afpHoursCap ?? 10}
+                                  className="h-7 w-20 rounded-md bg-white"
+                                  onClick={(event) => event.stopPropagation()}
+                                  onBlur={(event) => {
+                                    const value = Math.max(0, Number(event.currentTarget.value || 10));
+                                    if (value !== Number(r.afpHoursCap ?? 10)) {
+                                      void updateResponseSettings(r, {
+                                        afpHoursCap: value,
+                                      });
+                                    }
+                                  }}
+                                />
+                                <span className="text-xs text-slate-500">hrs</span>
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      </label>
+                    ))}
                 </div>
               )}
               <div className="mb-6 grid gap-3 rounded-xl border border-slate-200 bg-slate-50/70 p-4 text-sm text-slate-700 sm:grid-cols-2">
@@ -1166,7 +1252,9 @@ export function AdminSurveyDetail() {
                   />
                   <span>
                     Preserve manual assignments on re-run
-                    <span className="block text-xs text-slate-500">Manual rows stay locked and the engine allocates around them.</span>
+                    <span className="block text-xs text-slate-500">
+                      Manual rows stay locked and the engine allocates around them.
+                    </span>
                   </span>
                 </label>
                 <label className="flex items-start gap-2">
@@ -1187,7 +1275,8 @@ export function AdminSurveyDetail() {
                   <span>
                     Enable no-availability AFP emergency placeholders
                     <span className="block text-xs text-slate-500">
-                      Only shifts nobody selected can be assigned to selected AFPs for visibility. These are not normal availability-based assignments.
+                      Only shifts nobody selected can be assigned to selected AFPs for visibility. These are not normal
+                      availability-based assignments.
                     </span>
                   </span>
                 </label>
@@ -1200,17 +1289,24 @@ export function AdminSurveyDetail() {
                       {(responses ?? [])
                         .filter((response) => response.category === "AFP")
                         .map((response) => (
-                          <label key={response.respondentId} className="flex items-center gap-2 rounded-md border border-slate-200 px-3 py-2">
+                          <label
+                            key={response.respondentId}
+                            className="flex items-center gap-2 rounded-md border border-slate-200 px-3 py-2"
+                          >
                             <Checkbox
                               checked={noAvailabilityFallbackAfpIds.has(response.respondentId)}
                               onCheckedChange={() => toggleNoAvailabilityFallbackAfp(response.respondentId)}
                             />
-                            <span className="text-sm font-medium text-slate-800">{displayRespondentName(response)}</span>
+                            <span className="text-sm font-medium text-slate-800">
+                              {displayRespondentName(response)}
+                            </span>
                           </label>
                         ))}
                     </div>
                     {(responses ?? []).every((response) => response.category !== "AFP") && (
-                      <p className="text-xs text-slate-500">No AFP responses are available for placeholder assignment.</p>
+                      <p className="text-xs text-slate-500">
+                        No AFP responses are available for placeholder assignment.
+                      </p>
                     )}
                   </div>
                 )}
@@ -1244,21 +1340,60 @@ export function AdminSurveyDetail() {
                   <div className="flex flex-wrap items-center justify-between gap-3">
                     <div>
                       <h4 className="font-bold text-slate-900">Dry-Run Audit</h4>
-                      <p className="text-slate-500">No responses, respondents, settings, or saved allocations were changed.</p>
+                      <p className="text-slate-500">
+                        No responses, respondents, settings, or saved allocations were changed.
+                      </p>
                     </div>
                     <Badge variant="outline" className="border-indigo-200 bg-indigo-50 text-indigo-700">
-                      {dryRunAllocationMutation.data.assignedShifts}/{dryRunAllocationMutation.data.totalShifts} assigned
+                      {dryRunAllocationMutation.data.assignedShifts}/{dryRunAllocationMutation.data.totalShifts}{" "}
+                      assigned
                     </Badge>
                   </div>
                   <div className="mt-3 grid grid-cols-2 gap-3 md:grid-cols-4">
-                    <div><p className="text-xs text-slate-500">Blank with availability</p><p className="font-bold">{dryRunAllocationMutation.data.blankWithAvailabilityCount}</p></div>
-                    <div><p className="text-xs text-slate-500">Blank zero availability</p><p className="font-bold">{dryRunAllocationMutation.data.blankZeroAvailabilityShiftCount}</p></div>
-                    <div><p className="text-xs text-slate-500">AFP placeholders</p><p className="font-bold">{dryRunAllocationMutation.data.allowedNoAvailabilityAfpPlaceholderAssignments}</p></div>
-                    <div><p className="text-xs text-slate-500">Illegal unavailable</p><p className="font-bold">{dryRunAllocationMutation.data.illegalAssignmentsWithoutAvailability}</p></div>
-                    <div><p className="text-xs text-slate-500">Equal-pool mean</p><p className="font-bold">{dryRunAllocationMutation.data.nonPenalizedGeneralMeanHours.toFixed(1)} hrs</p></div>
-                    <div><p className="text-xs text-slate-500">Equal-pool std dev</p><p className="font-bold">{dryRunAllocationMutation.data.nonPenalizedGeneralStdDevHours.toFixed(2)} hrs</p></div>
-                    <div><p className="text-xs text-slate-500">Fairness repairs</p><p className="font-bold">{dryRunAllocationMutation.data.fairnessRepairMoveCount}</p></div>
-                    <div><p className="text-xs text-slate-500">B2B emergency</p><p className="font-bold">{dryRunAllocationMutation.data.backToBackEmergencyAssignments}</p></div>
+                    <div>
+                      <p className="text-xs text-slate-500">Blank with availability</p>
+                      <p className="font-bold">{dryRunAllocationMutation.data.blankWithAvailabilityCount}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-slate-500">Blank zero availability</p>
+                      <p className="font-bold">{dryRunAllocationMutation.data.blankZeroAvailabilityShiftCount}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-slate-500">AFP placeholders</p>
+                      <p className="font-bold">
+                        {dryRunAllocationMutation.data.allowedNoAvailabilityAfpPlaceholderAssignments}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-slate-500">Illegal unavailable</p>
+                      <p className="font-bold">{dryRunAllocationMutation.data.illegalAssignmentsWithoutAvailability}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-slate-500">Equal-pool mean</p>
+                      <p className="font-bold">
+                        {dryRunAllocationMutation.data.nonPenalizedGeneralMeanHours.toFixed(1)} hrs
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-slate-500">Equal-pool std dev</p>
+                      <p className="font-bold">
+                        {dryRunAllocationMutation.data.nonPenalizedGeneralStdDevHours.toFixed(2)} hrs
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-slate-500">Optimizer</p>
+                      <p className="font-bold">
+                        {dryRunAllocationMutation.data.optimizationMethod === "global_milp"
+                          ? dryRunAllocationMutation.data.optimizerStatus === "optimal"
+                            ? "Global exact"
+                            : "Global bounded"
+                          : "Fallback"}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-slate-500">B2B pair-days</p>
+                      <p className="font-bold">{dryRunAllocationMutation.data.backToBackPairDays}</p>
+                    </div>
                   </div>
                 </div>
               )}
@@ -1273,7 +1408,8 @@ export function AdminSurveyDetail() {
                   <div>
                     <h3 className="font-bold text-indigo-900">Allocation Complete</h3>
                     <p className="text-sm text-indigo-700">
-                      Equal-allocation avg: {generalAllocationSummary.average.toFixed(1)} hrs | Std Dev: {generalAllocationSummary.stdDev.toFixed(2)} | AFP caps enabled: {afpIds.size}
+                      Equal-allocation avg: {generalAllocationSummary.average.toFixed(1)} hrs | Std Dev:{" "}
+                      {generalAllocationSummary.stdDev.toFixed(2)} | AFP caps enabled: {afpIds.size}
                     </p>
                   </div>
                 </div>
@@ -1294,8 +1430,9 @@ export function AdminSurveyDetail() {
                         size="sm"
                         onClick={handleRunAllocation}
                         className="bg-white rounded-xl"
+                        disabled={runAllocMutation.isPending}
                       >
-                        Run Allocation
+                        {runAllocMutation.isPending ? "Allocating..." : "Run Allocation"}
                       </Button>
                     </>
                   )}
@@ -1324,7 +1461,12 @@ export function AdminSurveyDetail() {
                       <Button size="sm" variant="outline" onClick={downloadScheduleCsv} className="bg-white rounded-xl">
                         <FileSpreadsheet className="w-4 h-4 mr-1" /> Download CSV
                       </Button>
-                      <Button size="sm" variant="outline" onClick={downloadCalendarXlsx} className="bg-white rounded-xl">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={downloadCalendarXlsx}
+                        className="bg-white rounded-xl"
+                      >
                         <FileSpreadsheet className="w-4 h-4 mr-1" /> Download XLSX
                       </Button>
                     </>
@@ -1352,7 +1494,9 @@ export function AdminSurveyDetail() {
                     />
                     <span>
                       Enable no-availability AFP placeholders
-                      <span className="block text-xs text-slate-500">Only shifts nobody selected; marked separately in stats/export.</span>
+                      <span className="block text-xs text-slate-500">
+                        Only shifts nobody selected; marked separately in stats/export.
+                      </span>
                     </span>
                   </label>
                 </div>
@@ -1361,7 +1505,10 @@ export function AdminSurveyDetail() {
                     {(responses ?? [])
                       .filter((response) => response.category === "AFP")
                       .map((response) => (
-                        <label key={response.respondentId} className="flex items-center gap-2 rounded-md border border-slate-200 px-3 py-2">
+                        <label
+                          key={response.respondentId}
+                          className="flex items-center gap-2 rounded-md border border-slate-200 px-3 py-2"
+                        >
                           <Checkbox
                             checked={noAvailabilityFallbackAfpIds.has(response.respondentId)}
                             onCheckedChange={() => toggleNoAvailabilityFallbackAfp(response.respondentId)}
@@ -1373,6 +1520,39 @@ export function AdminSurveyDetail() {
                 )}
               </div>
 
+              {allocationSnapshots.length > 0 && (
+                <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+                  <div className="flex items-center gap-2 border-b border-slate-200 px-4 py-3">
+                    <History className="h-4 w-4 text-slate-500" />
+                    <h3 className="font-bold text-slate-900">Recovery Points</h3>
+                  </div>
+                  <div className="divide-y divide-slate-100">
+                    {allocationSnapshots.slice(0, 6).map((snapshot) => (
+                      <div key={snapshot.id} className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
+                        <div className="min-w-0">
+                          <p className="truncate font-medium text-slate-900">{snapshot.label}</p>
+                          <p className="text-xs text-slate-500">
+                            {format(new Date(snapshot.createdAt), "MMM d, yyyy h:mm a")}
+                            {" · "}
+                            {snapshot.allocationCount} assignments
+                          </p>
+                        </div>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          disabled={restoreAllocationSnapshotMutation.isPending}
+                          onClick={() => void handleRestoreAllocationSnapshot(snapshot)}
+                        >
+                          <Undo2 className="mr-1 h-4 w-4" />
+                          Restore
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               {dryRunAllocationMutation.data && (
                 <div className="rounded-2xl border border-indigo-200 bg-indigo-50/50 p-4 text-sm shadow-sm">
                   <div className="flex flex-wrap items-center justify-between gap-3">
@@ -1381,18 +1561,55 @@ export function AdminSurveyDetail() {
                       <p className="text-indigo-700">No saved allocation or survey response data was changed.</p>
                     </div>
                     <Badge variant="outline" className="border-indigo-300 bg-white text-indigo-700">
-                      {dryRunAllocationMutation.data.assignedShifts}/{dryRunAllocationMutation.data.totalShifts} assigned
+                      {dryRunAllocationMutation.data.assignedShifts}/{dryRunAllocationMutation.data.totalShifts}{" "}
+                      assigned
                     </Badge>
                   </div>
                   <div className="mt-3 grid grid-cols-2 gap-3 md:grid-cols-4">
-                    <div><p className="text-xs text-indigo-700/80">Blank with availability</p><p className="font-bold">{dryRunAllocationMutation.data.blankWithAvailabilityCount}</p></div>
-                    <div><p className="text-xs text-indigo-700/80">Blank zero availability</p><p className="font-bold">{dryRunAllocationMutation.data.blankZeroAvailabilityShiftCount}</p></div>
-                    <div><p className="text-xs text-indigo-700/80">AFP placeholders</p><p className="font-bold">{dryRunAllocationMutation.data.allowedNoAvailabilityAfpPlaceholderAssignments}</p></div>
-                    <div><p className="text-xs text-indigo-700/80">Illegal unavailable</p><p className="font-bold">{dryRunAllocationMutation.data.illegalAssignmentsWithoutAvailability}</p></div>
-                    <div><p className="text-xs text-indigo-700/80">Equal-pool mean</p><p className="font-bold">{dryRunAllocationMutation.data.nonPenalizedGeneralMeanHours.toFixed(1)} hrs</p></div>
-                    <div><p className="text-xs text-indigo-700/80">Equal-pool std dev</p><p className="font-bold">{dryRunAllocationMutation.data.nonPenalizedGeneralStdDevHours.toFixed(2)} hrs</p></div>
-                    <div><p className="text-xs text-indigo-700/80">Fairness repairs</p><p className="font-bold">{dryRunAllocationMutation.data.fairnessRepairMoveCount}</p></div>
-                    <div><p className="text-xs text-indigo-700/80">B2B emergency</p><p className="font-bold">{dryRunAllocationMutation.data.backToBackEmergencyAssignments}</p></div>
+                    <div>
+                      <p className="text-xs text-indigo-700/80">Blank with availability</p>
+                      <p className="font-bold">{dryRunAllocationMutation.data.blankWithAvailabilityCount}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-indigo-700/80">Blank zero availability</p>
+                      <p className="font-bold">{dryRunAllocationMutation.data.blankZeroAvailabilityShiftCount}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-indigo-700/80">AFP placeholders</p>
+                      <p className="font-bold">
+                        {dryRunAllocationMutation.data.allowedNoAvailabilityAfpPlaceholderAssignments}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-indigo-700/80">Illegal unavailable</p>
+                      <p className="font-bold">{dryRunAllocationMutation.data.illegalAssignmentsWithoutAvailability}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-indigo-700/80">Equal-pool mean</p>
+                      <p className="font-bold">
+                        {dryRunAllocationMutation.data.nonPenalizedGeneralMeanHours.toFixed(1)} hrs
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-indigo-700/80">Equal-pool std dev</p>
+                      <p className="font-bold">
+                        {dryRunAllocationMutation.data.nonPenalizedGeneralStdDevHours.toFixed(2)} hrs
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-indigo-700/80">Optimizer</p>
+                      <p className="font-bold">
+                        {dryRunAllocationMutation.data.optimizationMethod === "global_milp"
+                          ? dryRunAllocationMutation.data.optimizerStatus === "optimal"
+                            ? "Global exact"
+                            : "Global bounded"
+                          : "Fallback"}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-indigo-700/80">B2B pair-days</p>
+                      <p className="font-bold">{dryRunAllocationMutation.data.backToBackPairDays}</p>
+                    </div>
                   </div>
                 </div>
               )}
@@ -1437,13 +1654,16 @@ export function AdminSurveyDetail() {
                               "mt-1 text-[10px] px-1.5 py-0 h-4",
                               a.category === "AFP"
                                 ? "border-indigo-200 text-indigo-700 bg-indigo-50"
-                                : "border-slate-200 text-slate-600 bg-slate-50"
+                                : "border-slate-200 text-slate-600 bg-slate-50",
                             )}
                           >
                             {a.category}
                           </Badge>
                           {a.isManuallyAdjusted && (
-                            <Badge variant="secondary" className="mt-1 ml-1 bg-amber-100 text-amber-800 text-[10px] px-1.5 py-0 h-4 border-none">
+                            <Badge
+                              variant="secondary"
+                              className="mt-1 ml-1 bg-amber-100 text-amber-800 text-[10px] px-1.5 py-0 h-4 border-none"
+                            >
                               Adjusted
                             </Badge>
                           )}
@@ -1459,7 +1679,7 @@ export function AdminSurveyDetail() {
                                     ? "bg-amber-100 text-amber-800"
                                     : s.isEmergency
                                       ? "bg-rose-100 text-rose-800"
-                                    : isPlaceholderSource(s.assignmentSource)
+                                      : isPlaceholderSource(s.assignmentSource)
                                         ? "bg-indigo-100 text-indigo-800"
                                         : "bg-slate-100 text-slate-700",
                                 )}
@@ -1502,11 +1722,15 @@ export function AdminSurveyDetail() {
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                 <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
                   <p className="text-sm font-medium text-slate-500 mb-1">Overall Average</p>
-                  <p className="text-2xl font-bold text-slate-900">{allocStats.averageHours.toFixed(1)} <span className="text-sm text-slate-400 font-normal">hrs</span></p>
+                  <p className="text-2xl font-bold text-slate-900">
+                    {allocStats.averageHours.toFixed(1)} <span className="text-sm text-slate-400 font-normal">hrs</span>
+                  </p>
                 </div>
                 <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
                   <p className="text-sm font-medium text-slate-500 mb-1">Median Hours</p>
-                  <p className="text-2xl font-bold text-slate-900">{allocStats.medianHours.toFixed(1)} <span className="text-sm text-slate-400 font-normal">hrs</span></p>
+                  <p className="text-2xl font-bold text-slate-900">
+                    {allocStats.medianHours.toFixed(1)} <span className="text-sm text-slate-400 font-normal">hrs</span>
+                  </p>
                 </div>
                 <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
                   <p className="text-sm font-medium text-slate-500 mb-1">Overall Std Dev</p>
@@ -1514,7 +1738,10 @@ export function AdminSurveyDetail() {
                 </div>
                 <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
                   <p className="text-sm font-medium text-slate-500 mb-1">Total Allocated</p>
-                  <p className="text-2xl font-bold text-slate-900">{allocStats.totalAllocatedHours.toFixed(1)} <span className="text-sm text-slate-400 font-normal">hrs</span></p>
+                  <p className="text-2xl font-bold text-slate-900">
+                    {allocStats.totalAllocatedHours.toFixed(1)}{" "}
+                    <span className="text-sm text-slate-400 font-normal">hrs</span>
+                  </p>
                 </div>
                 <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
                   <p className="text-sm font-medium text-slate-500 mb-1">Blank Shifts</p>
@@ -1527,8 +1754,12 @@ export function AdminSurveyDetail() {
                 </div>
                 <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
                   <p className="text-sm font-medium text-slate-500 mb-1">AFP Placeholders</p>
-                  <p className="text-2xl font-bold text-slate-900">{allocStats.allowedNoAvailabilityAfpPlaceholderAssignments}</p>
-                  <p className="mt-1 text-xs text-slate-500">{allocStats.afpNoAvailabilityPlaceholderHours.toFixed(1)} hrs marked separately</p>
+                  <p className="text-2xl font-bold text-slate-900">
+                    {allocStats.allowedNoAvailabilityAfpPlaceholderAssignments}
+                  </p>
+                  <p className="mt-1 text-xs text-slate-500">
+                    {allocStats.afpNoAvailabilityPlaceholderHours.toFixed(1)} hrs marked separately
+                  </p>
                 </div>
                 <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
                   <p className="text-sm font-medium text-slate-500 mb-1">Back-to-Back Emergency</p>
@@ -1536,7 +1767,12 @@ export function AdminSurveyDetail() {
                 </div>
                 <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
                   <p className="text-sm font-medium text-slate-500 mb-1">Illegal Unavailable Assignments</p>
-                  <p className={clsx("text-2xl font-bold", allocStats.illegalAssignmentsWithoutAvailability > 0 ? "text-rose-700" : "text-slate-900")}>
+                  <p
+                    className={clsx(
+                      "text-2xl font-bold",
+                      allocStats.illegalAssignmentsWithoutAvailability > 0 ? "text-rose-700" : "text-slate-900",
+                    )}
+                  >
                     {allocStats.illegalAssignmentsWithoutAvailability}
                   </p>
                   <p className="mt-1 text-xs text-slate-500">Expected 0; AFP placeholders are counted separately</p>
@@ -1552,43 +1788,68 @@ export function AdminSurveyDetail() {
                 </div>
                 <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
                   <p className="text-sm font-medium text-slate-500 mb-1">Rendered Assigned Blanks</p>
-                  <p className={clsx("text-2xl font-bold", allocStats.renderedBlankButAssignedCount > 0 ? "text-rose-700" : "text-slate-900")}>
+                  <p
+                    className={clsx(
+                      "text-2xl font-bold",
+                      allocStats.renderedBlankButAssignedCount > 0 ? "text-rose-700" : "text-slate-900",
+                    )}
+                  >
                     {allocStats.renderedBlankButAssignedCount}
                   </p>
                 </div>
                 <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
                   <p className="text-sm font-medium text-slate-500 mb-1">Hard Same-Day Issues</p>
-                  <p className={clsx(
-                    "text-2xl font-bold",
-                    allocStats.nonAdjacentSameDayDoubleCount + allocStats.tripleShiftDayCount > 0 ? "text-rose-700" : "text-slate-900",
-                  )}>
+                  <p
+                    className={clsx(
+                      "text-2xl font-bold",
+                      allocStats.nonAdjacentSameDayDoubleCount + allocStats.tripleShiftDayCount > 0
+                        ? "text-rose-700"
+                        : "text-slate-900",
+                    )}
+                  >
                     {allocStats.nonAdjacentSameDayDoubleCount + allocStats.tripleShiftDayCount}
                   </p>
                 </div>
                 <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
                   <p className="text-sm font-medium text-slate-500 mb-1">Min Hours</p>
-                  <p className="text-2xl font-bold text-slate-900">{allocStats.minHours} <span className="text-sm text-slate-400 font-normal">hrs</span></p>
+                  <p className="text-2xl font-bold text-slate-900">
+                    {allocStats.minHours} <span className="text-sm text-slate-400 font-normal">hrs</span>
+                  </p>
                 </div>
                 <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
                   <p className="text-sm font-medium text-slate-500 mb-1">Max Hours</p>
-                  <p className="text-2xl font-bold text-slate-900">{allocStats.maxHours} <span className="text-sm text-slate-400 font-normal">hrs</span></p>
+                  <p className="text-2xl font-bold text-slate-900">
+                    {allocStats.maxHours} <span className="text-sm text-slate-400 font-normal">hrs</span>
+                  </p>
                 </div>
               </div>
-              <div className={clsx(
-                "rounded-2xl border p-5 shadow-sm",
-                allocStats.fairnessWarning ? "border-amber-300 bg-amber-50" : "border-slate-200 bg-white",
-              )}>
+              <div
+                className={clsx(
+                  "rounded-2xl border p-5 shadow-sm",
+                  allocStats.fairnessWarning ? "border-amber-300 bg-amber-50" : "border-slate-200 bg-white",
+                )}
+              >
                 <div className="flex flex-wrap items-start justify-between gap-4">
                   <div>
                     <h3 className="font-bold text-slate-900">Fairness Diagnostics</h3>
                     <p className="mt-1 text-sm text-slate-600">
-                      Equal-allocation, non-penalized standard deviation target: {allocStats.fairnessTargetStdDevHours.toFixed(1)} hrs; warning: {allocStats.fairnessWarningStdDevHours.toFixed(1)} hrs.
+                      Equal-allocation, non-penalized standard deviation target:{" "}
+                      {allocStats.fairnessTargetStdDevHours.toFixed(1)} hrs; warning:{" "}
+                      {allocStats.fairnessWarningStdDevHours.toFixed(1)} hrs.
                     </p>
                     {allocStats.fairnessHighStdDevReason && (
                       <p className="mt-2 text-sm font-medium text-amber-800">{allocStats.fairnessHighStdDevReason}</p>
                     )}
                   </div>
-                  <Badge variant="outline" className={clsx("rounded-md bg-white", allocStats.fairnessWarning ? "border-amber-400 text-amber-800" : "border-emerald-300 text-emerald-700")}>
+                  <Badge
+                    variant="outline"
+                    className={clsx(
+                      "rounded-md bg-white",
+                      allocStats.fairnessWarning
+                        ? "border-amber-400 text-amber-800"
+                        : "border-emerald-300 text-emerald-700",
+                    )}
+                  >
                     {allocStats.fairnessWarning ? "High Spread Warning" : "Spread OK"}
                   </Badge>
                 </div>
@@ -1679,7 +1940,8 @@ export function AdminSurveyDetail() {
                   <div className="p-4 border-b border-slate-100 bg-slate-50/50">
                     <h3 className="font-bold text-slate-900">Blank Shift Explanations</h3>
                     <p className="mt-1 text-sm text-slate-500">
-                      Blank shifts with availability are highlighted because the engine could not find a legal assignment under the same-day and cap rules.
+                      Blank shifts with availability are highlighted because the engine could not find a legal
+                      assignment under the same-day and cap rules.
                     </p>
                   </div>
                   <div className="overflow-x-auto">
@@ -1694,10 +1956,7 @@ export function AdminSurveyDetail() {
                       </thead>
                       <tbody className="divide-y divide-slate-100">
                         {blankShiftExplanations.map((blank) => (
-                          <tr
-                            key={blank.shiftId}
-                            className={blank.availabilityCount > 0 ? "bg-rose-50/50" : undefined}
-                          >
+                          <tr key={blank.shiftId} className={blank.availabilityCount > 0 ? "bg-rose-50/50" : undefined}>
                             <td className="px-6 py-3 font-medium text-slate-900">
                               {formatShiftDisplay(blank)}
                               <div className="text-xs text-slate-500">{blank.durationHours} hrs</div>
@@ -1748,26 +2007,26 @@ export function AdminSurveyDetail() {
                   <tbody className="divide-y divide-slate-100">
                     {allocStats.respondentStats.map((s) => (
                       <tr key={s.respondentId}>
-	                        <td className="px-6 py-3 font-medium text-slate-900">
-                            <button
-                              className="underline decoration-dotted underline-offset-4 hover:text-indigo-700"
-                              onClick={() => setSelectedRespondentId(s.respondentId)}
-                            >
-                              {s.name}
-                            </button>
-                          </td>
-	                        <td className="px-6 py-3">{s.category}</td>
-	                        <td className="px-6 py-3 font-bold">{s.totalHours}</td>
-	                        <td className="px-6 py-3 text-slate-600">{s.weekdayShifts}</td>
-	                        <td className="px-6 py-3 text-slate-600">{s.weekendShifts}</td>
-	                      </tr>
+                        <td className="px-6 py-3 font-medium text-slate-900">
+                          <button
+                            className="underline decoration-dotted underline-offset-4 hover:text-indigo-700"
+                            onClick={() => setSelectedRespondentId(s.respondentId)}
+                          >
+                            {s.name}
+                          </button>
+                        </td>
+                        <td className="px-6 py-3">{s.category}</td>
+                        <td className="px-6 py-3 font-bold">{s.totalHours}</td>
+                        <td className="px-6 py-3 text-slate-600">{s.weekdayShifts}</td>
+                        <td className="px-6 py-3 text-slate-600">{s.weekendShifts}</td>
+                      </tr>
                     ))}
                   </tbody>
                 </table>
               </div>
             </div>
           )}
-	        </TabsContent>
+        </TabsContent>
 
         <TabsContent value="alloc-audit" className="animate-in fade-in duration-300">
           {hasExistingAllocations && allocationAudit.length > 0 && (
@@ -1809,8 +2068,12 @@ export function AdminSurveyDetail() {
                         )}
                       >
                         <td className="px-4 py-3">
-                          <div className="font-medium text-slate-900">{row.dayOfWeek}, {row.date}</div>
-                          <div className="text-xs text-slate-500">{formatTime12(row.startTime)}-{formatTime12(row.endTime)}</div>
+                          <div className="font-medium text-slate-900">
+                            {row.dayOfWeek}, {row.date}
+                          </div>
+                          <div className="text-xs text-slate-500">
+                            {formatTime12(row.startTime)}-{formatTime12(row.endTime)}
+                          </div>
                         </td>
                         <td className="px-4 py-3 font-mono text-xs text-slate-600">{row.stableShiftKey}</td>
                         <td className="px-4 py-3">
@@ -1820,17 +2083,24 @@ export function AdminSurveyDetail() {
                               <div className="text-xs text-slate-500">{row.assignmentSource}</div>
                             </div>
                           ) : (
-                            <Badge variant="outline" className="border-rose-200 bg-rose-50 text-rose-700">Blank</Badge>
+                            <Badge variant="outline" className="border-rose-200 bg-rose-50 text-rose-700">
+                              Blank
+                            </Badge>
                           )}
                         </td>
                         <td className="px-4 py-3">{row.availabilityCount}</td>
                         <td className="px-4 py-3 text-xs text-slate-600">
-                          Normal {row.eligibleNormalCandidateCount} | B2B {row.eligibleBackToBackEmergencyCandidateCount}
+                          Normal {row.eligibleNormalCandidateCount} | B2B{" "}
+                          {row.eligibleBackToBackEmergencyCandidateCount}
                         </td>
                         <td className="px-4 py-3">
-                          <Badge variant="outline" className="border-slate-200 bg-white text-slate-700">{row.reasonCategory}</Badge>
+                          <Badge variant="outline" className="border-slate-200 bg-white text-slate-700">
+                            {row.reasonCategory}
+                          </Badge>
                           {row.renderedCellIsBlank && row.allocationRecordExists && (
-                            <div className="mt-1 text-xs font-medium text-rose-700">Rendered blank despite allocation</div>
+                            <div className="mt-1 text-xs font-medium text-rose-700">
+                              Rendered blank despite allocation
+                            </div>
                           )}
                         </td>
                         <td className="px-4 py-3 text-xs text-slate-600">
@@ -1856,7 +2126,7 @@ export function AdminSurveyDetail() {
             </div>
           )}
         </TabsContent>
-	      </Tabs>
+      </Tabs>
 
       <Dialog
         open={selectedResponse !== null}
@@ -1930,9 +2200,7 @@ export function AdminSurveyDetail() {
                     variant="outline"
                     onClick={saveSelectedRespondentDetails}
                     disabled={
-                      updateRespondentMutation.isPending ||
-                      !selectedName.trim() ||
-                      isEmailLike(selectedPreferredName)
+                      updateRespondentMutation.isPending || !selectedName.trim() || isEmailLike(selectedPreferredName)
                     }
                   >
                     {updateRespondentMutation.isPending ? "Saving..." : "Save Details"}
@@ -1944,7 +2212,8 @@ export function AdminSurveyDetail() {
                 <strong>{editedSelectedHours}</strong>
               </p>
               <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
-                Checked shifts are this respondent&apos;s saved availability. Click any row to add or remove shifts, then save. If their <strong>Use</strong> box stays checked, allocation will use this saved set directly.
+                Checked shifts are this respondent&apos;s saved availability. Click any row to add or remove shifts,
+                then save. If their <strong>Use</strong> box stays checked, allocation will use this saved set directly.
               </div>
               <div className="grid gap-3 rounded-lg border border-slate-200 p-4 sm:grid-cols-2">
                 <label className="flex items-center gap-3 text-sm text-slate-700">
@@ -1983,14 +2252,14 @@ export function AdminSurveyDetail() {
                     {selectedHasAfpCap && (
                       <label className="flex items-center gap-2 text-sm text-slate-700">
                         Cap
-                      <Input
-                        type="number"
-                        min={0}
-                        step={0.5}
-                        value={selectedAfpHoursCap}
-                        onChange={(event) => setSelectedAfpHoursCap(Math.max(0, Number(event.target.value || 0)))}
-                        className="h-8 w-20 rounded-md"
-                      />
+                        <Input
+                          type="number"
+                          min={0}
+                          step={0.5}
+                          value={selectedAfpHoursCap}
+                          onChange={(event) => setSelectedAfpHoursCap(Math.max(0, Number(event.target.value || 0)))}
+                          className="h-8 w-20 rounded-md"
+                        />
                         hours for this survey
                       </label>
                     )}
@@ -1999,28 +2268,34 @@ export function AdminSurveyDetail() {
               </div>
               <div className="max-h-72 overflow-auto rounded-lg border border-slate-200 p-3">
                 <div className="flex justify-end gap-2 pb-3 mb-3 border-b border-slate-200">
-                  <Button type="button" variant="ghost" size="sm" onClick={() => setSelectedShiftIds(new Set((survey.shifts || []).map((shift) => shift.id)))}>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setSelectedShiftIds(new Set((survey.shifts || []).map((shift) => shift.id)))}
+                  >
                     Select all
                   </Button>
                   <Button type="button" variant="ghost" size="sm" onClick={() => setSelectedShiftIds(new Set())}>
                     Clear all
                   </Button>
                 </div>
-                {(survey.shifts || [])
-                  .map((shift) => (
-                    <button
-                      key={shift.id}
-                      type="button"
-                      onClick={() => toggleSelectedShift(shift.id)}
-                      className={clsx(
-                        "w-full text-sm py-2 px-2 border-b last:border-0 rounded-md flex items-center gap-3 text-left transition-colors",
-                        selectedShiftIds.has(shift.id) ? "bg-primary/10" : "hover:bg-slate-50"
-                      )}
-                    >
-                      <Checkbox checked={selectedShiftIds.has(shift.id)} className="pointer-events-none" />
-                      <span>{formatShiftDisplay(shift)} ({shift.durationHours} hours)</span>
-                    </button>
-                  ))}
+                {(survey.shifts || []).map((shift) => (
+                  <button
+                    key={shift.id}
+                    type="button"
+                    onClick={() => toggleSelectedShift(shift.id)}
+                    className={clsx(
+                      "w-full text-sm py-2 px-2 border-b last:border-0 rounded-md flex items-center gap-3 text-left transition-colors",
+                      selectedShiftIds.has(shift.id) ? "bg-primary/10" : "hover:bg-slate-50",
+                    )}
+                  >
+                    <Checkbox checked={selectedShiftIds.has(shift.id)} className="pointer-events-none" />
+                    <span>
+                      {formatShiftDisplay(shift)} ({shift.durationHours} hours)
+                    </span>
+                  </button>
+                ))}
               </div>
               <div className="flex justify-end gap-2">
                 <Button
@@ -2043,11 +2318,7 @@ export function AdminSurveyDetail() {
                 <Button
                   variant="destructive"
                   onClick={async () => {
-                    if (
-                      !confirm(
-                        `Move ${displayRespondentName(selectedResponse)}'s response to Deleted?`,
-                      )
-                    ) {
+                    if (!confirm(`Move ${displayRespondentName(selectedResponse)}'s response to Deleted?`)) {
                       return;
                     }
                     try {
@@ -2079,9 +2350,7 @@ export function AdminSurveyDetail() {
         <DialogContent className="max-h-[86vh] max-w-4xl overflow-y-auto">
           <DialogHeader>
             <DialogTitle>
-              {respondentHistory
-                ? `${respondentHistory.respondent.name} - Front Desk History`
-                : "Respondent history"}
+              {respondentHistory ? `${respondentHistory.respondent.name} - Front Desk History` : "Respondent history"}
             </DialogTitle>
           </DialogHeader>
 
@@ -2112,18 +2381,22 @@ export function AdminSurveyDetail() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={adjustTarget !== null} onOpenChange={(open) => {
-        if (!open) {
-          setAdjustTarget(null);
-          setAdjustNoAvailabilityPlaceholder(false);
-        }
-      }}>
+      <Dialog
+        open={adjustTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setAdjustTarget(null);
+            setAdjustNoAvailabilityPlaceholder(false);
+          }
+        }}
+      >
         <DialogContent className="max-w-xl">
           <DialogHeader>
             <DialogTitle>Adjust Allocated Shifts</DialogTitle>
           </DialogHeader>
           <div className="space-y-4">
-            {allocations?.allocations.find((allocation) => allocation.respondentId === adjustTarget)?.category === "AFP" && (
+            {allocations?.allocations.find((allocation) => allocation.respondentId === adjustTarget)?.category ===
+              "AFP" && (
               <label className="flex items-start gap-2 rounded-lg border border-indigo-100 bg-indigo-50/60 p-3 text-sm">
                 <Checkbox
                   checked={adjustNoAvailabilityPlaceholder}
@@ -2132,7 +2405,8 @@ export function AdminSurveyDetail() {
                 <span>
                   Assign zero-availability AFP placeholder
                   <span className="block text-xs text-indigo-700">
-                    Use only for shifts where no one selected availability. Ordinary manual assignments still require selected availability.
+                    Use only for shifts where no one selected availability. Ordinary manual assignments still require
+                    selected availability.
                   </span>
                 </span>
               </label>
@@ -2188,6 +2462,6 @@ export function AdminSurveyDetail() {
           </div>
         </DialogContent>
       </Dialog>
-	    </AdminLayout>
-	  );
+    </AdminLayout>
+  );
 }
