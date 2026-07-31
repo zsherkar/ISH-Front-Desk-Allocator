@@ -401,6 +401,20 @@ export interface AllocationResult {
   unallocatedShiftIds: number[];
   blankShiftExplanations: BlankShiftExplanation[];
   allocationAudit: AllocationBlankAuditRow[];
+  /** @nullable */
+  createdSnapshotId?: number | null;
+  restoredSnapshotId?: number;
+  /** @nullable */
+  undoSnapshotId?: number | null;
+}
+
+export interface AllocationSnapshotSummary {
+  id: number;
+  surveyId: number;
+  label: string;
+  reason: string;
+  allocationCount: number;
+  createdAt: string;
 }
 
 export interface AdjustAllocationBody {
@@ -494,6 +508,14 @@ export interface AllocationDryRunAssignment {
   explanationCodes: string[];
 }
 
+export type AllocationDryRunResultOptimizationMethod =
+  (typeof AllocationDryRunResultOptimizationMethod)[keyof typeof AllocationDryRunResultOptimizationMethod];
+
+export const AllocationDryRunResultOptimizationMethod = {
+  global_milp: "global_milp",
+  greedy_fallback: "greedy_fallback",
+} as const;
+
 export type AllocationDryRunResultSettings = { [key: string]: unknown };
 
 export interface AllocationDryRunResult {
@@ -512,6 +534,10 @@ export interface AllocationDryRunResult {
   nonPenalizedGeneralRangeHours: number;
   fairnessRepairMoveCount: number;
   highStdDevReasonCodes: string[];
+  optimizationMethod: AllocationDryRunResultOptimizationMethod;
+  optimizerStatus: string;
+  optimalCoverageProven: boolean;
+  backToBackPairDays: number;
   backToBackEmergencyAssignments: number;
   afpCapOverflowAssignments: number;
   noAvailabilityAfpPlaceholderAssignments: number;
