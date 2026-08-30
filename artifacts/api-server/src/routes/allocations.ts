@@ -215,7 +215,15 @@ async function buildAllocationResult(surveyId: number) {
   const allocationsList = Array.from(respondentMap.values())
     .map((r) => {
       const totalHours = r.shiftIds.reduce((sum, id) => sum + (shiftMap.get(id)?.durationHours ?? 0), 0);
-      let afpNormalMinutes = 0;
+      const respondentSettings = respondentSettingsById.get(r.respondentId);
+      const capHours = respondentSettings?.afpHoursCap ?? 10;
+      const hasAfpCap = respondentSettings?.hasAfpCap ?? false;
+      let afpNormalMinutes = hasAfpCap
+        ? Array.from(r.manualShiftIds).reduce(
+            (sum, shiftId) => sum + hoursToMinutes(shiftMap.get(shiftId)?.durationHours ?? 0),
+            0,
+          )
+        : 0;
       const allocatedShifts = [...r.shiftIds]
         .sort((a, b) => {
           const shiftA = shiftMap.get(a)!;
@@ -228,9 +236,6 @@ async function buildAllocationResult(surveyId: number) {
           const hasBackToBackPair = r.shiftIds.some(
             (otherId) => otherId !== id && isBackToBack(shift, shiftMap.get(otherId)!),
           );
-          const respondentSettings = respondentSettingsById.get(r.respondentId);
-          const capHours = respondentSettings?.afpHoursCap ?? 10;
-          const hasAfpCap = respondentSettings?.hasAfpCap ?? false;
           let assignmentSource: AssignmentSource;
           if (r.manualShiftIds.has(id)) {
             assignmentSource = "manual";
@@ -243,7 +248,8 @@ async function buildAllocationResult(surveyId: number) {
           }
           if (
             hasAfpCap &&
-            (assignmentSource === "engine_normal" || assignmentSource === "engine_back_to_back_emergency")
+            assignmentSource !== "manual" &&
+            !isNoAvailabilityAfpPlaceholderSource(assignmentSource)
           ) {
             afpNormalMinutes += hoursToMinutes(shift.durationHours);
           }
@@ -1325,6 +1331,17 @@ router.get("/surveys/:id/allocation-stats", async (req, res): Promise<void> => {
   ).length;
   const illegalAssignmentsWithoutAvailability = assignmentsWithoutAvailability.length;
   const manualAssignmentCount = allAllocatedShifts.filter((shift) => shift.isManual).length;
+  const manualShiftIdsForStats = new Set(
+    allAllocatedShifts.filter((shift) => shift.isManual).map((shift) => shift.shiftId),
+  );
+  const manualMinutesByRespondentId = allAllocatedShifts.reduce((minutesByRespondentId, shift) => {
+    if (!shift.isManual) return minutesByRespondentId;
+    minutesByRespondentId.set(
+      shift.respondentId,
+      (minutesByRespondentId.get(shift.respondentId) ?? 0) + hoursToMinutes(shift.durationHours),
+    );
+    return minutesByRespondentId;
+  }, new Map<number, number>());
   const backToBackEmergencyCount = allAllocatedShifts.filter(
     (shift) => shift.assignmentSource === "engine_back_to_back_emergency",
   ).length;
@@ -1367,9 +1384,9 @@ router.get("/surveys/:id/allocation-stats", async (req, res): Promise<void> => {
   ).filter((response) => effectiveStatRespondentIds.has(response.respondentId));
   const penaltyByRespondentId = new Map<number, { hasPenalty: boolean; penaltyHours: number }>();
   const capacityByRespondentId = new Map<number, number>();
+  const afpNormalCandidateCapacityByRespondentId = new Map<number, number>();
   const hasAfpCapByRespondentId = new Map<number, boolean>();
   const afpCapByRespondentId = new Map<number, number>();
-  const availabilityByShiftId = new Map<number, number>();
   for (const response of responseSettings) {
     const current = penaltyByRespondentId.get(response.respondentId) ?? {
       hasPenalty: false,
@@ -1389,16 +1406,23 @@ router.get("/surveys/:id/allocation-stats", async (req, res): Promise<void> => {
       (capacityByRespondentId.get(response.respondentId) ?? 0) +
         hoursToMinutes(statShiftMap.get(response.shiftId)?.durationHours ?? 0),
     );
-    availabilityByShiftId.set(response.shiftId, (availabilityByShiftId.get(response.shiftId) ?? 0) + 1);
+    if (!manualShiftIdsForStats.has(response.shiftId)) {
+      afpNormalCandidateCapacityByRespondentId.set(
+        response.respondentId,
+        (afpNormalCandidateCapacityByRespondentId.get(response.respondentId) ?? 0) +
+          hoursToMinutes(statShiftMap.get(response.shiftId)?.durationHours ?? 0),
+      );
+    }
   }
 
-  const totalNormalAssignableMinutes = statShifts
-    .filter((shift) => (availabilityByShiftId.get(shift.id) ?? 0) > 0)
-    .reduce((sum, shift) => sum + hoursToMinutes(shift.durationHours), 0);
-  const intendedAfpNormalMinutes = Array.from(capacityByRespondentId.entries()).reduce(
-    (sum, [respondentId, capacity]) =>
-      hasAfpCapByRespondentId.get(respondentId)
-        ? sum + Math.min(capacity, hoursToMinutes(afpCapByRespondentId.get(respondentId) ?? 10))
+  const totalStaffedMinutes = allocations.reduce(
+    (sum, allocation) => sum + hoursToMinutes(allocation.totalHours),
+    0,
+  );
+  const actualCappedAfpMinutes = allocations.reduce(
+    (sum, allocation) =>
+      hasAfpCapByRespondentId.get(allocation.respondentId)
+        ? sum + hoursToMinutes(allocation.totalHours)
         : sum,
     0,
   );
@@ -1410,14 +1434,21 @@ router.get("/surveys/:id/allocation-stats", async (req, res): Promise<void> => {
         capacityMinutes,
         penaltyMinutes: hoursToMinutes(penaltyByRespondentId.get(respondentId)?.penaltyHours ?? 0),
       })),
-    Math.max(0, totalNormalAssignableMinutes - intendedAfpNormalMinutes),
+    Math.max(0, totalStaffedMinutes - actualCappedAfpMinutes),
   );
   const targetMinutesByRespondentId = new Map(
     targetResult.targets.map((target) => [target.respondentId, target.targetMinutes] as const),
   );
   for (const [respondentId, hasAfpCap] of hasAfpCapByRespondentId) {
     if (hasAfpCap) {
-      targetMinutesByRespondentId.set(respondentId, hoursToMinutes(afpCapByRespondentId.get(respondentId) ?? 10));
+      targetMinutesByRespondentId.set(
+        respondentId,
+        Math.min(
+          hoursToMinutes(afpCapByRespondentId.get(respondentId) ?? 10),
+          (manualMinutesByRespondentId.get(respondentId) ?? 0) +
+            (afpNormalCandidateCapacityByRespondentId.get(respondentId) ?? 0),
+        ),
+      );
     }
   }
 
@@ -1454,7 +1485,8 @@ router.get("/surveys/:id/allocation-stats", async (req, res): Promise<void> => {
         }, new Map<string, number>())
         .values(),
     ).filter((count) => count === 2).length;
-    const deviationFromTargetHours = hasAfpCap ? 0 : a.totalHours - targetHours;
+    const countedAfpHours = normalHours + afpCapOverflowHours + manualHours;
+    const deviationFromTargetHours = (hasAfpCap ? countedAfpHours : a.totalHours) - targetHours;
     return {
       respondentId: a.respondentId,
       name: a.name,

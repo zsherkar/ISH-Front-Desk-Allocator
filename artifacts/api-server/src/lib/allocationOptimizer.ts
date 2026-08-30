@@ -564,6 +564,20 @@ function buildOutput({
   }
 
   const normalAfpMinutesByRespondentId = new Map<number, number>();
+  for (const candidate of sortedCandidates) {
+    if (
+      !candidate.isManual ||
+      candidate.isNoAvailabilityPlaceholder ||
+      !candidate.respondent.hasAfpCap
+    ) {
+      continue;
+    }
+    normalAfpMinutesByRespondentId.set(
+      candidate.respondent.id,
+      (normalAfpMinutesByRespondentId.get(candidate.respondent.id) ?? 0) +
+        hoursToMinutes(candidate.shift.durationHours),
+    );
+  }
   const assignments: AllocationAssignment[] = sortedCandidates.map(
     (candidate) => {
       let source: AssignmentSource;
@@ -585,12 +599,12 @@ function buildOutput({
           source = pairedShiftIds.has(candidate.shift.id)
             ? "engine_back_to_back_emergency"
             : "engine_normal";
-          if (candidate.respondent.hasAfpCap) {
-            normalAfpMinutesByRespondentId.set(
-              candidate.respondent.id,
-              currentNormalMinutes + durationMinutes,
-            );
-          }
+        }
+        if (candidate.respondent.hasAfpCap) {
+          normalAfpMinutesByRespondentId.set(
+            candidate.respondent.id,
+            currentNormalMinutes + durationMinutes,
+          );
         }
       }
       return {
@@ -798,41 +812,101 @@ export async function runGlobalAllocation(
     const backToBackVariableKeys = addSameDayConstraints(builder, candidates);
 
     let hasCapOverflowVariables = false;
+    let hasAfpShortfallVariables = false;
+    const afpTargetMinutesByRespondentId = new Map<number, number>();
+    const afpMaxShortfallVariableKey = "afp:maxShortfall";
     for (const respondent of respondents.filter(
       (candidateRespondent) => candidateRespondent.hasAfpCap,
     )) {
       const capConstraintKey = `afpCap:${respondent.id}`;
+      const manualCandidates = candidates.filter(
+        (candidate) =>
+          candidate.respondent.id === respondent.id &&
+          candidate.isManual &&
+          !candidate.isNoAvailabilityPlaceholder,
+      );
       const normalCandidates = candidates.filter(
         (candidate) =>
           candidate.respondent.id === respondent.id &&
           !candidate.isManual &&
           !candidate.isNoAvailabilityPlaceholder,
       );
-      if (normalCandidates.length === 0) continue;
-      builder.constraints.set(capConstraintKey, {
-        max: hoursToMinutes(respondent.afpHoursCap),
-      });
-      for (const candidate of normalCandidates) {
+      const capMinutes = Math.max(0, hoursToMinutes(respondent.afpHoursCap));
+      const manualMinutes = manualCandidates.reduce(
+        (sum, candidate) => sum + hoursToMinutes(candidate.shift.durationHours),
+        0,
+      );
+      const normalCapacityMinutes = normalCandidates.reduce(
+        (sum, candidate) => sum + hoursToMinutes(candidate.shift.durationHours),
+        0,
+      );
+      const targetMinutes = Math.min(
+        capMinutes,
+        manualMinutes + normalCapacityMinutes,
+      );
+      afpTargetMinutesByRespondentId.set(respondent.id, targetMinutes);
+
+      if (normalCandidates.length > 0) {
+        builder.constraints.set(capConstraintKey, {
+          max: Math.max(0, capMinutes - Math.min(capMinutes, manualMinutes)),
+        });
+        for (const candidate of normalCandidates) {
+          addCoefficient(
+            builder,
+            candidate.variableKey,
+            capConstraintKey,
+            hoursToMinutes(candidate.shift.durationHours),
+          );
+        }
+        if (input.allowAfpOverCapForAvailableShifts) {
+          const overageVariableKey = `capOverage:${respondent.id}`;
+          addCoefficient(builder, overageVariableKey, capConstraintKey, -1);
+          addCoefficient(builder, overageVariableKey, "capOverflow", 1);
+          hasCapOverflowVariables = true;
+        }
+      }
+
+      if (targetMinutes > 0) {
+        const shortfallVariableKey = `afp:shortfall:${respondent.id}`;
+        const shortfallConstraintKey = `afpShortfall:${respondent.id}`;
+        const maxShortfallConstraintKey = `afpMaxShortfall:${respondent.id}`;
+        builder.constraints.set(shortfallConstraintKey, { min: targetMinutes });
+        builder.constraints.set(maxShortfallConstraintKey, { max: 0 });
+        for (const candidate of [...manualCandidates, ...normalCandidates]) {
+          addCoefficient(
+            builder,
+            candidate.variableKey,
+            shortfallConstraintKey,
+            hoursToMinutes(candidate.shift.durationHours),
+          );
+        }
         addCoefficient(
           builder,
-          candidate.variableKey,
-          capConstraintKey,
-          hoursToMinutes(candidate.shift.durationHours),
+          shortfallVariableKey,
+          shortfallConstraintKey,
+          1,
         );
-      }
-      if (input.allowAfpOverCapForAvailableShifts) {
-        const overageVariableKey = `capOverage:${respondent.id}`;
-        addCoefficient(builder, overageVariableKey, capConstraintKey, -1);
-        addCoefficient(builder, overageVariableKey, "capOverflow", 1);
-        hasCapOverflowVariables = true;
+        addCoefficient(
+          builder,
+          shortfallVariableKey,
+          maxShortfallConstraintKey,
+          1,
+        );
+        addCoefficient(
+          builder,
+          afpMaxShortfallVariableKey,
+          maxShortfallConstraintKey,
+          -1,
+        );
+        addCoefficient(builder, shortfallVariableKey, "afpTotalShortfall", 1);
+        hasAfpShortfallVariables = true;
       }
     }
+    if (hasAfpShortfallVariables) {
+      addCoefficient(builder, afpMaxShortfallVariableKey, "afpMaxShortfall", 1);
+    }
 
-    const coverageSolution = await solveStage(
-      builder,
-      "coverage",
-      "maximize",
-    );
+    const coverageSolution = await solveStage(builder, "coverage", "maximize");
     const bestCoverageResult = optimalResult(coverageSolution);
     if (bestCoverageResult === null) {
       return {
@@ -858,6 +932,7 @@ export async function runGlobalAllocation(
     const bestStaffedMinutes = Math.round(bestStaffedMinutesResult);
     builder.constraints.set("staffedMinutes", { equal: bestStaffedMinutes });
 
+    let prioritySolution = staffedMinutesSolution;
     if (hasCapOverflowVariables) {
       const capOverflowSolution = await solveStage(
         builder,
@@ -874,25 +949,84 @@ export async function runGlobalAllocation(
       builder.constraints.set("capOverflow", {
         max: Math.max(0, bestCapOverflow) + 1e-6,
       });
+      prioritySolution = capOverflowSolution;
     }
 
-    const intendedAfpNormalMinutes = respondents
-      .filter((respondent) => respondent.hasAfpCap)
-      .reduce((sum, respondent) => {
-        const availableCapacityMinutes = Array.from(
-          respondent.availableShiftIds,
-        ).reduce((capacity, shiftId) => {
-          const shift = shifts.find((entry) => entry.id === shiftId);
-          return capacity + hoursToMinutes(shift?.durationHours ?? 0);
-        }, 0);
-        return (
-          sum +
-          Math.min(
-            hoursToMinutes(respondent.afpHoursCap),
-            availableCapacityMinutes,
-          )
+    if (hasAfpShortfallVariables) {
+      const maxShortfallSolution = await solveStage(
+        builder,
+        "afpMaxShortfall",
+        "minimize",
+      );
+      const bestMaxShortfall = feasibleResult(maxShortfallSolution);
+      if (bestMaxShortfall === null) {
+        return {
+          ok: false,
+          reason: `afp_max_shortfall_${maxShortfallSolution.status}`,
+        };
+      }
+      if (maxShortfallSolution.status !== "optimal") {
+        boundedStages.push(`afp_max_shortfall_${maxShortfallSolution.status}`);
+      }
+      builder.constraints.set("afpMaxShortfall", {
+        max: Math.max(0, bestMaxShortfall) + 1e-6,
+      });
+      prioritySolution = maxShortfallSolution;
+
+      const totalShortfallSolution = await solveStage(
+        builder,
+        "afpTotalShortfall",
+        "minimize",
+      );
+      const bestTotalShortfall = feasibleResult(totalShortfallSolution);
+      if (bestTotalShortfall === null) {
+        return {
+          ok: false,
+          reason: `afp_total_shortfall_${totalShortfallSolution.status}`,
+        };
+      }
+      if (totalShortfallSolution.status !== "optimal") {
+        boundedStages.push(
+          `afp_total_shortfall_${totalShortfallSolution.status}`,
         );
-      }, 0);
+      }
+      builder.constraints.set("afpTotalShortfall", {
+        max: Math.max(0, bestTotalShortfall) + 1e-6,
+      });
+      prioritySolution = totalShortfallSolution;
+    }
+
+    if (backToBackVariableKeys.length > 0) {
+      const backToBackSolution = await solveStage(
+        builder,
+        "backToBack",
+        "minimize",
+      );
+      const bestBackToBack = feasibleResult(backToBackSolution);
+      if (bestBackToBack === null) {
+        return {
+          ok: false,
+          reason: `back_to_back_${backToBackSolution.status}`,
+        };
+      }
+      if (backToBackSolution.status !== "optimal") {
+        boundedStages.push(`back_to_back_${backToBackSolution.status}`);
+      }
+      builder.constraints.set("backToBack", {
+        max: Math.max(0, bestBackToBack) + 1e-6,
+      });
+      prioritySolution = backToBackSolution;
+    }
+
+    const prioritySelectedKeys = selectedVariableKeys(prioritySolution);
+    const actualCappedAfpMinutes = candidates.reduce(
+      (sum, candidate) =>
+        candidate.respondent.hasAfpCap &&
+        prioritySelectedKeys.has(candidate.variableKey)
+          ? sum + hoursToMinutes(candidate.shift.durationHours)
+          : sum,
+      0,
+    );
     const equalPoolRespondents = respondents.filter(
       (respondent) => !respondent.hasAfpCap,
     );
@@ -910,7 +1044,7 @@ export async function runGlobalAllocation(
           0,
         ),
       })),
-      Math.max(0, bestStaffedMinutes - intendedAfpNormalMinutes),
+      Math.max(0, bestStaffedMinutes - actualCappedAfpMinutes),
     );
     const targetMinutesByRespondentId = new Map<number, number>(
       targetResult.targets.map((target) => [
@@ -923,11 +1057,11 @@ export async function runGlobalAllocation(
     )) {
       targetMinutesByRespondentId.set(
         respondent.id,
-        hoursToMinutes(respondent.afpHoursCap),
+        afpTargetMinutesByRespondentId.get(respondent.id) ?? 0,
       );
     }
 
-    let finalSolution = staffedMinutesSolution;
+    let finalSolution = prioritySolution;
     if (equalPoolRespondents.length > 0) {
       const maxDeviationVariableKey = "fairness:maxDeviation";
       addCoefficient(builder, maxDeviationVariableKey, "maxDeviation", 1);
@@ -1021,6 +1155,7 @@ export async function runGlobalAllocation(
       builder.constraints.set("maxDeviation", {
         max: Math.max(0, bestMaxDeviation) + 1e-6,
       });
+      finalSolution = maxDeviationSolution;
 
       const totalDeviationSolution = await solveStage(
         builder,
@@ -1041,24 +1176,6 @@ export async function runGlobalAllocation(
       } else {
         boundedStages.push(
           `total_deviation_${totalDeviationSolution.status}_no_incumbent`,
-        );
-      }
-    }
-
-    if (backToBackVariableKeys.length > 0) {
-      const backToBackSolution = await solveStage(
-        builder,
-        "backToBack",
-        "minimize",
-      );
-      if (feasibleResult(backToBackSolution) !== null) {
-        if (backToBackSolution.status !== "optimal") {
-          boundedStages.push(`back_to_back_${backToBackSolution.status}`);
-        }
-        finalSolution = backToBackSolution;
-      } else {
-        boundedStages.push(
-          `back_to_back_${backToBackSolution.status}_no_incumbent`,
         );
       }
     }
