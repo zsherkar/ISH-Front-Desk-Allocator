@@ -442,7 +442,7 @@ test("avoids an AFP back-to-back when another person can cover the adjacent shif
     respondents: [
       respondent(1, "AFP", [firstShift.id, secondShift.id], {
         category: "AFP",
-        afpHoursCap: 4,
+        afpHoursCap: 2,
       }),
       respondent(2, "General", [secondShift.id]),
     ],
@@ -614,7 +614,7 @@ test("capped AFP respondents reach their caps before General staff receive the r
   assert.equal(output.fairnessDiagnostics.optimizationMethod, "global_milp");
 });
 
-test("global optimizer balances within the no-back-to-back optimum", async () => {
+test("global optimizer stays within the fairness band before minimizing doubles", async () => {
   const shifts = [
     shift(61, "09:00", "11:00", 2),
     shift(62, "11:00", "13:00", 2),
@@ -646,7 +646,7 @@ test("global optimizer balances within the no-back-to-back optimum", async () =>
   assert.equal(output.fairnessDiagnostics.nonPenalizedGeneralStdDevHours, 2);
 });
 
-test("avoidable back-to-backs outrank a strike-adjusted target gap", async () => {
+test("strike-adjusted fairness preserves the target gap before minimizing back-to-backs", async () => {
   const sharedShifts = [
     shift(101, "09:00", "11:00", 2),
     shift(102, "11:00", "13:00", 2),
@@ -686,10 +686,10 @@ test("avoidable back-to-backs outrank a strike-adjusted target gap", async () =>
   const hoursByName = new Map(
     output.plans.map((plan) => [plan.name, plan.totalHours]),
   );
-  assert.equal(output.fairnessDiagnostics.backToBackPairDays, 0);
-  assert.equal(hoursByName.get("Unpenalized"), 8);
-  assert.equal(hoursByName.get("Penalized"), 16);
-  assert.equal(output.fairnessDiagnostics.maxDeviationFromTargetHours, 8);
+  assert.equal(output.fairnessDiagnostics.backToBackPairDays, 4);
+  assert.equal(hoursByName.get("Unpenalized"), 16);
+  assert.equal(hoursByName.get("Penalized"), 8);
+  assert.equal(output.fairnessDiagnostics.maxDeviationFromTargetHours, 0);
   assert.equal(output.fairnessDiagnostics.optimizationMethod, "global_milp");
 });
 
@@ -870,7 +870,7 @@ test("fairness capacity respects the feasible same-day maximum instead of raw av
   );
 });
 
-test("unrelated AFP workload does not change the no-back-to-back General split", async () => {
+test("an unrelated long AFP shift does not loosen the General fairness envelope", async () => {
   const sharedShifts = [
     shift(131, "09:00", "11:00", 2),
     shift(132, "11:00", "13:00", 2),
@@ -909,14 +909,14 @@ test("unrelated AFP workload does not change the no-back-to-back General split",
   );
   assert.equal(output.assignments.length, 13);
   assert.deepEqual(output.unallocatedShiftIds, []);
-  assert.equal(output.fairnessDiagnostics.backToBackPairDays, 0);
-  assert.equal(hoursByName.get("Concentrated General"), 6);
-  assert.equal(hoursByName.get("Broad General"), 18);
+  assert.equal(output.fairnessDiagnostics.backToBackPairDays, 1);
+  assert.equal(hoursByName.get("Concentrated General"), 8);
+  assert.equal(hoursByName.get("Broad General"), 16);
   assert.equal(hoursByName.get("AFP"), 8);
-  assert.equal(output.fairnessDiagnostics.maxDeviationFromTargetHours, 6);
+  assert.equal(output.fairnessDiagnostics.maxDeviationFromTargetHours, 4);
 });
 
-test("a low-availability General is fulfilled without changing the no-back-to-back ordinary split", async () => {
+test("a low-availability General with a long shift does not loosen everyone else's envelope", async () => {
   const sharedShifts = [
     shift(211, "09:00", "11:00", 2),
     shift(212, "11:00", "13:00", 2),
@@ -950,14 +950,14 @@ test("a low-availability General is fulfilled without changing the no-back-to-ba
   const hoursByName = new Map(
     output.plans.map((plan) => [plan.name, plan.totalHours]),
   );
-  assert.equal(output.fairnessDiagnostics.backToBackPairDays, 0);
-  assert.equal(hoursByName.get("Concentrated"), 6);
-  assert.equal(hoursByName.get("Broad"), 18);
+  assert.equal(output.fairnessDiagnostics.backToBackPairDays, 1);
+  assert.equal(hoursByName.get("Concentrated"), 8);
+  assert.equal(hoursByName.get("Broad"), 16);
   assert.equal(hoursByName.get("Low Availability Outlier"), 8);
-  assert.equal(output.fairnessDiagnostics.maxDeviationFromTargetHours, 6);
+  assert.equal(output.fairnessDiagnostics.maxDeviationFromTargetHours, 4);
 });
 
-test("a fixed manual outlier does not change the no-back-to-back ordinary split", async () => {
+test("a fixed manual outlier does not loosen fairness for other General respondents", async () => {
   const sharedShifts = [
     shift(151, "09:00", "11:00", 2),
     shift(152, "11:00", "13:00", 2),
@@ -997,12 +997,12 @@ test("a fixed manual outlier does not change the no-back-to-back ordinary split"
   );
   assert.equal(output.assignments.length, 15);
   assert.deepEqual(output.unallocatedShiftIds, []);
-  assert.equal(output.fairnessDiagnostics.backToBackPairDays, 0);
-  assert.equal(hoursByName.get("Concentrated"), 6);
-  assert.equal(hoursByName.get("Broad"), 18);
+  assert.equal(output.fairnessDiagnostics.backToBackPairDays, 1);
+  assert.equal(hoursByName.get("Concentrated"), 8);
+  assert.equal(hoursByName.get("Broad"), 16);
   assert.equal(hoursByName.get("Manual"), 24);
   assert.equal(
-    Math.abs(output.fairnessDiagnostics.maxDeviationFromTargetHours - 6) < 1e-9,
+    Math.abs(output.fairnessDiagnostics.maxDeviationFromTargetHours - 4) < 1e-9,
     true,
   );
 });

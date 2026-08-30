@@ -961,28 +961,6 @@ export async function runGlobalAllocation(
       prioritySolution = capOverflowSolution;
     }
 
-    if (backToBackVariableKeys.length > 0) {
-      const backToBackSolution = await solveStage(
-        builder,
-        "backToBack",
-        "minimize",
-      );
-      const bestBackToBack = feasibleResult(backToBackSolution);
-      if (bestBackToBack === null) {
-        return {
-          ok: false,
-          reason: `back_to_back_${backToBackSolution.status}`,
-        };
-      }
-      if (backToBackSolution.status !== "optimal") {
-        boundedStages.push(`back_to_back_${backToBackSolution.status}`);
-      }
-      builder.constraints.set("backToBack", {
-        max: Math.max(0, bestBackToBack) + 1e-6,
-      });
-      prioritySolution = backToBackSolution;
-    }
-
     if (hasAfpShortfallVariables) {
       const maxShortfallSolution = await solveStage(
         builder,
@@ -1584,6 +1562,28 @@ export async function runGlobalAllocation(
           ) + 1e-6,
       });
       finalSolution = comparableOverageSolution;
+    }
+
+    if (backToBackVariableKeys.length > 0) {
+      const backToBackSolution = await solveStage(
+        builder,
+        "backToBack",
+        "minimize",
+      );
+      const bestBackToBack = feasibleResult(backToBackSolution);
+      if (bestBackToBack === null) {
+        return {
+          ok: false,
+          reason: `back_to_back_${backToBackSolution.status}`,
+        };
+      }
+      if (backToBackSolution.status !== "optimal") {
+        boundedStages.push(`back_to_back_${backToBackSolution.status}`);
+      }
+      builder.constraints.set("backToBack", {
+        max: Math.max(0, bestBackToBack) + 1e-6,
+      });
+      finalSolution = backToBackSolution;
     }
 
     if (hasComparableFairnessVariables) {

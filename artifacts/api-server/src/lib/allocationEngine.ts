@@ -699,7 +699,6 @@ function runGreedyAllocation(input: PureAllocationInput): PureAllocationOutput {
     const minuteEpsilon = 0.5;
     const ratioEpsilon = 1e-9;
     const comparisons: Array<[number, number, number]> = [
-      [next.backToBackPairDays, current.backToBackPairDays, 0],
       [next.maxAbsTargetDeviationMinutes, current.maxAbsTargetDeviationMinutes, minuteEpsilon],
       [next.maxStrikeOverageMinutes, current.maxStrikeOverageMinutes, minuteEpsilon],
       [next.totalStrikeOverageMinutes, current.totalStrikeOverageMinutes, minuteEpsilon],
@@ -709,6 +708,7 @@ function runGreedyAllocation(input: PureAllocationInput): PureAllocationOutput {
       [next.comparableMaxAbsTargetDeviationMinutes, current.comparableMaxAbsTargetDeviationMinutes, minuteEpsilon],
       [next.comparableMaxShortfallMinutes, current.comparableMaxShortfallMinutes, minuteEpsilon],
       [next.comparableMaxOverageMinutes, current.comparableMaxOverageMinutes, minuteEpsilon],
+      [next.backToBackPairDays, current.backToBackPairDays, 0],
       [next.comparableTotalAbsDeviationMinutes, current.comparableTotalAbsDeviationMinutes, minuteEpsilon],
       [next.totalAbsTargetDeviationMinutes, current.totalAbsTargetDeviationMinutes, minuteEpsilon],
       [next.nonPenalizedStdDevMinutes, current.nonPenalizedStdDevMinutes, minuteEpsilon],
