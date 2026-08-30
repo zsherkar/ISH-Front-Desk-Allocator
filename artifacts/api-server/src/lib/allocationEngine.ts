@@ -708,12 +708,12 @@ function runGreedyAllocation(input: PureAllocationInput): PureAllocationOutput {
       [next.comparableMaxAbsTargetDeviationMinutes, current.comparableMaxAbsTargetDeviationMinutes, minuteEpsilon],
       [next.comparableMaxShortfallMinutes, current.comparableMaxShortfallMinutes, minuteEpsilon],
       [next.comparableMaxOverageMinutes, current.comparableMaxOverageMinutes, minuteEpsilon],
-      [next.backToBackPairDays, current.backToBackPairDays, 0],
+      [next.nonPenalizedRangeMinutes, current.nonPenalizedRangeMinutes, minuteEpsilon],
       [next.comparableTotalAbsDeviationMinutes, current.comparableTotalAbsDeviationMinutes, minuteEpsilon],
+      [next.backToBackPairDays, current.backToBackPairDays, 0],
       [next.totalAbsTargetDeviationMinutes, current.totalAbsTargetDeviationMinutes, minuteEpsilon],
       [next.nonPenalizedStdDevMinutes, current.nonPenalizedStdDevMinutes, minuteEpsilon],
       [next.sumSquaredDeviationMinutes, current.sumSquaredDeviationMinutes, minuteEpsilon],
-      [next.nonPenalizedRangeMinutes, current.nonPenalizedRangeMinutes, minuteEpsilon],
     ];
     for (const [a, b, epsilon] of comparisons) {
       if (Math.abs(a - b) <= epsilon) continue;

@@ -1090,7 +1090,9 @@ export async function runGlobalAllocation(
     const comparableMaxDeviationVariableKey = "fairness:comparableMaxDeviation";
     const comparableMaxShortfallVariableKey = "fairness:comparableMaxShortfall";
     const comparableMaxOverageVariableKey = "fairness:comparableMaxOverage";
+    const comparableRangeVariableKey = "fairness:comparableRange";
     let hasComparableFairnessVariables = false;
+    const hasComparableRangeVariables = comparablePoolRespondents.length > 1;
     if (equalPoolRespondents.length > 0) {
       const maxDeviationVariableKey = "fairness:maxDeviation";
       addCoefficient(builder, maxDeviationVariableKey, "maxDeviation", 1);
@@ -1249,6 +1251,51 @@ export async function runGlobalAllocation(
           builder,
           comparableMaxOverageVariableKey,
           "comparableMaxOverage",
+          1,
+        );
+      }
+      if (hasComparableRangeVariables) {
+        // Target deviations can be indifferent to transfers when every
+        // comparable respondent is below an elevated redistributed target.
+        // These ordered pair constraints make the next objective the actual
+        // max-minus-min assigned-hour range within the comparable pool.
+        for (const higher of comparablePoolRespondents) {
+          for (const lower of comparablePoolRespondents) {
+            if (higher.id === lower.id) continue;
+            const rangeConstraintKey = `comparableRange:${higher.id}:${lower.id}`;
+            builder.constraints.set(rangeConstraintKey, { max: 0 });
+            for (const candidate of candidates.filter(
+              (entry) => entry.respondent.id === higher.id,
+            )) {
+              addCoefficient(
+                builder,
+                candidate.variableKey,
+                rangeConstraintKey,
+                hoursToMinutes(candidate.shift.durationHours),
+              );
+            }
+            for (const candidate of candidates.filter(
+              (entry) => entry.respondent.id === lower.id,
+            )) {
+              addCoefficient(
+                builder,
+                candidate.variableKey,
+                rangeConstraintKey,
+                -hoursToMinutes(candidate.shift.durationHours),
+              );
+            }
+            addCoefficient(
+              builder,
+              comparableRangeVariableKey,
+              rangeConstraintKey,
+              -1,
+            );
+          }
+        }
+        addCoefficient(
+          builder,
+          comparableRangeVariableKey,
+          "comparableRange",
           1,
         );
       }
@@ -1564,26 +1611,23 @@ export async function runGlobalAllocation(
       finalSolution = comparableOverageSolution;
     }
 
-    if (backToBackVariableKeys.length > 0) {
-      const backToBackSolution = await solveStage(
+    if (hasComparableRangeVariables) {
+      const comparableRangeSolution = await solveStage(
         builder,
-        "backToBack",
+        "comparableRange",
         "minimize",
       );
-      const bestBackToBack = feasibleResult(backToBackSolution);
-      if (bestBackToBack === null) {
+      const bestComparableRange = optimalResult(comparableRangeSolution);
+      if (bestComparableRange === null) {
         return {
           ok: false,
-          reason: `back_to_back_${backToBackSolution.status}`,
+          reason: `comparable_range_${comparableRangeSolution.status}`,
         };
       }
-      if (backToBackSolution.status !== "optimal") {
-        boundedStages.push(`back_to_back_${backToBackSolution.status}`);
-      }
-      builder.constraints.set("backToBack", {
-        max: Math.max(0, bestBackToBack) + 1e-6,
+      builder.constraints.set("comparableRange", {
+        max: Math.max(0, bestComparableRange) + 1e-6,
       });
-      finalSolution = backToBackSolution;
+      finalSolution = comparableRangeSolution;
     }
 
     if (hasComparableFairnessVariables) {
@@ -1610,6 +1654,28 @@ export async function runGlobalAllocation(
           `comparable_total_deviation_${comparableTotalDeviationSolution.status}_no_incumbent`,
         );
       }
+    }
+
+    if (backToBackVariableKeys.length > 0) {
+      const backToBackSolution = await solveStage(
+        builder,
+        "backToBack",
+        "minimize",
+      );
+      const bestBackToBack = feasibleResult(backToBackSolution);
+      if (bestBackToBack === null) {
+        return {
+          ok: false,
+          reason: `back_to_back_${backToBackSolution.status}`,
+        };
+      }
+      if (backToBackSolution.status !== "optimal") {
+        boundedStages.push(`back_to_back_${backToBackSolution.status}`);
+      }
+      builder.constraints.set("backToBack", {
+        max: Math.max(0, bestBackToBack) + 1e-6,
+      });
+      finalSolution = backToBackSolution;
     }
 
     if (equalPoolRespondents.length > 0) {

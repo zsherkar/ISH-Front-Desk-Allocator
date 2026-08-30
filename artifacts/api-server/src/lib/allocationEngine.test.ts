@@ -633,17 +633,17 @@ test("global optimizer stays within the fairness band before minimizing doubles"
   assert.equal(output.assignments.length, 4);
   assert.deepEqual(output.unallocatedShiftIds, []);
   assert.equal(output.fairnessDiagnostics.optimizationMethod, "global_milp");
-  assert.equal(output.fairnessDiagnostics.backToBackPairDays, 0);
+  assert.equal(output.fairnessDiagnostics.backToBackPairDays, 1);
   assert.deepEqual(
     output.plans.map((plan) => plan.totalHours).sort((a, b) => a - b),
-    [2, 6],
+    [4, 4],
   );
-  assert.equal(output.fairnessDiagnostics.maxDeviationFromTargetHours, 2);
+  assert.equal(output.fairnessDiagnostics.maxDeviationFromTargetHours, 0);
   assert.equal(
     output.fairnessDiagnostics.sumSquaredDeviationFromTargetHours,
-    8,
+    0,
   );
-  assert.equal(output.fairnessDiagnostics.nonPenalizedGeneralStdDevHours, 2);
+  assert.equal(output.fairnessDiagnostics.nonPenalizedGeneralStdDevHours, 0);
 });
 
 test("strike-adjusted fairness preserves the target gap before minimizing back-to-backs", async () => {
@@ -724,7 +724,7 @@ test("strike hours are redistributed equally across the non-penalized General po
   assert.equal(output.fairnessDiagnostics.optimizationMethod, "global_milp");
 });
 
-test("a forced penalized outlier cannot loosen ordinary people beyond the fairness band", async () => {
+test("a forced penalized outlier leaves the ordinary pool at its narrowest feasible range", async () => {
   const shifts = [
     { ...shift(301, "09:00", "11:00", 2), date: "2026-09-01" },
     { ...shift(302, "11:00", "13:00", 2), date: "2026-09-01" },
@@ -753,18 +753,20 @@ test("a forced penalized outlier cannot loosen ordinary people beyond the fairne
   assert.deepEqual(
     new Map(output.plans.map((plan) => [plan.name, plan.totalHours])),
     new Map([
-      ["Ordinary A", 8],
-      ["Ordinary B", 4],
+      ["Ordinary A", 6],
+      ["Ordinary B", 6],
       ["Penalized", 4],
     ]),
   );
-  assert.equal(output.fairnessDiagnostics.backToBackPairDays, 0);
-  assert.equal(output.fairnessDiagnostics.nonPenalizedGeneralStdDevHours, 2);
+  assert.equal(output.fairnessDiagnostics.backToBackPairDays, 1);
+  assert.equal(output.fairnessDiagnostics.nonPenalizedGeneralStdDevHours, 0);
+  assert.equal(output.fairnessDiagnostics.nonPenalizedGeneralRangeHours, 0);
   assert.equal(output.fairnessDiagnostics.maxDeviationFromTargetHours, 4);
   assert.equal(
     output.fairnessDiagnostics.sumSquaredDeviationFromTargetHours,
-    32,
+    24,
   );
+  assert.equal(output.fairnessDiagnostics.optimizationMethod, "global_milp");
 });
 
 test("a forced penalized outlier cannot starve a feasible low-availability respondent", async () => {
@@ -909,11 +911,11 @@ test("an unrelated long AFP shift does not loosen the General fairness envelope"
   );
   assert.equal(output.assignments.length, 13);
   assert.deepEqual(output.unallocatedShiftIds, []);
-  assert.equal(output.fairnessDiagnostics.backToBackPairDays, 1);
-  assert.equal(hoursByName.get("Concentrated General"), 8);
-  assert.equal(hoursByName.get("Broad General"), 16);
+  assert.equal(output.fairnessDiagnostics.backToBackPairDays, 3);
+  assert.equal(hoursByName.get("Concentrated General"), 12);
+  assert.equal(hoursByName.get("Broad General"), 12);
   assert.equal(hoursByName.get("AFP"), 8);
-  assert.equal(output.fairnessDiagnostics.maxDeviationFromTargetHours, 4);
+  assert.equal(output.fairnessDiagnostics.maxDeviationFromTargetHours, 0);
 });
 
 test("a low-availability General with a long shift does not loosen everyone else's envelope", async () => {
@@ -950,11 +952,11 @@ test("a low-availability General with a long shift does not loosen everyone else
   const hoursByName = new Map(
     output.plans.map((plan) => [plan.name, plan.totalHours]),
   );
-  assert.equal(output.fairnessDiagnostics.backToBackPairDays, 1);
-  assert.equal(hoursByName.get("Concentrated"), 8);
-  assert.equal(hoursByName.get("Broad"), 16);
+  assert.equal(output.fairnessDiagnostics.backToBackPairDays, 3);
+  assert.equal(hoursByName.get("Concentrated"), 12);
+  assert.equal(hoursByName.get("Broad"), 12);
   assert.equal(hoursByName.get("Low Availability Outlier"), 8);
-  assert.equal(output.fairnessDiagnostics.maxDeviationFromTargetHours, 4);
+  assert.equal(output.fairnessDiagnostics.maxDeviationFromTargetHours, 0);
 });
 
 test("a fixed manual outlier does not loosen fairness for other General respondents", async () => {
@@ -997,12 +999,12 @@ test("a fixed manual outlier does not loosen fairness for other General responde
   );
   assert.equal(output.assignments.length, 15);
   assert.deepEqual(output.unallocatedShiftIds, []);
-  assert.equal(output.fairnessDiagnostics.backToBackPairDays, 1);
-  assert.equal(hoursByName.get("Concentrated"), 8);
-  assert.equal(hoursByName.get("Broad"), 16);
+  assert.equal(output.fairnessDiagnostics.backToBackPairDays, 3);
+  assert.equal(hoursByName.get("Concentrated"), 12);
+  assert.equal(hoursByName.get("Broad"), 12);
   assert.equal(hoursByName.get("Manual"), 24);
   assert.equal(
-    Math.abs(output.fairnessDiagnostics.maxDeviationFromTargetHours - 4) < 1e-9,
+    Math.abs(output.fairnessDiagnostics.maxDeviationFromTargetHours) < 1e-9,
     true,
   );
 });
