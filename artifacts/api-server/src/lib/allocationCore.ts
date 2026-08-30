@@ -67,6 +67,7 @@ export interface PenaltyTargetInput {
   respondentId: number;
   penaltyMinutes: number;
   capacityMinutes: number;
+  minimumMinutes?: number;
 }
 
 export interface PenaltyTargetOutput extends PenaltyTargetInput {
@@ -150,6 +151,56 @@ export function sameDayAllocationTier(
   }
 
   return 2;
+}
+
+export function maxFeasibleShiftCapacityMinutes(
+  shifts: CoreShift[],
+  mandatoryShiftIds: ReadonlySet<number> = new Set<number>(),
+): number {
+  const shiftsByDate = new Map<string, CoreShift[]>();
+  for (const shift of shifts) {
+    shiftsByDate.set(shift.date, [...(shiftsByDate.get(shift.date) ?? []), shift]);
+  }
+
+  return Array.from(shiftsByDate.values()).reduce((totalCapacityMinutes, dayShifts) => {
+    const mandatoryShifts = dayShifts.filter((shift) => mandatoryShiftIds.has(shift.id));
+    const optionalShifts = dayShifts.filter((shift) => !mandatoryShiftIds.has(shift.id));
+    const mandatoryMinutes = mandatoryShifts.reduce(
+      (sum, shift) => sum + hoursToMinutes(shift.durationHours),
+      0,
+    );
+
+    if (mandatoryShifts.length >= 2) return totalCapacityMinutes + mandatoryMinutes;
+
+    if (mandatoryShifts.length === 1) {
+      const mandatoryShift = mandatoryShifts[0];
+      const bestAdjacentOptionalMinutes = optionalShifts.reduce(
+        (bestMinutes, shift) =>
+          isBackToBack(mandatoryShift, shift)
+            ? Math.max(bestMinutes, hoursToMinutes(shift.durationHours))
+            : bestMinutes,
+        0,
+      );
+      return totalCapacityMinutes + mandatoryMinutes + bestAdjacentOptionalMinutes;
+    }
+
+    let bestDayMinutes = optionalShifts.reduce(
+      (bestMinutes, shift) => Math.max(bestMinutes, hoursToMinutes(shift.durationHours)),
+      0,
+    );
+    for (let firstIndex = 0; firstIndex < optionalShifts.length; firstIndex += 1) {
+      for (let secondIndex = firstIndex + 1; secondIndex < optionalShifts.length; secondIndex += 1) {
+        const first = optionalShifts[firstIndex];
+        const second = optionalShifts[secondIndex];
+        if (!isBackToBack(first, second)) continue;
+        bestDayMinutes = Math.max(
+          bestDayMinutes,
+          hoursToMinutes(first.durationHours) + hoursToMinutes(second.durationHours),
+        );
+      }
+    }
+    return totalCapacityMinutes + bestDayMinutes;
+  }, 0);
 }
 
 export function canAssignShiftToRespondent({
@@ -266,18 +317,33 @@ export function solveNonAfpPenaltyTargets(
     respondentId: person.respondentId,
     penaltyMinutes: Math.max(0, person.penaltyMinutes),
     capacityMinutes: Math.max(0, person.capacityMinutes),
+    minimumMinutes: Math.min(
+      Math.max(0, person.capacityMinutes),
+      Math.max(0, person.minimumMinutes ?? 0),
+    ),
   }));
   const totalCapacity = normalizedPeople.reduce((sum, person) => sum + person.capacityMinutes, 0);
-  const feasibleTotalMinutes = Math.min(requestedTotalMinutes, totalCapacity);
-  const capacityShortfallMinutes = requestedTotalMinutes - feasibleTotalMinutes;
+  const totalMinimum = normalizedPeople.reduce(
+    (sum, person) => sum + person.minimumMinutes,
+    0,
+  );
+  const feasibleTotalMinutes = Math.min(
+    Math.max(requestedTotalMinutes, totalMinimum),
+    totalCapacity,
+  );
+  const capacityShortfallMinutes = Math.max(
+    0,
+    requestedTotalMinutes - totalCapacity,
+  );
 
   if (normalizedPeople.length === 0 || feasibleTotalMinutes === 0) {
     return {
       baselineMinutes: 0,
       targets: normalizedPeople.map((person) => ({
         ...person,
-        targetMinutes: 0,
-        targetTruncatedAtZero: person.penaltyMinutes > 0,
+        targetMinutes: person.minimumMinutes,
+        targetTruncatedAtZero:
+          person.penaltyMinutes > 0 && person.minimumMinutes === 0,
         capacityLimited: person.capacityMinutes === 0,
       })),
       requestedTotalMinutes,
@@ -293,7 +359,10 @@ export function solveNonAfpPenaltyTargets(
 
   const assignedAt = (baseline: number) =>
     normalizedPeople.reduce((sum, person) => {
-      const rawTarget = Math.max(0, baseline - person.penaltyMinutes);
+      const rawTarget = Math.max(
+        person.minimumMinutes,
+        baseline - person.penaltyMinutes,
+      );
       return sum + Math.min(person.capacityMinutes, rawTarget);
     }, 0);
 
@@ -308,12 +377,19 @@ export function solveNonAfpPenaltyTargets(
 
   const baselineMinutes = high;
   const targets = normalizedPeople.map((person) => {
-    const rawTarget = Math.max(0, baselineMinutes - person.penaltyMinutes);
+    const penaltyAdjustedTarget = Math.max(
+      0,
+      baselineMinutes - person.penaltyMinutes,
+    );
+    const rawTarget = Math.max(person.minimumMinutes, penaltyAdjustedTarget);
     const targetMinutes = Math.min(person.capacityMinutes, rawTarget);
     return {
       ...person,
       targetMinutes,
-      targetTruncatedAtZero: baselineMinutes <= person.penaltyMinutes && person.penaltyMinutes > 0,
+      targetTruncatedAtZero:
+        penaltyAdjustedTarget === 0 &&
+        person.penaltyMinutes > 0 &&
+        person.minimumMinutes === 0,
       capacityLimited: person.capacityMinutes < rawTarget,
     };
   });

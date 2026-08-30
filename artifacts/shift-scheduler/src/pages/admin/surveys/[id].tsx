@@ -1369,13 +1369,13 @@ export function AdminSurveyDetail() {
                       <p className="font-bold">{dryRunAllocationMutation.data.illegalAssignmentsWithoutAvailability}</p>
                     </div>
                     <div>
-                      <p className="text-xs text-slate-500">Equal-pool mean</p>
+                      <p className="text-xs text-slate-500">Comparable-pool mean</p>
                       <p className="font-bold">
                         {dryRunAllocationMutation.data.nonPenalizedGeneralMeanHours.toFixed(1)} hrs
                       </p>
                     </div>
                     <div>
-                      <p className="text-xs text-slate-500">Equal-pool std dev</p>
+                      <p className="text-xs text-slate-500">Comparable-pool std dev</p>
                       <p className="font-bold">
                         {dryRunAllocationMutation.data.nonPenalizedGeneralStdDevHours.toFixed(2)} hrs
                       </p>
@@ -1585,13 +1585,13 @@ export function AdminSurveyDetail() {
                       <p className="font-bold">{dryRunAllocationMutation.data.illegalAssignmentsWithoutAvailability}</p>
                     </div>
                     <div>
-                      <p className="text-xs text-indigo-700/80">Equal-pool mean</p>
+                      <p className="text-xs text-indigo-700/80">Comparable-pool mean</p>
                       <p className="font-bold">
                         {dryRunAllocationMutation.data.nonPenalizedGeneralMeanHours.toFixed(1)} hrs
                       </p>
                     </div>
                     <div>
-                      <p className="text-xs text-indigo-700/80">Equal-pool std dev</p>
+                      <p className="text-xs text-indigo-700/80">Comparable-pool std dev</p>
                       <p className="font-bold">
                         {dryRunAllocationMutation.data.nonPenalizedGeneralStdDevHours.toFixed(2)} hrs
                       </p>
@@ -1833,9 +1833,10 @@ export function AdminSurveyDetail() {
                   <div>
                     <h3 className="font-bold text-slate-900">Fairness Diagnostics</h3>
                     <p className="mt-1 text-sm text-slate-600">
-                      Equal-allocation, non-penalized standard deviation target:{" "}
+                      Comparable General pool standard-deviation target:{" "}
                       {allocStats.fairnessTargetStdDevHours.toFixed(1)} hrs; warning:{" "}
-                      {allocStats.fairnessWarningStdDevHours.toFixed(1)} hrs.
+                      {allocStats.fairnessWarningStdDevHours.toFixed(1)} hrs. Strike and availability-limited
+                      respondents are excluded from this raw-spread comparison but remain covered by target residuals.
                     </p>
                     {allocStats.fairnessHighStdDevReason && (
                       <p className="mt-2 text-sm font-medium text-amber-800">{allocStats.fairnessHighStdDevReason}</p>
@@ -1855,15 +1856,15 @@ export function AdminSurveyDetail() {
                 </div>
                 <div className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-4">
                   <div>
-                    <p className="text-xs uppercase tracking-wide text-slate-500">Mean</p>
+                    <p className="text-xs uppercase tracking-wide text-slate-500">Comparable Mean</p>
                     <p className="text-lg font-bold">{allocStats.nonPenalizedGeneralMeanHours.toFixed(1)} hrs</p>
                   </div>
                   <div>
-                    <p className="text-xs uppercase tracking-wide text-slate-500">Std Dev</p>
+                    <p className="text-xs uppercase tracking-wide text-slate-500">Comparable Std Dev</p>
                     <p className="text-lg font-bold">{allocStats.nonPenalizedGeneralStdDevHours.toFixed(2)} hrs</p>
                   </div>
                   <div>
-                    <p className="text-xs uppercase tracking-wide text-slate-500">Range</p>
+                    <p className="text-xs uppercase tracking-wide text-slate-500">Comparable Range</p>
                     <p className="text-lg font-bold">{allocStats.nonPenalizedGeneralRangeHours.toFixed(1)} hrs</p>
                   </div>
                   <div>
@@ -1890,13 +1891,13 @@ export function AdminSurveyDetail() {
               </div>
               <div className="grid gap-4 xl:grid-cols-3">
                 <AllocationSummaryPanel
-                  title="Equal Allocation, No Strike"
-                  note="This mean is the baseline used to check strike gaps."
+                  title="Comparable General Pool"
+                  note="Excludes strike and availability-limited respondents; every General respondent remains in target-residual checks."
                   summary={generalAllocationSummary}
                 />
                 <AllocationSummaryPanel
                   title="Equal Allocation, Strike"
-                  note="Each person here should sit roughly their strike hours below the non-penalized mean."
+                  note="Each person is checked against the virtual availability-adjusted baseline used to derive strike targets."
                   summary={penalizedAllocationSummary}
                 />
                 <AllocationSummaryPanel
@@ -1910,7 +1911,7 @@ export function AdminSurveyDetail() {
                   <div className="p-4 border-b border-slate-100 bg-slate-50/50">
                     <h3 className="font-bold text-slate-900">Strike Gap Check</h3>
                     <p className="mt-1 text-sm text-slate-500">
-                      Equal-allocation non-penalized mean: {allocStats.nonPenalizedGeneralMeanHours.toFixed(1)} hrs
+                      Actual gap uses the virtual availability-adjusted baseline that generated each strike target.
                     </p>
                   </div>
                   <table className="w-full text-sm text-left">

@@ -343,6 +343,45 @@ test("fairness_high_sd_regression keeps balanced feasible non-penalized allocati
   );
 });
 
+test("global diagnostics exclude capacity-limited people from equal-pool spread", async () => {
+  const generalShifts = Array.from({ length: 6 }, (_, index) => ({
+    ...shift(201 + index, "09:00", "11:00", 2),
+    date: `2026-05-${String(4 + index).padStart(2, "0")}`,
+  }));
+  const manualAfpShift = {
+    ...shift(207, "09:00", "17:00", 8),
+    date: "2026-05-10",
+  };
+
+  const output = await runPureAllocation({
+    shifts: [...generalShifts, manualAfpShift],
+    respondents: [
+      respondent(1, "Low Availability", [generalShifts[0].id]),
+      respondent(
+        2,
+        "Broad Availability",
+        generalShifts.map((entry) => entry.id),
+      ),
+      respondent(3, "Manual AFP", [], {
+        category: "AFP",
+        afpHoursCap: 8,
+      }),
+    ],
+    manualAssignments: [{ respondentId: 3, shiftId: manualAfpShift.id }],
+  });
+
+  assert.equal(output.fairnessDiagnostics.nonPenalizedGeneralMeanHours, 10);
+  assert.equal(output.fairnessDiagnostics.nonPenalizedGeneralMedianHours, 10);
+  assert.equal(output.fairnessDiagnostics.nonPenalizedGeneralMinHours, 10);
+  assert.equal(output.fairnessDiagnostics.nonPenalizedGeneralMaxHours, 10);
+  assert.equal(output.fairnessDiagnostics.nonPenalizedGeneralRangeHours, 0);
+  assert.equal(output.fairnessDiagnostics.nonPenalizedGeneralStdDevHours, 0);
+  assert.equal(output.fairnessDiagnostics.maxDeviationFromMeanHours, 0);
+  assert.equal(output.fairnessDiagnostics.maxDeviationFromTargetHours, 0);
+  assert.equal(output.fairnessDiagnostics.repairAttempted, false);
+  assert.deepEqual(output.fairnessDiagnostics.highStdDevReasonCodes, []);
+});
+
 test("coverage preserved during fairness repair", async () => {
   const output = await runPureAllocation({
     shifts: [
@@ -437,6 +476,55 @@ test("global optimizer includes forced AFP placeholder hours in the fair monthly
   assert.equal(output.fairnessDiagnostics.nonPenalizedGeneralStdDevHours, 0);
 });
 
+test("AFP placeholders count as actual workload without inflating availability capacity", async () => {
+  const unavailable = shift(231, "09:00", "11:00", 2);
+  const availableShifts = Array.from({ length: 3 }, (_, index) => ({
+    ...shift(232 + index, "09:00", "11:00", 2),
+    date: `2026-05-${String(5 + index).padStart(2, "0")}`,
+  }));
+
+  const input = {
+    shifts: [unavailable, ...availableShifts],
+    allowNoAvailabilityAfpPlaceholders: true,
+    respondents: [
+      respondent(1, "Placeholder AFP", [], {
+        category: "AFP",
+        hasAfpCap: false,
+        allowNoAvailabilityFallback: true,
+      }),
+      respondent(
+        2,
+        "Available General",
+        availableShifts.map((entry) => entry.id),
+      ),
+    ],
+  } satisfies Parameters<typeof runPureAllocation>[0];
+  const output = await runPureAllocation(input);
+
+  assert.equal(
+    assignmentFor(output, unavailable.id)?.source,
+    "admin_no_availability_afp_placeholder",
+  );
+  assert.deepEqual(
+    output.plans.map((plan) => plan.totalHours).sort((a, b) => a - b),
+    [2, 6],
+  );
+  assert.equal(output.fairnessDiagnostics.maxDeviationFromTargetHours, 2);
+
+  const fallbackOutput = await runPureAllocation({
+    ...input,
+    allowExtremeNoAvailabilityAfpStacking: true,
+  });
+  assert.equal(
+    fallbackOutput.fairnessDiagnostics.optimizationMethod,
+    "greedy_fallback",
+  );
+  assert.equal(
+    fallbackOutput.fairnessDiagnostics.maxDeviationFromTargetHours,
+    2,
+  );
+});
+
 test("global optimizer distributes feasible hours among capped AFP respondents", async () => {
   const shifts = [
     shift(51, "09:00", "11:00", 2),
@@ -470,7 +558,7 @@ test("global optimizer distributes feasible hours among capped AFP respondents",
   );
 });
 
-test("global optimizer avoids back-to-back shifts before optimizing general fairness", async () => {
+test("global optimizer accepts a shift-granularity fairness envelope to avoid a double", async () => {
   const shifts = [
     shift(61, "09:00", "11:00", 2),
     shift(62, "11:00", "13:00", 2),
@@ -500,6 +588,394 @@ test("global optimizer avoids back-to-back shifts before optimizing general fair
     8,
   );
   assert.equal(output.fairnessDiagnostics.nonPenalizedGeneralStdDevHours, 2);
+});
+
+test("strike-adjusted fairness preserves the target gap before minimizing back-to-backs", async () => {
+  const sharedShifts = [
+    shift(101, "09:00", "11:00", 2),
+    shift(102, "11:00", "13:00", 2),
+    { ...shift(103, "09:00", "11:00", 2), date: "2026-05-05" },
+    { ...shift(104, "11:00", "13:00", 2), date: "2026-05-05" },
+    { ...shift(105, "09:00", "11:00", 2), date: "2026-05-06" },
+    { ...shift(106, "11:00", "13:00", 2), date: "2026-05-06" },
+    { ...shift(107, "09:00", "11:00", 2), date: "2026-05-07" },
+    { ...shift(108, "11:00", "13:00", 2), date: "2026-05-07" },
+  ];
+  const penalizedOnlyShifts = [
+    { ...shift(109, "09:00", "11:00", 2), date: "2026-05-08" },
+    { ...shift(110, "09:00", "11:00", 2), date: "2026-05-09" },
+    { ...shift(111, "09:00", "11:00", 2), date: "2026-05-10" },
+    { ...shift(112, "09:00", "11:00", 2), date: "2026-05-11" },
+  ];
+  const sharedShiftIds = sharedShifts.map((entry) => entry.id);
+
+  const output = await runPureAllocation({
+    shifts: [...sharedShifts, ...penalizedOnlyShifts],
+    respondents: [
+      respondent(1, "Unpenalized", sharedShiftIds),
+      respondent(
+        2,
+        "Penalized",
+        [...sharedShiftIds, ...penalizedOnlyShifts.map((entry) => entry.id)],
+        { hasPenalty: true, penaltyHours: 4 },
+      ),
+    ],
+  });
+
+  assert.equal(output.assignments.length, 12);
+  assert.deepEqual(output.unallocatedShiftIds, []);
+  const hoursByName = new Map(
+    output.plans.map((plan) => [plan.name, plan.totalHours]),
+  );
+  assert.equal(output.fairnessDiagnostics.backToBackPairDays, 3);
+  assert.equal(hoursByName.get("Unpenalized"), 14);
+  assert.equal(hoursByName.get("Penalized"), 10);
+  assert.equal(output.fairnessDiagnostics.maxDeviationFromTargetHours, 0);
+});
+
+test("fairness capacity respects the feasible same-day maximum instead of raw availability", async () => {
+  const sameDayNonAdjacent = [
+    shift(121, "09:00", "11:00", 2),
+    shift(122, "13:00", "15:00", 2),
+    shift(123, "17:00", "19:00", 2),
+  ];
+  const nextDay = {
+    ...shift(124, "09:00", "11:00", 2),
+    date: "2026-05-05",
+  };
+
+  const output = await runPureAllocation({
+    shifts: [...sameDayNonAdjacent, nextDay],
+    respondents: [
+      respondent(
+        1,
+        "Concentrated Availability",
+        sameDayNonAdjacent.map((entry) => entry.id),
+      ),
+      respondent(2, "Broad Availability", [121, 122, 123, 124]),
+    ],
+  });
+
+  assert.equal(output.assignments.length, 3);
+  assert.equal(output.unallocatedShiftIds.length, 1);
+  assert.deepEqual(
+    output.plans.map((plan) => plan.totalHours).sort((a, b) => a - b),
+    [2, 4],
+  );
+  assert.equal(
+    output.fairnessDiagnostics.maxDeviationFromTargetHours < 1e-9,
+    true,
+  );
+});
+
+test("an unrelated long AFP shift does not loosen the General fairness envelope", async () => {
+  const sharedShifts = [
+    shift(131, "09:00", "11:00", 2),
+    shift(132, "11:00", "13:00", 2),
+    { ...shift(133, "09:00", "11:00", 2), date: "2026-05-05" },
+    { ...shift(134, "11:00", "13:00", 2), date: "2026-05-05" },
+    { ...shift(135, "09:00", "11:00", 2), date: "2026-05-06" },
+    { ...shift(136, "11:00", "13:00", 2), date: "2026-05-06" },
+  ];
+  const broadOnlyShifts = Array.from({ length: 6 }, (_, index) => ({
+    ...shift(137 + index, "09:00", "11:00", 2),
+    date: `2026-05-${String(7 + index).padStart(2, "0")}`,
+  }));
+  const afpOnlyShift = {
+    ...shift(143, "09:00", "17:00", 8),
+    date: "2026-05-13",
+  };
+  const sharedShiftIds = sharedShifts.map((entry) => entry.id);
+
+  const output = await runPureAllocation({
+    shifts: [...sharedShifts, ...broadOnlyShifts, afpOnlyShift],
+    respondents: [
+      respondent(1, "Concentrated General", sharedShiftIds),
+      respondent(2, "Broad General", [
+        ...sharedShiftIds,
+        ...broadOnlyShifts.map((entry) => entry.id),
+      ]),
+      respondent(3, "AFP", [afpOnlyShift.id], {
+        category: "AFP",
+        afpHoursCap: 8,
+      }),
+    ],
+  });
+
+  const hoursByName = new Map(
+    output.plans.map((plan) => [plan.name, plan.totalHours]),
+  );
+  assert.equal(output.assignments.length, 13);
+  assert.deepEqual(output.unallocatedShiftIds, []);
+  assert.equal(output.fairnessDiagnostics.backToBackPairDays, 1);
+  assert.equal(hoursByName.get("Concentrated General"), 8);
+  assert.equal(hoursByName.get("Broad General"), 16);
+  assert.equal(hoursByName.get("AFP"), 8);
+  assert.equal(output.fairnessDiagnostics.maxDeviationFromTargetHours, 4);
+});
+
+test("a low-availability General with a long shift does not loosen everyone else's envelope", async () => {
+  const sharedShifts = [
+    shift(211, "09:00", "11:00", 2),
+    shift(212, "11:00", "13:00", 2),
+    { ...shift(213, "09:00", "11:00", 2), date: "2026-05-05" },
+    { ...shift(214, "11:00", "13:00", 2), date: "2026-05-05" },
+    { ...shift(215, "09:00", "11:00", 2), date: "2026-05-06" },
+    { ...shift(216, "11:00", "13:00", 2), date: "2026-05-06" },
+  ];
+  const broadOnlyShifts = Array.from({ length: 6 }, (_, index) => ({
+    ...shift(217 + index, "09:00", "11:00", 2),
+    date: `2026-05-${String(7 + index).padStart(2, "0")}`,
+  }));
+  const outlierShift = {
+    ...shift(223, "09:00", "17:00", 8),
+    date: "2026-05-13",
+  };
+  const sharedShiftIds = sharedShifts.map((entry) => entry.id);
+
+  const output = await runPureAllocation({
+    shifts: [...sharedShifts, ...broadOnlyShifts, outlierShift],
+    respondents: [
+      respondent(1, "Concentrated", sharedShiftIds),
+      respondent(2, "Broad", [
+        ...sharedShiftIds,
+        ...broadOnlyShifts.map((entry) => entry.id),
+      ]),
+      respondent(3, "Low Availability Outlier", [outlierShift.id]),
+    ],
+  });
+
+  const hoursByName = new Map(
+    output.plans.map((plan) => [plan.name, plan.totalHours]),
+  );
+  assert.equal(output.fairnessDiagnostics.backToBackPairDays, 1);
+  assert.equal(hoursByName.get("Concentrated"), 8);
+  assert.equal(hoursByName.get("Broad"), 16);
+  assert.equal(hoursByName.get("Low Availability Outlier"), 8);
+  assert.equal(output.fairnessDiagnostics.maxDeviationFromTargetHours, 4);
+});
+
+test("a fixed manual outlier does not loosen fairness for other General respondents", async () => {
+  const sharedShifts = [
+    shift(151, "09:00", "11:00", 2),
+    shift(152, "11:00", "13:00", 2),
+    { ...shift(153, "09:00", "11:00", 2), date: "2026-05-05" },
+    { ...shift(154, "11:00", "13:00", 2), date: "2026-05-05" },
+    { ...shift(155, "09:00", "11:00", 2), date: "2026-05-06" },
+    { ...shift(156, "11:00", "13:00", 2), date: "2026-05-06" },
+  ];
+  const broadOnlyShifts = Array.from({ length: 6 }, (_, index) => ({
+    ...shift(157 + index, "09:00", "11:00", 2),
+    date: `2026-05-${String(7 + index).padStart(2, "0")}`,
+  }));
+  const manualShifts = Array.from({ length: 3 }, (_, index) => ({
+    ...shift(163 + index, "09:00", "17:00", 8),
+    date: `2026-05-${String(13 + index).padStart(2, "0")}`,
+  }));
+  const sharedShiftIds = sharedShifts.map((entry) => entry.id);
+
+  const output = await runPureAllocation({
+    shifts: [...sharedShifts, ...broadOnlyShifts, ...manualShifts],
+    respondents: [
+      respondent(1, "Concentrated", sharedShiftIds),
+      respondent(2, "Broad", [
+        ...sharedShiftIds,
+        ...broadOnlyShifts.map((entry) => entry.id),
+      ]),
+      respondent(3, "Manual", []),
+    ],
+    manualAssignments: manualShifts.map((entry) => ({
+      respondentId: 3,
+      shiftId: entry.id,
+    })),
+  });
+
+  const hoursByName = new Map(
+    output.plans.map((plan) => [plan.name, plan.totalHours]),
+  );
+  assert.equal(output.assignments.length, 15);
+  assert.deepEqual(output.unallocatedShiftIds, []);
+  assert.equal(output.fairnessDiagnostics.backToBackPairDays, 1);
+  assert.equal(hoursByName.get("Concentrated"), 8);
+  assert.equal(hoursByName.get("Broad"), 16);
+  assert.equal(hoursByName.get("Manual"), 24);
+  assert.equal(
+    Math.abs(output.fairnessDiagnostics.maxDeviationFromTargetHours - 4) < 1e-9,
+    true,
+  );
+});
+
+test("greedy fallback uses per-date feasible capacity for General targets", async () => {
+  const sameDayNonAdjacent = [
+    shift(181, "09:00", "11:00", 2),
+    shift(182, "13:00", "15:00", 2),
+    shift(183, "17:00", "19:00", 2),
+  ];
+  const nextDay = {
+    ...shift(184, "09:00", "11:00", 2),
+    date: "2026-05-05",
+  };
+
+  const output = await runPureAllocation({
+    shifts: [...sameDayNonAdjacent, nextDay],
+    respondents: [
+      respondent(
+        1,
+        "Concentrated Availability",
+        sameDayNonAdjacent.map((entry) => entry.id),
+      ),
+      respondent(2, "Broad Availability", [181, 182, 183, 184]),
+    ],
+    allowExtremeNoAvailabilityAfpStacking: true,
+  });
+
+  assert.equal(output.fairnessDiagnostics.optimizationMethod, "greedy_fallback");
+  assert.equal(output.assignments.length, 3);
+  assert.deepEqual(
+    output.plans.map((plan) => plan.totalHours).sort((a, b) => a - b),
+    [2, 4],
+  );
+  assert.equal(
+    output.fairnessDiagnostics.maxDeviationFromTargetHours < 1e-9,
+    true,
+  );
+});
+
+test("greedy fallback absorbs fixed General manual hours into its targets", async () => {
+  const sharedShifts = [
+    shift(191, "09:00", "11:00", 2),
+    { ...shift(192, "09:00", "11:00", 2), date: "2026-05-05" },
+  ];
+  const manualShifts = Array.from({ length: 3 }, (_, index) => ({
+    ...shift(193 + index, "09:00", "17:00", 8),
+    date: `2026-05-${String(6 + index).padStart(2, "0")}`,
+  }));
+
+  const output = await runPureAllocation({
+    shifts: [...sharedShifts, ...manualShifts],
+    respondents: [
+      respondent(1, "Alice", sharedShifts.map((entry) => entry.id)),
+      respondent(2, "Bob", sharedShifts.map((entry) => entry.id)),
+      respondent(3, "Manual", []),
+    ],
+    manualAssignments: manualShifts.map((entry) => ({
+      respondentId: 3,
+      shiftId: entry.id,
+    })),
+    allowExtremeNoAvailabilityAfpStacking: true,
+  });
+
+  assert.equal(output.fairnessDiagnostics.optimizationMethod, "greedy_fallback");
+  assert.equal(output.assignments.length, 5);
+  assert.deepEqual(
+    output.plans.map((plan) => plan.totalHours).sort((a, b) => a - b),
+    [2, 2, 24],
+  );
+  assert.equal(
+    output.fairnessDiagnostics.maxDeviationFromTargetHours < 1e-9,
+    true,
+  );
+});
+
+test("greedy fallback derives General targets from actual overlapping AFP allocation", async () => {
+  const afpShift = shift(241, "09:00", "11:00", 2);
+  const generalShifts = [
+    { ...shift(242, "09:00", "11:00", 2), date: "2026-05-05" },
+    { ...shift(243, "09:00", "11:00", 2), date: "2026-05-06" },
+  ];
+
+  const output = await runPureAllocation({
+    shifts: [afpShift, ...generalShifts],
+    respondents: [
+      respondent(1, "AFP One", [afpShift.id], { category: "AFP" }),
+      respondent(2, "AFP Two", [afpShift.id], { category: "AFP" }),
+      respondent(
+        3,
+        "General One",
+        generalShifts.map((entry) => entry.id),
+      ),
+      respondent(
+        4,
+        "General Two",
+        generalShifts.map((entry) => entry.id),
+      ),
+    ],
+    allowExtremeNoAvailabilityAfpStacking: true,
+  });
+
+  const hoursByName = new Map(
+    output.plans.map((plan) => [plan.name, plan.totalHours]),
+  );
+  assert.equal(output.fairnessDiagnostics.optimizationMethod, "greedy_fallback");
+  assert.equal(hoursByName.get("General One"), 2);
+  assert.equal(hoursByName.get("General Two"), 2);
+  assert.equal(
+    output.fairnessDiagnostics.maxDeviationFromTargetHours < 1e-9,
+    true,
+  );
+});
+
+test("greedy fallback repairs normal allocation after adding AFP placeholders", async () => {
+  const placeholderShifts = [
+    shift(261, "09:00", "11:00", 2),
+    { ...shift(262, "09:00", "11:00", 2), date: "2026-05-05" },
+  ];
+  const normalShift = {
+    ...shift(263, "09:00", "11:00", 2),
+    date: "2026-05-06",
+  };
+
+  const output = await runPureAllocation({
+    shifts: [...placeholderShifts, normalShift],
+    respondents: [
+      respondent(1, "Alice AFP", [normalShift.id], {
+        category: "AFP",
+        hasAfpCap: false,
+        allowNoAvailabilityFallback: true,
+      }),
+      respondent(2, "Bob General", [normalShift.id]),
+    ],
+    allowNoAvailabilityAfpPlaceholders: true,
+    allowExtremeNoAvailabilityAfpStacking: true,
+  });
+
+  assert.equal(output.fairnessDiagnostics.optimizationMethod, "greedy_fallback");
+  assert.equal(assignmentFor(output, normalShift.id)?.respondentId, 2);
+  assert.deepEqual(
+    output.plans.map((plan) => plan.totalHours).sort((a, b) => a - b),
+    [2, 4],
+  );
+});
+
+test("greedy fallback excludes capacity-limited people from equal-pool spread", async () => {
+  const shifts = Array.from({ length: 6 }, (_, index) => ({
+    ...shift(251 + index, "09:00", "11:00", 2),
+    date: `2026-05-${String(4 + index).padStart(2, "0")}`,
+  }));
+
+  const output = await runPureAllocation({
+    shifts,
+    respondents: [
+      respondent(1, "Low Availability", [shifts[0].id]),
+      respondent(
+        2,
+        "Broad Availability",
+        shifts.map((entry) => entry.id),
+      ),
+    ],
+    allowExtremeNoAvailabilityAfpStacking: true,
+  });
+
+  assert.equal(output.fairnessDiagnostics.optimizationMethod, "greedy_fallback");
+  assert.equal(output.fairnessDiagnostics.nonPenalizedGeneralMeanHours, 10);
+  assert.equal(output.fairnessDiagnostics.nonPenalizedGeneralMedianHours, 10);
+  assert.equal(output.fairnessDiagnostics.nonPenalizedGeneralMinHours, 10);
+  assert.equal(output.fairnessDiagnostics.nonPenalizedGeneralMaxHours, 10);
+  assert.equal(output.fairnessDiagnostics.nonPenalizedGeneralRangeHours, 0);
+  assert.equal(output.fairnessDiagnostics.nonPenalizedGeneralStdDevHours, 0);
+  assert.equal(output.fairnessDiagnostics.maxDeviationFromMeanHours, 0);
+  assert.equal(output.fairnessDiagnostics.maxDeviationFromTargetHours, 0);
+  assert.deepEqual(output.fairnessDiagnostics.highStdDevReasonCodes, []);
 });
 
 test("coverage remains more important than avoiding a forced back-to-back pair", async () => {

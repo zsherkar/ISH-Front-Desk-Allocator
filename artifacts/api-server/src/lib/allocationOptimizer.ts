@@ -4,6 +4,7 @@ import {
   deriveShiftSlotIndexes,
   hoursToMinutes,
   isBackToBack,
+  maxFeasibleShiftCapacityMinutes,
   minutesToHours,
   solveNonAfpPenaltyTargets,
   stableShiftKey,
@@ -64,6 +65,7 @@ const SOLVER_OPTIONS = {
   random_seed: 0,
   threads: 1,
 } as const;
+const MIN_GENERAL_FAIRNESS_ENVELOPE_HOURS = 4;
 const highsPromise = loadHighs();
 
 function normalizeShifts(shifts: AllocationShiftInput[]): OptimizerShift[] {
@@ -397,11 +399,23 @@ function addSameDayConstraints(
   return backToBackVariableKeys;
 }
 
+function maxFeasibleCapacityMinutes(candidates: AssignmentCandidate[]): number {
+  return maxFeasibleShiftCapacityMinutes(
+    candidates.map((candidate) => candidate.shift),
+    new Set(
+      candidates
+        .filter((candidate) => candidate.isManual)
+        .map((candidate) => candidate.shift.id),
+    ),
+  );
+}
+
 function buildDiagnostics({
   respondents,
   assignments,
   shifts,
   targetMinutesByRespondentId,
+  capacityLimitedRespondentIds,
   targetCapacityShortfallMinutes,
   optimizerStatus,
 }: {
@@ -409,6 +423,7 @@ function buildDiagnostics({
   assignments: AllocationAssignment[];
   shifts: OptimizerShift[];
   targetMinutesByRespondentId: Map<number, number>;
+  capacityLimitedRespondentIds: Set<number>;
   targetCapacityShortfallMinutes: number;
   optimizerStatus: string;
 }): FairnessDiagnostics {
@@ -426,7 +441,9 @@ function buildDiagnostics({
 
   const equalPool = respondents.filter((respondent) => !respondent.hasAfpCap);
   const nonPenalized = equalPool.filter(
-    (respondent) => !respondent.hasPenalty || respondent.penaltyHours <= 0,
+    (respondent) =>
+      (!respondent.hasPenalty || respondent.penaltyHours <= 0) &&
+      !capacityLimitedRespondentIds.has(respondent.id),
   );
   const nonPenalizedMinutes = nonPenalized.map(
     (respondent) => actualMinutesByRespondentId.get(respondent.id) ?? 0,
@@ -476,15 +493,8 @@ function buildDiagnostics({
   const highStdDevReasonCodes =
     nonPenalizedStdDevMinutes > hoursToMinutes(targetStdDevHours)
       ? [
-          "HIGH_STD_DEV_NO_LEGAL_REPAIR",
-          "INSUFFICIENT_OVERLAPPING_AVAILABILITY",
-          "SAME_DAY_CONSTRAINT",
-          "SHIFT_GRANULARITY_LIMIT",
           ...(targetCapacityShortfallMinutes > 0
             ? ["NON_AFP_CAPACITY_SHORTFALL"]
-            : []),
-          ...(assignments.some((assignment) => assignment.source === "manual")
-            ? ["MANUAL_LOCK_CONSTRAINT"]
             : []),
         ]
       : [];
@@ -506,8 +516,7 @@ function buildDiagnostics({
     ),
     targetStdDevHours,
     warningStdDevHours,
-    repairAttempted:
-      nonPenalizedStdDevMinutes > hoursToMinutes(targetStdDevHours),
+    repairAttempted: false,
     successfulRepairMoves: 0,
     assignedShiftCountBeforeRepair: assignments.length,
     assignedShiftCountAfterRepair: assignments.length,
@@ -524,6 +533,7 @@ function buildOutput({
   shifts,
   selectedCandidates,
   targetMinutesByRespondentId,
+  capacityLimitedRespondentIds,
   targetCapacityShortfallMinutes,
   allowAfpOverCapForAvailableShifts,
   optimizerStatus,
@@ -532,6 +542,7 @@ function buildOutput({
   shifts: OptimizerShift[];
   selectedCandidates: AssignmentCandidate[];
   targetMinutesByRespondentId: Map<number, number>;
+  capacityLimitedRespondentIds: Set<number>;
   targetCapacityShortfallMinutes: number;
   allowAfpOverCapForAvailableShifts: boolean;
   optimizerStatus: string;
@@ -673,6 +684,7 @@ function buildOutput({
       assignments,
       shifts,
       targetMinutesByRespondentId,
+      capacityLimitedRespondentIds,
       targetCapacityShortfallMinutes,
       optimizerStatus,
     }),
@@ -836,14 +848,11 @@ export async function runGlobalAllocation(
         (sum, candidate) => sum + hoursToMinutes(candidate.shift.durationHours),
         0,
       );
-      const normalCapacityMinutes = normalCandidates.reduce(
-        (sum, candidate) => sum + hoursToMinutes(candidate.shift.durationHours),
-        0,
-      );
-      const targetMinutes = Math.min(
-        capMinutes,
-        manualMinutes + normalCapacityMinutes,
-      );
+      const feasibleCapacityMinutes = maxFeasibleCapacityMinutes([
+        ...manualCandidates,
+        ...normalCandidates,
+      ]);
+      const targetMinutes = Math.min(capMinutes, feasibleCapacityMinutes);
       afpTargetMinutesByRespondentId.set(respondent.id, targetMinutes);
 
       if (normalCandidates.length > 0) {
@@ -996,28 +1005,6 @@ export async function runGlobalAllocation(
       prioritySolution = totalShortfallSolution;
     }
 
-    if (backToBackVariableKeys.length > 0) {
-      const backToBackSolution = await solveStage(
-        builder,
-        "backToBack",
-        "minimize",
-      );
-      const bestBackToBack = feasibleResult(backToBackSolution);
-      if (bestBackToBack === null) {
-        return {
-          ok: false,
-          reason: `back_to_back_${backToBackSolution.status}`,
-        };
-      }
-      if (backToBackSolution.status !== "optimal") {
-        boundedStages.push(`back_to_back_${backToBackSolution.status}`);
-      }
-      builder.constraints.set("backToBack", {
-        max: Math.max(0, bestBackToBack) + 1e-6,
-      });
-      prioritySolution = backToBackSolution;
-    }
-
     const prioritySelectedKeys = selectedVariableKeys(prioritySolution);
     const actualCappedAfpMinutes = candidates.reduce(
       (sum, candidate) =>
@@ -1036,13 +1023,23 @@ export async function runGlobalAllocation(
         penaltyMinutes: hoursToMinutes(
           respondent.hasPenalty ? respondent.penaltyHours : 0,
         ),
-        capacityMinutes: Array.from(respondent.availableShiftIds).reduce(
-          (capacity, shiftId) => {
-            const shift = shifts.find((entry) => entry.id === shiftId);
-            return capacity + hoursToMinutes(shift?.durationHours ?? 0);
-          },
-          0,
+        capacityMinutes: maxFeasibleCapacityMinutes(
+          candidates.filter(
+            (candidate) =>
+              candidate.respondent.id === respondent.id &&
+              !candidate.isNoAvailabilityPlaceholder,
+          ),
         ),
+        minimumMinutes: candidates
+          .filter(
+            (candidate) =>
+              candidate.respondent.id === respondent.id && candidate.isManual,
+          )
+          .reduce(
+            (minutes, candidate) =>
+              minutes + hoursToMinutes(candidate.shift.durationHours),
+            0,
+          ),
       })),
       Math.max(0, bestStaffedMinutes - actualCappedAfpMinutes),
     );
@@ -1062,8 +1059,13 @@ export async function runGlobalAllocation(
     }
 
     let finalSolution = prioritySolution;
+    let hasStrikeOverageVariables = false;
     if (equalPoolRespondents.length > 0) {
       const maxDeviationVariableKey = "fairness:maxDeviation";
+      const absoluteDeviationVariableKeyByRespondentId = new Map<
+        number,
+        string
+      >();
       addCoefficient(builder, maxDeviationVariableKey, "maxDeviation", 1);
       for (const respondent of equalPoolRespondents) {
         const targetMinutes =
@@ -1073,6 +1075,10 @@ export async function runGlobalAllocation(
         const absoluteUpperConstraintKey = `absoluteUpper:${respondent.id}`;
         const absoluteLowerConstraintKey = `absoluteLower:${respondent.id}`;
         const absoluteDeviationVariableKey = `fairness:absolute:${respondent.id}`;
+        absoluteDeviationVariableKeyByRespondentId.set(
+          respondent.id,
+          absoluteDeviationVariableKey,
+        );
         builder.constraints.set(upperConstraintKey, { max: targetMinutes });
         builder.constraints.set(lowerConstraintKey, { min: targetMinutes });
         builder.constraints.set(absoluteUpperConstraintKey, {
@@ -1137,25 +1143,186 @@ export async function runGlobalAllocation(
         );
       }
 
-      const maxDeviationSolution = await solveStage(
+      const maxStrikeOverageVariableKey = "strike:maxOverage";
+      for (const penalizedRespondent of equalPoolRespondents.filter(
+        (respondent) => respondent.hasPenalty && respondent.penaltyHours > 0,
+      )) {
+        const penalizedTargetMinutes =
+          targetMinutesByRespondentId.get(penalizedRespondent.id) ?? 0;
+        const overageVariableKey = `strike:overage:${penalizedRespondent.id}`;
+        const overageConstraintKey = `strikeOverage:${penalizedRespondent.id}`;
+        const maxOverageConstraintKey = `strikeMaxOverage:${penalizedRespondent.id}`;
+        builder.constraints.set(overageConstraintKey, {
+          max: penalizedTargetMinutes,
+        });
+        builder.constraints.set(maxOverageConstraintKey, { max: 0 });
+        for (const candidate of candidates.filter(
+          (entry) => entry.respondent.id === penalizedRespondent.id,
+        )) {
+          addCoefficient(
+            builder,
+            candidate.variableKey,
+            overageConstraintKey,
+            hoursToMinutes(candidate.shift.durationHours),
+          );
+        }
+        addCoefficient(builder, overageVariableKey, overageConstraintKey, -1);
+        addCoefficient(builder, overageVariableKey, maxOverageConstraintKey, 1);
+        addCoefficient(
+          builder,
+          maxStrikeOverageVariableKey,
+          maxOverageConstraintKey,
+          -1,
+        );
+        addCoefficient(builder, overageVariableKey, "strikeTotalOverage", 1);
+        hasStrikeOverageVariables = true;
+      }
+      if (hasStrikeOverageVariables) {
+        addCoefficient(
+          builder,
+          maxStrikeOverageVariableKey,
+          "strikeMaxOverage",
+          1,
+        );
+      }
+
+      const bestProvenMaxDeviationSolution = await solveStage(
         builder,
         "maxDeviation",
         "minimize",
       );
-      const bestMaxDeviation = feasibleResult(maxDeviationSolution);
-      if (bestMaxDeviation === null) {
+      const bestProvenMaxDeviation = optimalResult(
+        bestProvenMaxDeviationSolution,
+      );
+      if (bestProvenMaxDeviation === null) {
         return {
           ok: false,
-          reason: `max_deviation_${maxDeviationSolution.status}`,
+          reason: `fairness_envelope_${bestProvenMaxDeviationSolution.status}`,
         };
       }
-      if (maxDeviationSolution.status !== "optimal") {
-        boundedStages.push(`max_deviation_${maxDeviationSolution.status}`);
+      // Keep a small granularity allowance when exact target matching would
+      // create an avoidable double, but do not let one person's coarse shifts
+      // loosen the fairness envelope for everybody else.
+      let acceptableFairnessEnvelopeMinutes = 0;
+      for (const respondent of equalPoolRespondents) {
+        const largestRespondentShiftMinutes = candidates.reduce(
+          (largestMinutes, candidate) =>
+            candidate.respondent.id === respondent.id && !candidate.isManual
+              && !candidate.isNoAvailabilityPlaceholder
+              ? Math.max(
+                  largestMinutes,
+                  hoursToMinutes(candidate.shift.durationHours),
+                )
+              : largestMinutes,
+          0,
+        );
+        const respondentEnvelopeMinutes = Math.max(
+          0,
+          bestProvenMaxDeviation,
+          hoursToMinutes(MIN_GENERAL_FAIRNESS_ENVELOPE_HOURS),
+          largestRespondentShiftMinutes,
+        );
+        acceptableFairnessEnvelopeMinutes = Math.max(
+          acceptableFairnessEnvelopeMinutes,
+          respondentEnvelopeMinutes,
+        );
+        const envelopeConstraintKey = `fairnessEnvelope:${respondent.id}`;
+        builder.constraints.set(envelopeConstraintKey, {
+          max: respondentEnvelopeMinutes + 1e-6,
+        });
+        addCoefficient(
+          builder,
+          absoluteDeviationVariableKeyByRespondentId.get(respondent.id)!,
+          envelopeConstraintKey,
+          1,
+        );
       }
       builder.constraints.set("maxDeviation", {
-        max: Math.max(0, bestMaxDeviation) + 1e-6,
+        max: acceptableFairnessEnvelopeMinutes + 1e-6,
       });
-      finalSolution = maxDeviationSolution;
+      finalSolution = bestProvenMaxDeviationSolution;
+    }
+
+    if (hasStrikeOverageVariables) {
+      const strikeMaxOverageSolution = await solveStage(
+        builder,
+        "strikeMaxOverage",
+        "minimize",
+      );
+      const bestStrikeMaxOverage = optimalResult(strikeMaxOverageSolution);
+      if (bestStrikeMaxOverage === null) {
+        return {
+          ok: false,
+          reason: `strike_max_overage_${strikeMaxOverageSolution.status}`,
+        };
+      }
+      builder.constraints.set("strikeMaxOverage", {
+        max: Math.max(0, bestStrikeMaxOverage) + 1e-6,
+      });
+      finalSolution = strikeMaxOverageSolution;
+
+      const strikeTotalOverageSolution = await solveStage(
+        builder,
+        "strikeTotalOverage",
+        "minimize",
+      );
+      const bestStrikeTotalOverage = optimalResult(strikeTotalOverageSolution);
+      if (bestStrikeTotalOverage === null) {
+        return {
+          ok: false,
+          reason: `strike_total_overage_${strikeTotalOverageSolution.status}`,
+        };
+      }
+      builder.constraints.set("strikeTotalOverage", {
+        max: Math.max(0, bestStrikeTotalOverage) + 1e-6,
+      });
+      finalSolution = strikeTotalOverageSolution;
+    }
+
+    if (backToBackVariableKeys.length > 0) {
+      const backToBackSolution = await solveStage(
+        builder,
+        "backToBack",
+        "minimize",
+      );
+      const bestBackToBack = feasibleResult(backToBackSolution);
+      if (bestBackToBack === null) {
+        return {
+          ok: false,
+          reason: `back_to_back_${backToBackSolution.status}`,
+        };
+      }
+      if (backToBackSolution.status !== "optimal") {
+        boundedStages.push(`back_to_back_${backToBackSolution.status}`);
+      }
+      builder.constraints.set("backToBack", {
+        max: Math.max(0, bestBackToBack) + 1e-6,
+      });
+      finalSolution = backToBackSolution;
+    }
+
+    if (equalPoolRespondents.length > 0) {
+      const refinedMaxDeviationSolution = await solveStage(
+        builder,
+        "maxDeviation",
+        "minimize",
+      );
+      const refinedMaxDeviation = feasibleResult(refinedMaxDeviationSolution);
+      if (refinedMaxDeviation === null) {
+        return {
+          ok: false,
+          reason: `refined_max_deviation_${refinedMaxDeviationSolution.status}`,
+        };
+      }
+      if (refinedMaxDeviationSolution.status !== "optimal") {
+        boundedStages.push(
+          `refined_max_deviation_${refinedMaxDeviationSolution.status}`,
+        );
+      }
+      builder.constraints.set("maxDeviation", {
+        max: Math.max(0, refinedMaxDeviation) + 1e-6,
+      });
+      finalSolution = refinedMaxDeviationSolution;
 
       const totalDeviationSolution = await solveStage(
         builder,
@@ -1207,6 +1374,11 @@ export async function runGlobalAllocation(
         shifts,
         selectedCandidates,
         targetMinutesByRespondentId,
+        capacityLimitedRespondentIds: new Set(
+          targetResult.targets
+            .filter((target) => target.capacityLimited)
+            .map((target) => target.respondentId),
+        ),
         targetCapacityShortfallMinutes: targetResult.capacityShortfallMinutes,
         allowAfpOverCapForAvailableShifts:
           input.allowAfpOverCapForAvailableShifts ?? false,

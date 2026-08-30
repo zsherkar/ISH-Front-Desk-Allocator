@@ -4,6 +4,7 @@ import {
   canAssignShiftToRespondent,
   deriveShiftSlotIndexes,
   hoursToMinutes,
+  maxFeasibleShiftCapacityMinutes,
   minutesToHours,
   sameDayAllocationTier,
   solveNonAfpPenaltyTargets,
@@ -205,22 +206,55 @@ function runGreedyAllocation(input: PureAllocationInput): PureAllocationOutput {
   const shiftMap = new Map(shifts.map((shift) => [shift.id, shift]));
   const availabilityByShiftId = new Map<number, Set<number>>();
   for (const shift of shifts) availabilityByShiftId.set(shift.id, new Set());
-
-  const respondents: RespondentInfo[] = input.respondents
-    .map((respondent) => ({
-      ...respondent,
-      availableCapacityMinutes: Array.from(respondent.availableShiftIds).reduce(
-        (sum, shiftId) => sum + hoursToMinutes(shiftMap.get(shiftId)?.durationHours ?? 0),
-        0,
-      ),
-    }))
-    .sort((a, b) => a.name.localeCompare(b.name) || a.id - b.id);
-
-  for (const respondent of respondents) {
+  for (const respondent of input.respondents) {
     for (const shiftId of respondent.availableShiftIds) {
       availabilityByShiftId.get(shiftId)?.add(respondent.id);
     }
   }
+
+  const inputRespondentIds = new Set(input.respondents.map((respondent) => respondent.id));
+  const manualRespondentIdByShiftId = new Map<number, number>();
+  for (const manual of input.manualAssignments ?? []) {
+    if (
+      manualRespondentIdByShiftId.has(manual.shiftId) ||
+      !shiftMap.has(manual.shiftId) ||
+      !inputRespondentIds.has(manual.respondentId)
+    ) {
+      continue;
+    }
+    manualRespondentIdByShiftId.set(manual.shiftId, manual.respondentId);
+  }
+  const manualMinutesByRespondentId = new Map<number, number>();
+  for (const [shiftId, respondentId] of manualRespondentIdByShiftId) {
+    manualMinutesByRespondentId.set(
+      respondentId,
+      (manualMinutesByRespondentId.get(respondentId) ?? 0) +
+        hoursToMinutes(shiftMap.get(shiftId)?.durationHours ?? 0),
+    );
+  }
+
+  const respondents: RespondentInfo[] = input.respondents
+    .map((respondent) => {
+      const mandatoryShiftIds = new Set(
+        Array.from(manualRespondentIdByShiftId.entries())
+          .filter(([, respondentId]) => respondentId === respondent.id)
+          .map(([shiftId]) => shiftId),
+      );
+      const capacityShifts = shifts.filter((shift) => {
+        const manualRespondentId = manualRespondentIdByShiftId.get(shift.id);
+        return manualRespondentId === undefined
+          ? respondent.availableShiftIds.has(shift.id)
+          : manualRespondentId === respondent.id;
+      });
+      return {
+        ...respondent,
+        availableCapacityMinutes: maxFeasibleShiftCapacityMinutes(
+          capacityShifts,
+          mandatoryShiftIds,
+        ),
+      };
+    })
+    .sort((a, b) => a.name.localeCompare(b.name) || a.id - b.id);
 
   const respondentById = new Map(respondents.map((respondent) => [respondent.id, respondent]));
   const assignmentsByRespondentId = new Map<number, AllocationAssignment[]>();
@@ -233,7 +267,10 @@ function runGreedyAllocation(input: PureAllocationInput): PureAllocationOutput {
   const normalAfpMinutesFor = (respondentId: number) =>
     (assignmentsByRespondentId.get(respondentId) ?? [])
       .filter(
-        (assignment) => assignment.source === "engine_normal" || assignment.source === "engine_back_to_back_emergency",
+        (assignment) =>
+          assignment.source === "manual" ||
+          assignment.source === "engine_normal" ||
+          assignment.source === "engine_back_to_back_emergency",
       )
       .reduce((sum, assignment) => sum + hoursToMinutes(shiftMap.get(assignment.shiftId)?.durationHours ?? 0), 0);
 
@@ -272,25 +309,39 @@ function runGreedyAllocation(input: PureAllocationInput): PureAllocationOutput {
     });
   }
 
-  const normalAssignableShifts = shifts.filter((shift) => (availabilityByShiftId.get(shift.id)?.size ?? 0) > 0);
-  const intendedAfpNormalMinutes = respondents
+  const staffableShifts = shifts.filter(
+    (shift) =>
+      (availabilityByShiftId.get(shift.id)?.size ?? 0) > 0 ||
+      manualRespondentIdByShiftId.has(shift.id),
+  );
+  const intendedCappedAfpMinutes = respondents
     .filter((respondent) => respondent.hasAfpCap)
     .reduce(
-      (sum, respondent) => sum + Math.min(hoursToMinutes(respondent.afpHoursCap), respondent.availableCapacityMinutes),
+      (sum, respondent) =>
+        sum +
+        Math.max(
+          manualMinutesByRespondentId.get(respondent.id) ?? 0,
+          Math.min(
+            hoursToMinutes(respondent.afpHoursCap),
+            respondent.availableCapacityMinutes,
+          ),
+        ),
       0,
     );
   const intendedNonAfpMinutes = Math.max(
     0,
-    normalAssignableShifts.reduce((sum, shift) => sum + hoursToMinutes(shift.durationHours), 0) -
-      intendedAfpNormalMinutes,
+    staffableShifts.reduce((sum, shift) => sum + hoursToMinutes(shift.durationHours), 0) -
+      intendedCappedAfpMinutes,
   );
   const generalRespondents = respondents.filter((respondent) => !respondent.hasAfpCap);
-  const targetResult = solveNonAfpPenaltyTargets(
-    generalRespondents.map((respondent) => ({
+  const generalTargetInputs = generalRespondents.map((respondent) => ({
       respondentId: respondent.id,
       penaltyMinutes: hoursToMinutes(respondent.hasPenalty ? respondent.penaltyHours : 0),
       capacityMinutes: respondent.availableCapacityMinutes,
-    })),
+      minimumMinutes: manualMinutesByRespondentId.get(respondent.id) ?? 0,
+    }));
+  let targetResult = solveNonAfpPenaltyTargets(
+    generalTargetInputs,
     intendedNonAfpMinutes,
   );
   const targetMinutesByRespondentId = new Map<number, number>();
@@ -299,7 +350,13 @@ function runGreedyAllocation(input: PureAllocationInput): PureAllocationOutput {
   }
   for (const respondent of respondents) {
     if (respondent.hasAfpCap) {
-      targetMinutesByRespondentId.set(respondent.id, hoursToMinutes(respondent.afpHoursCap));
+      targetMinutesByRespondentId.set(
+        respondent.id,
+        Math.min(
+          hoursToMinutes(respondent.afpHoursCap),
+          respondent.availableCapacityMinutes,
+        ),
+      );
     }
   }
 
@@ -478,6 +535,24 @@ function runGreedyAllocation(input: PureAllocationInput): PureAllocationOutput {
     if (!assignmentByShiftId.has(shift.id)) repairBlankWithAvailability(shift);
   }
 
+  const provisionalStaffedMinutes = Array.from(assignmentByShiftId.values()).reduce(
+    (sum, assignment) => sum + hoursToMinutes(shiftMap.get(assignment.shiftId)?.durationHours ?? 0),
+    0,
+  );
+  const provisionalCappedAfpMinutes = respondents
+    .filter((respondent) => respondent.hasAfpCap)
+    .reduce(
+      (sum, respondent) => sum + calcMinutes(allocatedShiftIdsFor(respondent.id), shiftMap),
+      0,
+    );
+  targetResult = solveNonAfpPenaltyTargets(
+    generalTargetInputs,
+    Math.max(0, provisionalStaffedMinutes - provisionalCappedAfpMinutes),
+  );
+  for (const target of targetResult.targets) {
+    targetMinutesByRespondentId.set(target.respondentId, target.targetMinutes);
+  }
+
   type FairnessScore = {
     maxAbsTargetDeviationMinutes: number;
     nonPenalizedStdDevMinutes: number;
@@ -501,7 +576,16 @@ function runGreedyAllocation(input: PureAllocationInput): PureAllocationOutput {
   ): FairnessScore => {
     const actual = actualMinutesByRespondentId();
     const general = respondents.filter((respondent) => !respondent.hasAfpCap);
-    const nonPenalized = general.filter((respondent) => !respondent.hasPenalty || respondent.penaltyHours <= 0);
+    const capacityLimitedRespondentIds = new Set(
+      targetResult.targets
+        .filter((target) => target.capacityLimited)
+        .map((target) => target.respondentId),
+    );
+    const nonPenalized = general.filter(
+      (respondent) =>
+        (!respondent.hasPenalty || respondent.penaltyHours <= 0) &&
+        !capacityLimitedRespondentIds.has(respondent.id),
+    );
     const nonPenalizedActual = nonPenalized.map((respondent) => actual.get(respondent.id) ?? 0);
     const nonPenalizedMean =
       nonPenalizedActual.length > 0
@@ -525,12 +609,8 @@ function runGreedyAllocation(input: PureAllocationInput): PureAllocationOutput {
     const highStdDevReasonCodes =
       nonPenalizedStdDevMinutes > hoursToMinutes(targetStdDevHours)
         ? [
-            "HIGH_STD_DEV_NO_LEGAL_REPAIR",
-            "INSUFFICIENT_OVERLAPPING_AVAILABILITY",
-            "SAME_DAY_CONSTRAINT",
-            "SHIFT_GRANULARITY_LIMIT",
-            ...(Array.from(assignmentByShiftId.values()).some((assignment) => assignment.source === "manual")
-              ? ["MANUAL_LOCK_CONSTRAINT"]
+            ...(targetResult.capacityShortfallMinutes > 0
+              ? ["NON_AFP_CAPACITY_SHORTFALL"]
               : []),
           ]
         : [];
@@ -619,13 +699,16 @@ function runGreedyAllocation(input: PureAllocationInput): PureAllocationOutput {
 
     for (const originalAssignment of movableAssignments) {
       const shift = shiftMap.get(originalAssignment.shiftId);
-      if (!shift) continue;
+      const originalRespondent = respondentById.get(originalAssignment.respondentId);
+      if (!shift || !originalRespondent) continue;
 
       removeAssignment(shift.id);
       const recipients = respondents
         .filter(
           (respondent) =>
-            respondent.id !== originalAssignment.respondentId && respondent.availableShiftIds.has(shift.id),
+            respondent.id !== originalAssignment.respondentId &&
+            respondent.hasAfpCap === originalRespondent.hasAfpCap &&
+            respondent.availableShiftIds.has(shift.id),
         )
         .sort((a, b) => {
           const deficitA = (targetMinutesByRespondentId.get(a.id) ?? 0) - (actual.get(a.id) ?? 0);
@@ -679,6 +762,7 @@ function runGreedyAllocation(input: PureAllocationInput): PureAllocationOutput {
         const firstShift = shiftMap.get(first.shiftId);
         const secondShift = shiftMap.get(second.shiftId);
         if (!firstRespondent || !secondRespondent || !firstShift || !secondShift) continue;
+        if (firstRespondent.hasAfpCap !== secondRespondent.hasAfpCap) continue;
         if (!firstRespondent.availableShiftIds.has(secondShift.id)) continue;
         if (!secondRespondent.availableShiftIds.has(firstShift.id)) continue;
 
@@ -820,6 +904,41 @@ function runGreedyAllocation(input: PureAllocationInput): PureAllocationOutput {
   };
 
   assignNoAvailabilityAfpPlaceholders();
+
+  const finalStaffedMinutes = Array.from(assignmentByShiftId.values()).reduce(
+    (sum, assignment) => sum + hoursToMinutes(shiftMap.get(assignment.shiftId)?.durationHours ?? 0),
+    0,
+  );
+  const finalCappedAfpMinutes = respondents
+    .filter((respondent) => respondent.hasAfpCap)
+    .reduce(
+      (sum, respondent) => sum + calcMinutes(allocatedShiftIdsFor(respondent.id), shiftMap),
+      0,
+    );
+  targetResult = solveNonAfpPenaltyTargets(
+    generalTargetInputs,
+    Math.max(0, finalStaffedMinutes - finalCappedAfpMinutes),
+  );
+  for (const target of targetResult.targets) {
+    targetMinutesByRespondentId.set(target.respondentId, target.targetMinutes);
+  }
+
+  for (let iteration = 0; iteration < 200; iteration++) {
+    const moved =
+      trySingleFairnessMove(
+        fairnessRepairAttempted,
+        fairnessRepairMoves,
+        assignedShiftCountBeforeFairnessRepair,
+      ) ||
+      tryPairwiseFairnessSwap(
+        fairnessRepairAttempted,
+        fairnessRepairMoves,
+        assignedShiftCountBeforeFairnessRepair,
+      );
+    if (!moved) break;
+    fairnessRepairAttempted = true;
+    fairnessRepairMoves += 1;
+  }
 
   const fairnessDiagnostics = currentFairnessScore(
     fairnessRepairAttempted,

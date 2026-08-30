@@ -4,6 +4,7 @@ import {
   canAssignShiftToRespondent,
   deriveShiftSlotIndexes,
   hoursToMinutes,
+  maxFeasibleShiftCapacityMinutes,
   minutesToHours,
   solveNonAfpPenaltyTargets,
   stableShiftKey,
@@ -12,12 +13,18 @@ import {
 
 const toHours = (minutes: number) => Number(minutesToHours(minutes).toFixed(4));
 
-function solveHours(penalties: number[], intendedHours: number, capacities?: number[]) {
+function solveHours(
+  penalties: number[],
+  intendedHours: number,
+  capacities?: number[],
+  minimums?: number[],
+) {
   return solveNonAfpPenaltyTargets(
     penalties.map((penaltyHours, index) => ({
       respondentId: index + 1,
       penaltyMinutes: hoursToMinutes(penaltyHours),
       capacityMinutes: hoursToMinutes(capacities?.[index] ?? 200),
+      minimumMinutes: hoursToMinutes(minimums?.[index] ?? 0),
     })),
     hoursToMinutes(intendedHours),
   );
@@ -81,6 +88,49 @@ test("capacity-adjusts targets and redistributes feasible hours", () => {
   assert.equal(toHours(result.targets[2].targetMinutes), 32.5);
   assert.equal(result.targets[0].capacityLimited, true);
   assert.equal(result.capacityShortfallMinutes, 0);
+});
+
+test("manual minimums are absorbed into targets instead of becoming fairness outliers", () => {
+  const result = solveHours([0, 0, 0], 54, [100, 100, 24], [0, 0, 24]);
+
+  assert.deepEqual(
+    result.targets.map((target) => toHours(target.targetMinutes)),
+    [15, 15, 24],
+  );
+});
+
+test("feasible capacity uses the best legal same-day pair instead of raw availability", () => {
+  assert.equal(
+    toHours(maxFeasibleShiftCapacityMinutes(Array.from(shifts.values()))),
+    6,
+  );
+});
+
+test("feasible capacity honors a mandatory shift when optional shifts conflict", () => {
+  const mandatory = {
+    id: 20,
+    date: "2026-05-04",
+    startTime: "09:00",
+    endTime: "17:00",
+    durationHours: 8,
+  };
+  const conflictingOptional = {
+    id: 21,
+    date: "2026-05-04",
+    startTime: "17:30",
+    endTime: "19:30",
+    durationHours: 2,
+  };
+
+  assert.equal(
+    toHours(
+      maxFeasibleShiftCapacityMinutes(
+        [mandatory, conflictingOptional],
+        new Set([mandatory.id]),
+      ),
+    ),
+    8,
+  );
 });
 
 test("reports capacity shortfall when requested non-AFP hours exceed availability", () => {
