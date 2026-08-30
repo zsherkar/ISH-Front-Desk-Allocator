@@ -4,6 +4,7 @@ import {
   canAssignShiftToRespondent,
   deriveShiftSlotIndexes,
   hoursToMinutes,
+  isBackToBack,
   maxFeasibleShiftCapacityMinutes,
   minutesToHours,
   sameDayAllocationTier,
@@ -535,9 +536,13 @@ function runGreedyAllocation(input: PureAllocationInput): PureAllocationOutput {
   }
 
   type FairnessScore = {
+    backToBackPairDays: number;
     maxAbsTargetDeviationMinutes: number;
     maxStrikeOverageMinutes: number;
     totalStrikeOverageMinutes: number;
+    availabilityLimitedMaxShortfallRatio: number;
+    availabilityLimitedTotalShortfallRatio: number;
+    availabilityLimitedTotalShortfallMinutes: number;
     comparableMaxAbsTargetDeviationMinutes: number;
     comparableMaxShortfallMinutes: number;
     comparableMaxOverageMinutes: number;
@@ -567,6 +572,15 @@ function runGreedyAllocation(input: PureAllocationInput): PureAllocationOutput {
     const capacityLimitedRespondentIds = new Set(
       targetResult.targets.filter((target) => target.capacityLimited).map((target) => target.respondentId),
     );
+    const availabilityLimitedRespondentIds = new Set(
+      targetResult.targets.filter((target) => target.availabilityLimited).map((target) => target.respondentId),
+    );
+    const availabilityLimitedNonPenalized = general.filter(
+      (respondent) =>
+        (!respondent.hasPenalty || respondent.penaltyHours <= 0) &&
+        availabilityLimitedRespondentIds.has(respondent.id) &&
+        (targetMinutesByRespondentId.get(respondent.id) ?? 0) > 0,
+    );
     const nonPenalized = general.filter(
       (respondent) =>
         (!respondent.hasPenalty || respondent.penaltyHours <= 0) && !capacityLimitedRespondentIds.has(respondent.id),
@@ -591,6 +605,14 @@ function runGreedyAllocation(input: PureAllocationInput): PureAllocationOutput {
       .map((respondent) =>
         Math.max(0, (actual.get(respondent.id) ?? 0) - (targetMinutesByRespondentId.get(respondent.id) ?? 0)),
       );
+    const availabilityLimitedShortfalls = availabilityLimitedNonPenalized.map((respondent) => {
+      const targetMinutes = targetMinutesByRespondentId.get(respondent.id) ?? 0;
+      const shortfallMinutes = Math.max(0, targetMinutes - (actual.get(respondent.id) ?? 0));
+      return {
+        shortfallMinutes,
+        shortfallRatio: shortfallMinutes / targetMinutes,
+      };
+    });
     const maxAbsTargetDeviationMinutes =
       targetDeviations.length > 0 ? Math.max(...targetDeviations.map((value) => Math.abs(value))) : 0;
     const maxDeviationFromMeanMinutes =
@@ -598,6 +620,15 @@ function runGreedyAllocation(input: PureAllocationInput): PureAllocationOutput {
         ? Math.max(...nonPenalizedActual.map((minutes) => Math.abs(minutes - nonPenalizedMean)))
         : 0;
     const nonPenalizedStdDevMinutes = stdDev(nonPenalizedActual);
+    const backToBackPairDays = Array.from(
+      Array.from(assignmentByShiftId.values()).reduce((groups, assignment) => {
+        const shift = shiftMap.get(assignment.shiftId);
+        if (!shift) return groups;
+        const key = `${assignment.respondentId}:${shift.date}`;
+        groups.set(key, [...(groups.get(key) ?? []), shift]);
+        return groups;
+      }, new Map<string, ShiftInfo[]>()),
+    ).filter(([, dayShifts]) => dayShifts.length === 2 && isBackToBack(dayShifts[0], dayShifts[1])).length;
     const targetStdDevHours = 2;
     const warningStdDevHours = 4;
     const highStdDevReasonCodes =
@@ -606,9 +637,22 @@ function runGreedyAllocation(input: PureAllocationInput): PureAllocationOutput {
         : [];
 
     return {
+      backToBackPairDays,
       maxAbsTargetDeviationMinutes,
       maxStrikeOverageMinutes: strikeOverages.length > 0 ? Math.max(...strikeOverages) : 0,
       totalStrikeOverageMinutes: strikeOverages.reduce((sum, value) => sum + value, 0),
+      availabilityLimitedMaxShortfallRatio:
+        availabilityLimitedShortfalls.length > 0
+          ? Math.max(...availabilityLimitedShortfalls.map((shortfall) => shortfall.shortfallRatio))
+          : 0,
+      availabilityLimitedTotalShortfallRatio: availabilityLimitedShortfalls.reduce(
+        (sum, shortfall) => sum + shortfall.shortfallRatio,
+        0,
+      ),
+      availabilityLimitedTotalShortfallMinutes: availabilityLimitedShortfalls.reduce(
+        (sum, shortfall) => sum + shortfall.shortfallMinutes,
+        0,
+      ),
       comparableMaxAbsTargetDeviationMinutes:
         comparableTargetDeviations.length > 0
           ? Math.max(...comparableTargetDeviations.map((value) => Math.abs(value)))
@@ -646,26 +690,32 @@ function runGreedyAllocation(input: PureAllocationInput): PureAllocationOutput {
         assignedShiftCountBeforeRepair,
         assignedShiftCountAfterRepair: assignmentByShiftId.size,
         highStdDevReasonCodes,
+        backToBackPairDays,
       },
     };
   };
 
   const scoreIsBetter = (next: FairnessScore, current: FairnessScore): boolean => {
-    const epsilon = 0.5;
-    const comparisons: Array<[number, number]> = [
-      [next.maxAbsTargetDeviationMinutes, current.maxAbsTargetDeviationMinutes],
-      [next.maxStrikeOverageMinutes, current.maxStrikeOverageMinutes],
-      [next.totalStrikeOverageMinutes, current.totalStrikeOverageMinutes],
-      [next.comparableMaxAbsTargetDeviationMinutes, current.comparableMaxAbsTargetDeviationMinutes],
-      [next.comparableMaxShortfallMinutes, current.comparableMaxShortfallMinutes],
-      [next.comparableMaxOverageMinutes, current.comparableMaxOverageMinutes],
-      [next.comparableTotalAbsDeviationMinutes, current.comparableTotalAbsDeviationMinutes],
-      [next.totalAbsTargetDeviationMinutes, current.totalAbsTargetDeviationMinutes],
-      [next.nonPenalizedStdDevMinutes, current.nonPenalizedStdDevMinutes],
-      [next.sumSquaredDeviationMinutes, current.sumSquaredDeviationMinutes],
-      [next.nonPenalizedRangeMinutes, current.nonPenalizedRangeMinutes],
+    const minuteEpsilon = 0.5;
+    const ratioEpsilon = 1e-9;
+    const comparisons: Array<[number, number, number]> = [
+      [next.backToBackPairDays, current.backToBackPairDays, 0],
+      [next.maxAbsTargetDeviationMinutes, current.maxAbsTargetDeviationMinutes, minuteEpsilon],
+      [next.maxStrikeOverageMinutes, current.maxStrikeOverageMinutes, minuteEpsilon],
+      [next.totalStrikeOverageMinutes, current.totalStrikeOverageMinutes, minuteEpsilon],
+      [next.availabilityLimitedMaxShortfallRatio, current.availabilityLimitedMaxShortfallRatio, ratioEpsilon],
+      [next.availabilityLimitedTotalShortfallRatio, current.availabilityLimitedTotalShortfallRatio, ratioEpsilon],
+      [next.availabilityLimitedTotalShortfallMinutes, current.availabilityLimitedTotalShortfallMinutes, minuteEpsilon],
+      [next.comparableMaxAbsTargetDeviationMinutes, current.comparableMaxAbsTargetDeviationMinutes, minuteEpsilon],
+      [next.comparableMaxShortfallMinutes, current.comparableMaxShortfallMinutes, minuteEpsilon],
+      [next.comparableMaxOverageMinutes, current.comparableMaxOverageMinutes, minuteEpsilon],
+      [next.comparableTotalAbsDeviationMinutes, current.comparableTotalAbsDeviationMinutes, minuteEpsilon],
+      [next.totalAbsTargetDeviationMinutes, current.totalAbsTargetDeviationMinutes, minuteEpsilon],
+      [next.nonPenalizedStdDevMinutes, current.nonPenalizedStdDevMinutes, minuteEpsilon],
+      [next.sumSquaredDeviationMinutes, current.sumSquaredDeviationMinutes, minuteEpsilon],
+      [next.nonPenalizedRangeMinutes, current.nonPenalizedRangeMinutes, minuteEpsilon],
     ];
-    for (const [a, b] of comparisons) {
+    for (const [a, b, epsilon] of comparisons) {
       if (Math.abs(a - b) <= epsilon) continue;
       return a < b;
     }

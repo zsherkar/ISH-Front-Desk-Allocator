@@ -961,6 +961,28 @@ export async function runGlobalAllocation(
       prioritySolution = capOverflowSolution;
     }
 
+    if (backToBackVariableKeys.length > 0) {
+      const backToBackSolution = await solveStage(
+        builder,
+        "backToBack",
+        "minimize",
+      );
+      const bestBackToBack = feasibleResult(backToBackSolution);
+      if (bestBackToBack === null) {
+        return {
+          ok: false,
+          reason: `back_to_back_${backToBackSolution.status}`,
+        };
+      }
+      if (backToBackSolution.status !== "optimal") {
+        boundedStages.push(`back_to_back_${backToBackSolution.status}`);
+      }
+      builder.constraints.set("backToBack", {
+        max: Math.max(0, bestBackToBack) + 1e-6,
+      });
+      prioritySolution = backToBackSolution;
+    }
+
     if (hasAfpShortfallVariables) {
       const maxShortfallSolution = await solveStage(
         builder,
@@ -1065,15 +1087,28 @@ export async function runGlobalAllocation(
         .filter((target) => target.capacityLimited)
         .map((target) => target.respondentId),
     );
+    const availabilityLimitedRespondentIds = new Set(
+      targetResult.targets
+        .filter((target) => target.availabilityLimited)
+        .map((target) => target.respondentId),
+    );
     const comparablePoolRespondents = equalPoolRespondents.filter(
       (respondent) =>
         (!respondent.hasPenalty || respondent.penaltyHours <= 0) &&
         !capacityLimitedRespondentIds.has(respondent.id),
     );
+    const availabilityLimitedPoolRespondents = equalPoolRespondents.filter(
+      (respondent) =>
+        (!respondent.hasPenalty || respondent.penaltyHours <= 0) &&
+        availabilityLimitedRespondentIds.has(respondent.id) &&
+        (targetMinutesByRespondentId.get(respondent.id) ?? 0) > 0,
+    );
     const absoluteDeviationVariableKeyByRespondentId = new Map<
       number,
       string
     >();
+    const availabilityLimitedMaxShortfallRatioVariableKey =
+      "limited:maxShortfallRatio";
     const comparableMaxDeviationVariableKey = "fairness:comparableMaxDeviation";
     const comparableMaxShortfallVariableKey = "fairness:comparableMaxShortfall";
     const comparableMaxOverageVariableKey = "fairness:comparableMaxOverage";
@@ -1282,6 +1317,74 @@ export async function runGlobalAllocation(
           1,
         );
       }
+
+      // A pre-strike availability-limited respondent's target is their feasible signup
+      // capacity. Reward reaching it before balancing the ordinary pool, but
+      // model only shortfall: an absolute-deviation term could incorrectly
+      // punish a legal over-allocation if a future capacity estimate is
+      // conservative or manual assignments push the total past the target.
+      // Normalizing each shortfall by its target gives the scarcest signup the
+      // strongest protection: missing one shift is a much larger fraction of
+      // a 12-hour target than of a 36-hour target.
+      for (const respondent of availabilityLimitedPoolRespondents) {
+        const targetMinutes =
+          targetMinutesByRespondentId.get(respondent.id) ?? 0;
+        const shortfallVariableKey = `limited:shortfall:${respondent.id}`;
+        const shortfallConstraintKey = `limitedShortfall:${respondent.id}`;
+        const maxShortfallConstraintKey = `limitedMaxShortfall:${respondent.id}`;
+        builder.constraints.set(shortfallConstraintKey, {
+          min: targetMinutes,
+        });
+        builder.constraints.set(maxShortfallConstraintKey, { max: 0 });
+        for (const candidate of candidates.filter(
+          (entry) => entry.respondent.id === respondent.id,
+        )) {
+          addCoefficient(
+            builder,
+            candidate.variableKey,
+            shortfallConstraintKey,
+            hoursToMinutes(candidate.shift.durationHours),
+          );
+        }
+        addCoefficient(
+          builder,
+          shortfallVariableKey,
+          shortfallConstraintKey,
+          1,
+        );
+        addCoefficient(
+          builder,
+          shortfallVariableKey,
+          maxShortfallConstraintKey,
+          1 / targetMinutes,
+        );
+        addCoefficient(
+          builder,
+          availabilityLimitedMaxShortfallRatioVariableKey,
+          maxShortfallConstraintKey,
+          -1,
+        );
+        addCoefficient(
+          builder,
+          shortfallVariableKey,
+          "limitedTotalShortfallRatio",
+          1 / targetMinutes,
+        );
+        addCoefficient(
+          builder,
+          shortfallVariableKey,
+          "limitedTotalShortfallMinutes",
+          1,
+        );
+      }
+      if (availabilityLimitedPoolRespondents.length > 0) {
+        addCoefficient(
+          builder,
+          availabilityLimitedMaxShortfallRatioVariableKey,
+          "limitedMaxShortfallRatio",
+          1,
+        );
+      }
     }
 
     if (equalPoolRespondents.length > 0) {
@@ -1347,6 +1450,65 @@ export async function runGlobalAllocation(
         max: Math.max(0, bestStrikeTotalOverage) + 1e-6,
       });
       finalSolution = strikeTotalOverageSolution;
+    }
+
+    if (availabilityLimitedPoolRespondents.length > 0) {
+      const limitedMaxShortfallRatioSolution = await solveStage(
+        builder,
+        "limitedMaxShortfallRatio",
+        "minimize",
+      );
+      const bestLimitedMaxShortfallRatio = optimalResult(
+        limitedMaxShortfallRatioSolution,
+      );
+      if (bestLimitedMaxShortfallRatio === null) {
+        return {
+          ok: false,
+          reason: `limited_max_shortfall_ratio_${limitedMaxShortfallRatioSolution.status}`,
+        };
+      }
+      builder.constraints.set("limitedMaxShortfallRatio", {
+        max: Math.max(0, bestLimitedMaxShortfallRatio) + 1e-6,
+      });
+      finalSolution = limitedMaxShortfallRatioSolution;
+
+      const limitedTotalShortfallRatioSolution = await solveStage(
+        builder,
+        "limitedTotalShortfallRatio",
+        "minimize",
+      );
+      const bestLimitedTotalShortfallRatio = optimalResult(
+        limitedTotalShortfallRatioSolution,
+      );
+      if (bestLimitedTotalShortfallRatio === null) {
+        return {
+          ok: false,
+          reason: `limited_total_shortfall_ratio_${limitedTotalShortfallRatioSolution.status}`,
+        };
+      }
+      builder.constraints.set("limitedTotalShortfallRatio", {
+        max: Math.max(0, bestLimitedTotalShortfallRatio) + 1e-6,
+      });
+      finalSolution = limitedTotalShortfallRatioSolution;
+
+      const limitedTotalShortfallMinutesSolution = await solveStage(
+        builder,
+        "limitedTotalShortfallMinutes",
+        "minimize",
+      );
+      const bestLimitedTotalShortfallMinutes = optimalResult(
+        limitedTotalShortfallMinutesSolution,
+      );
+      if (bestLimitedTotalShortfallMinutes === null) {
+        return {
+          ok: false,
+          reason: `limited_total_shortfall_minutes_${limitedTotalShortfallMinutesSolution.status}`,
+        };
+      }
+      builder.constraints.set("limitedTotalShortfallMinutes", {
+        max: Math.max(0, bestLimitedTotalShortfallMinutes) + 1e-6,
+      });
+      finalSolution = limitedTotalShortfallMinutesSolution;
     }
 
     if (hasComparableFairnessVariables) {
@@ -1422,28 +1584,6 @@ export async function runGlobalAllocation(
           ) + 1e-6,
       });
       finalSolution = comparableOverageSolution;
-    }
-
-    if (backToBackVariableKeys.length > 0) {
-      const backToBackSolution = await solveStage(
-        builder,
-        "backToBack",
-        "minimize",
-      );
-      const bestBackToBack = feasibleResult(backToBackSolution);
-      if (bestBackToBack === null) {
-        return {
-          ok: false,
-          reason: `back_to_back_${backToBackSolution.status}`,
-        };
-      }
-      if (backToBackSolution.status !== "optimal") {
-        boundedStages.push(`back_to_back_${backToBackSolution.status}`);
-      }
-      builder.constraints.set("backToBack", {
-        max: Math.max(0, bestBackToBack) + 1e-6,
-      });
-      finalSolution = backToBackSolution;
     }
 
     if (hasComparableFairnessVariables) {

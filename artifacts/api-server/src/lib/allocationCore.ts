@@ -72,6 +72,7 @@ export interface PenaltyTargetOutput extends PenaltyTargetInput {
   effectivePenaltyMinutes: number;
   unappliedPenaltyMinutes: number;
   targetTruncatedAtZero: boolean;
+  availabilityLimited: boolean;
   capacityLimited: boolean;
 }
 
@@ -324,6 +325,7 @@ export function solveNonAfpPenaltyTargets(
         unappliedPenaltyMinutes: person.penaltyMinutes,
         targetTruncatedAtZero:
           neutralTargetMinutes > epsilonMinutes && targetMinutes <= epsilonMinutes && person.penaltyMinutes > 0,
+        availabilityLimited: false,
         capacityLimited: person.capacityMinutes === 0,
       };
     });
@@ -445,6 +447,7 @@ export function solveNonAfpPenaltyTargets(
       unappliedPenaltyMinutes: Math.max(0, person.penaltyMinutes - effectivePenaltyMinutes),
       targetTruncatedAtZero:
         neutralTarget > epsilonMinutes && adjustedTarget <= epsilonMinutes && effectivePenaltyMinutes > epsilonMinutes,
+      availabilityLimited: person.capacityMinutes + epsilonMinutes < baselineMinutes,
       capacityLimited: person.capacityMinutes + epsilonMinutes < desiredUnpenalizedTarget,
     };
   });

@@ -135,6 +135,7 @@ test("marks a regular respondent capped by strike redistribution as capacity-lim
     [10, 32, 38, 20],
   );
   assert.equal(result.targets[1].capacityLimited, true);
+  assert.equal(result.targets[1].availabilityLimited, false);
   assert.equal(result.targets[2].capacityLimited, false);
 
   assert.equal(toHours(result.redistributedPenaltyMinutes), 10);
@@ -180,6 +181,7 @@ test("capacity-adjusts targets and redistributes feasible hours", () => {
   assert.equal(toHours(result.targets[1].targetMinutes), 32.5);
   assert.equal(toHours(result.targets[2].targetMinutes), 32.5);
   assert.equal(result.targets[0].capacityLimited, true);
+  assert.equal(result.targets[0].availabilityLimited, true);
   assert.equal(result.capacityShortfallMinutes, 0);
 });
 
