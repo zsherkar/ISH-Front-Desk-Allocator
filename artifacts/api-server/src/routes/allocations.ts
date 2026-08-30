@@ -57,11 +57,15 @@ type GeneralFairnessWarningStat = {
   deviationFromTargetHours: number;
 };
 
-export function summarizeGeneralFairnessComparison<T extends {
-  totalHours: number;
-  hasPenalty: boolean;
-  capacityLimited: boolean;
-}>(stats: T[]): {
+export function summarizeGeneralFairnessComparison<
+  T extends {
+    totalHours: number;
+    hasPenalty: boolean;
+    capacityLimited: boolean;
+  },
+>(
+  stats: T[],
+): {
   stats: T[];
   meanHours: number;
   medianHours: number;
@@ -84,8 +88,7 @@ export function summarizeGeneralFairnessComparison<T extends {
     maxHours,
     rangeHours: maxHours - minHours,
     stdDevHours: computeStdDev(hours, meanHours),
-    maxDeviationFromMeanHours:
-      hours.length > 0 ? Math.max(...hours.map((value) => Math.abs(value - meanHours))) : 0,
+    maxDeviationFromMeanHours: hours.length > 0 ? Math.max(...hours.map((value) => Math.abs(value - meanHours))) : 0,
   };
 }
 
@@ -94,12 +97,12 @@ function formatSignedHours(hours: number): string {
   return `${normalized >= 0 ? "+" : ""}${normalized.toFixed(1)}h`;
 }
 
-export function penaltyGapHoursFromTargetBaseline(params: {
+export function penaltyGapHoursFromNeutralTarget(params: {
   hasPenalty: boolean;
-  targetBaselineMinutes: number;
+  neutralTargetMinutes: number;
   totalHours: number;
 }): number {
-  return params.hasPenalty ? minutesToHours(params.targetBaselineMinutes) - params.totalHours : 0;
+  return params.hasPenalty ? minutesToHours(params.neutralTargetMinutes) - params.totalHours : 0;
 }
 
 export function buildGeneralFairnessWarning(params: {
@@ -128,8 +131,7 @@ export function buildGeneralFairnessWarning(params: {
     })
     .sort(
       (a, b) =>
-        Math.abs(b.deviationFromTargetHours) - Math.abs(a.deviationFromTargetHours) ||
-        a.name.localeCompare(b.name),
+        Math.abs(b.deviationFromTargetHours) - Math.abs(a.deviationFromTargetHours) || a.name.localeCompare(b.name),
     );
   if (targetResidualOffenders.length > 0) {
     reasons.push(
@@ -141,7 +143,19 @@ export function buildGeneralFairnessWarning(params: {
     );
   }
 
-  const strikeGapOffenders = targetResidualOffenders.filter((stat) => stat.hasPenalty);
+  const strikeGapOffenders = generalStats
+    .filter((stat) => {
+      if (!stat.hasPenalty) return false;
+      const gapErrorHours = Math.abs(stat.penaltyHours - stat.penaltyGapHours);
+      return threshold <= thresholdEpsilonHours
+        ? gapErrorHours > thresholdEpsilonHours
+        : gapErrorHours + thresholdEpsilonHours >= threshold;
+    })
+    .sort(
+      (a, b) =>
+        Math.abs(b.penaltyHours - b.penaltyGapHours) - Math.abs(a.penaltyHours - a.penaltyGapHours) ||
+        a.name.localeCompare(b.name),
+    );
   if (strikeGapOffenders.length > 0) {
     reasons.push(
       "Strike-gap check: " +
@@ -363,11 +377,7 @@ async function buildAllocationResult(surveyId: number) {
           } else {
             assignmentSource = hasBackToBackPair ? "engine_back_to_back_emergency" : "engine_normal";
           }
-          if (
-            hasAfpCap &&
-            assignmentSource !== "manual" &&
-            !isNoAvailabilityAfpPlaceholderSource(assignmentSource)
-          ) {
+          if (hasAfpCap && assignmentSource !== "manual" && !isNoAvailabilityAfpPlaceholderSource(assignmentSource)) {
             afpNormalMinutes += hoursToMinutes(shift.durationHours);
           }
           const explanationCodes: ExplanationCode[] =
@@ -965,6 +975,7 @@ router.post("/surveys/:id/allocations/dry-run", async (req, res): Promise<void> 
         hasPenalty: responsesTable.hasPenalty,
         penaltyHours: responsesTable.penaltyHours,
         hasAfpCap: responsesTable.hasAfpCap,
+        afpHoursCap: responsesTable.afpHoursCap,
       })
       .from(responsesTable)
       .where(eq(responsesTable.surveyId, id)),
@@ -1013,6 +1024,7 @@ router.post("/surveys/:id/allocations/dry-run", async (req, res): Promise<void> 
       hasPenalty: boolean;
       penaltyHours: number;
       hasAfpCap: boolean;
+      afpHoursCap: number;
       availableShiftIds: Set<number>;
     }
   >();
@@ -1021,18 +1033,18 @@ router.post("/surveys/:id/allocations/dry-run", async (req, res): Promise<void> 
       hasPenalty: false,
       penaltyHours: 0,
       hasAfpCap: false,
+      afpHoursCap: Math.max(0, response.afpHoursCap ?? 10),
       availableShiftIds: new Set<number>(),
     };
     current.hasPenalty = current.hasPenalty || Boolean(response.hasPenalty);
-    current.penaltyHours = Math.max(
-      current.penaltyHours,
-      response.hasPenalty ? (response.penaltyHours ?? 0) : 0,
-    );
+    current.penaltyHours = Math.max(current.penaltyHours, response.hasPenalty ? (response.penaltyHours ?? 0) : 0);
     current.hasAfpCap =
       current.hasAfpCap || afpRespondentIds.includes(response.respondentId) || Boolean(response.hasAfpCap);
+    current.afpHoursCap = Math.max(0, response.afpHoursCap ?? current.afpHoursCap);
     current.availableShiftIds.add(response.shiftId);
     dryRunSettingsByRespondentId.set(response.respondentId, current);
   }
+  const dryRunCapacityMinutesByRespondentId = new Map<number, number>();
   const dryRunTargetInputs = Array.from(dryRunSettingsByRespondentId.entries())
     .filter(([, settings]) => !settings.hasAfpCap)
     .map(([respondentId, settings]) => {
@@ -1045,16 +1057,34 @@ router.post("/surveys/:id/allocations/dry-run", async (req, res): Promise<void> 
         const manualOwner = manualOwnerByShiftId.get(shift.id);
         return manualOwner === undefined ? settings.availableShiftIds.has(shift.id) : manualOwner === respondentId;
       });
+      const capacityMinutes = maxFeasibleShiftCapacityMinutes(capacityShifts, mandatoryShiftIds);
+      dryRunCapacityMinutesByRespondentId.set(respondentId, capacityMinutes);
       return {
         respondentId,
         penaltyMinutes: hoursToMinutes(settings.penaltyHours),
-        capacityMinutes: maxFeasibleShiftCapacityMinutes(capacityShifts, mandatoryShiftIds),
+        capacityMinutes,
         minimumMinutes: Array.from(mandatoryShiftIds).reduce(
           (sum, shiftId) => sum + hoursToMinutes(shiftById.get(shiftId)?.durationHours ?? 0),
           0,
         ),
       };
     });
+  for (const [respondentId, settings] of dryRunSettingsByRespondentId) {
+    if (!settings.hasAfpCap) continue;
+    const mandatoryShiftIds = new Set(
+      existingManualAssignments
+        .filter((assignment) => assignment.respondentId === respondentId)
+        .map((assignment) => assignment.shiftId),
+    );
+    const capacityShifts = shifts.filter((shift) => {
+      const manualOwner = manualOwnerByShiftId.get(shift.id);
+      return manualOwner === undefined ? settings.availableShiftIds.has(shift.id) : manualOwner === respondentId;
+    });
+    dryRunCapacityMinutesByRespondentId.set(
+      respondentId,
+      maxFeasibleShiftCapacityMinutes(capacityShifts, mandatoryShiftIds),
+    );
+  }
   const dryRunTotalStaffedMinutes = result.assignments.reduce(
     (sum, assignment) => sum + hoursToMinutes(shiftById.get(assignment.shiftId)?.durationHours ?? 0),
     0,
@@ -1083,6 +1113,54 @@ router.post("/surveys/:id/allocations/dry-run", async (req, res): Promise<void> 
       ];
     }),
   );
+  const dryRunRespondentPlans = result.plans.map((plan) => {
+    const settings = dryRunSettingsByRespondentId.get(plan.respondentId);
+    const generalTarget = dryRunTargetByRespondentId.get(plan.respondentId);
+    const availableCapacityMinutes = dryRunCapacityMinutesByRespondentId.get(plan.respondentId) ?? 0;
+    const hasAfpCap = settings?.hasAfpCap ?? false;
+    const afpCapMinutes = hoursToMinutes(settings?.afpHoursCap ?? 10);
+    const targetMinutes = hasAfpCap
+      ? Math.min(afpCapMinutes, availableCapacityMinutes)
+      : (generalTarget?.targetMinutes ?? 0);
+    const neutralTargetMinutes = hasAfpCap ? targetMinutes : (generalTarget?.neutralTargetMinutes ?? 0);
+    const countedAfpMinutes = hasAfpCap
+      ? result.assignments
+          .filter(
+            (assignment) =>
+              assignment.respondentId === plan.respondentId &&
+              !isNoAvailabilityAfpPlaceholderSource(assignment.source),
+          )
+          .reduce(
+            (sum, assignment) =>
+              sum + hoursToMinutes(shiftById.get(assignment.shiftId)?.durationHours ?? 0),
+            0,
+          )
+      : hoursToMinutes(plan.totalHours);
+    const shiftCountsByDate = plan.shiftIds.reduce((counts, shiftId) => {
+      const date = shiftById.get(shiftId)?.date;
+      if (date) counts.set(date, (counts.get(date) ?? 0) + 1);
+      return counts;
+    }, new Map<string, number>());
+    return {
+      respondentId: plan.respondentId,
+      name: plan.name,
+      category: plan.category,
+      totalHours: plan.totalHours,
+      targetHours: minutesToHours(targetMinutes),
+      neutralTargetHours: minutesToHours(neutralTargetMinutes),
+      availableCapacityHours: minutesToHours(availableCapacityMinutes),
+      deviationFromTargetHours: minutesToHours(countedAfpMinutes - targetMinutes),
+      hasPenalty: settings?.hasPenalty ?? false,
+      penaltyHours: settings?.penaltyHours ?? 0,
+      effectivePenaltyHours: minutesToHours(generalTarget?.effectivePenaltyMinutes ?? 0),
+      unappliedPenaltyHours: minutesToHours(generalTarget?.unappliedPenaltyMinutes ?? 0),
+      hasAfpCap,
+      capacityLimited: hasAfpCap
+        ? availableCapacityMinutes + 1e-6 < afpCapMinutes
+        : (generalTarget?.capacityLimited ?? false),
+      sameDayDoubleCount: Array.from(shiftCountsByDate.values()).filter((count) => count === 2).length,
+    };
+  });
 
   res.json({
     surveyId: id,
@@ -1117,6 +1195,7 @@ router.post("/surveys/:id/allocations/dry-run", async (req, res): Promise<void> 
       allowAfpOverCapForAvailableShifts: parsed.data.allowAfpOverCapForAvailableShifts ?? false,
       preserveManualLocks,
     },
+    respondentPlans: dryRunRespondentPlans,
     assignments: result.assignments,
     unallocatedShiftIds,
   });
@@ -1634,10 +1713,7 @@ router.get("/surveys/:id/allocation-stats", async (req, res): Promise<void> => {
     fairnessCandidatesByRespondentId.set(shift.respondentId, candidates);
   }
   const fairnessCapacityByRespondentId = new Map<number, number>();
-  const fairnessRespondentIds = new Set([
-    ...capacityByRespondentId.keys(),
-    ...fairnessCandidatesByRespondentId.keys(),
-  ]);
+  const fairnessRespondentIds = new Set([...capacityByRespondentId.keys(), ...fairnessCandidatesByRespondentId.keys()]);
   for (const respondentId of fairnessRespondentIds) {
     fairnessCapacityByRespondentId.set(
       respondentId,
@@ -1648,15 +1724,10 @@ router.get("/surveys/:id/allocation-stats", async (req, res): Promise<void> => {
     );
   }
 
-  const totalStaffedMinutes = allocations.reduce(
-    (sum, allocation) => sum + hoursToMinutes(allocation.totalHours),
-    0,
-  );
+  const totalStaffedMinutes = allocations.reduce((sum, allocation) => sum + hoursToMinutes(allocation.totalHours), 0);
   const actualCappedAfpMinutes = allocations.reduce(
     (sum, allocation) =>
-      hasAfpCapByRespondentId.get(allocation.respondentId)
-        ? sum + hoursToMinutes(allocation.totalHours)
-        : sum,
+      hasAfpCapByRespondentId.get(allocation.respondentId) ? sum + hoursToMinutes(allocation.totalHours) : sum,
     0,
   );
   const targetResult = solveNonAfpPenaltyTargets(
@@ -1694,7 +1765,11 @@ router.get("/surveys/:id/allocation-stats", async (req, res): Promise<void> => {
       penaltyHours: 0,
     };
     const hasAfpCap = hasAfpCapByRespondentId.get(a.respondentId) ?? false;
+    const generalTarget = generalTargetByRespondentId.get(a.respondentId);
     const targetHours = minutesToHours(targetMinutesByRespondentId.get(a.respondentId) ?? 0);
+    const neutralTargetHours = hasAfpCap ? targetHours : minutesToHours(generalTarget?.neutralTargetMinutes ?? 0);
+    const effectivePenaltyHours = hasAfpCap ? 0 : minutesToHours(generalTarget?.effectivePenaltyMinutes ?? 0);
+    const unappliedPenaltyHours = hasAfpCap ? 0 : minutesToHours(generalTarget?.unappliedPenaltyMinutes ?? 0);
     const weekdayHours = a.allocatedShifts
       .filter((s) => s.dayType === "weekday")
       .reduce((sum, shift) => sum + shift.durationHours, 0);
@@ -1739,7 +1814,10 @@ router.get("/surveys/:id/allocation-stats", async (req, res): Promise<void> => {
       hasAfpCap,
       penaltyGapHours: 0,
       targetHours,
-      availableCapacityHours: minutesToHours(capacityByRespondentId.get(a.respondentId) ?? 0),
+      neutralTargetHours,
+      effectivePenaltyHours,
+      unappliedPenaltyHours,
+      availableCapacityHours: minutesToHours(fairnessCapacityByRespondentId.get(a.respondentId) ?? 0),
       deviationFromTargetHours,
       sameDayDoubleCount,
       normalHours,
@@ -1759,9 +1837,9 @@ router.get("/surveys/:id/allocation-stats", async (req, res): Promise<void> => {
   const baseRespondentStats = allocations.map(toStat);
   const respondentStats = baseRespondentStats.map((stat) => ({
     ...stat,
-    penaltyGapHours: penaltyGapHoursFromTargetBaseline({
+    penaltyGapHours: penaltyGapHoursFromNeutralTarget({
       hasPenalty: stat.hasPenalty,
-      targetBaselineMinutes: targetResult.baselineMinutes,
+      neutralTargetMinutes: hoursToMinutes(stat.neutralTargetHours),
       totalHours: stat.totalHours,
     }),
   }));
@@ -1772,7 +1850,9 @@ router.get("/surveys/:id/allocation-stats", async (req, res): Promise<void> => {
     capacityLimited: generalTargetByRespondentId.get(stat.respondentId)?.capacityLimited ?? false,
   }));
   const comparisonSummary = summarizeGeneralFairnessComparison(generalStatsWithFairnessMetadata);
-  const nonPenalizedGeneralStats = comparisonSummary.stats.map(({ capacityLimited: _capacityLimited, ...stat }) => stat);
+  const nonPenalizedGeneralStats = comparisonSummary.stats.map(
+    ({ capacityLimited: _capacityLimited, ...stat }) => stat,
+  );
   const penalizedStats = generalStats.filter((a) => a.hasPenalty);
   const maxDeviationFromTargetHours =
     generalStats.length > 0 ? Math.max(...generalStats.map((stat) => Math.abs(stat.deviationFromTargetHours))) : 0;

@@ -228,8 +228,7 @@ function runGreedyAllocation(input: PureAllocationInput): PureAllocationOutput {
   for (const [shiftId, respondentId] of manualRespondentIdByShiftId) {
     manualMinutesByRespondentId.set(
       respondentId,
-      (manualMinutesByRespondentId.get(respondentId) ?? 0) +
-        hoursToMinutes(shiftMap.get(shiftId)?.durationHours ?? 0),
+      (manualMinutesByRespondentId.get(respondentId) ?? 0) + hoursToMinutes(shiftMap.get(shiftId)?.durationHours ?? 0),
     );
   }
 
@@ -248,10 +247,7 @@ function runGreedyAllocation(input: PureAllocationInput): PureAllocationOutput {
       });
       return {
         ...respondent,
-        availableCapacityMinutes: maxFeasibleShiftCapacityMinutes(
-          capacityShifts,
-          mandatoryShiftIds,
-        ),
+        availableCapacityMinutes: maxFeasibleShiftCapacityMinutes(capacityShifts, mandatoryShiftIds),
       };
     })
     .sort((a, b) => a.name.localeCompare(b.name) || a.id - b.id);
@@ -310,9 +306,7 @@ function runGreedyAllocation(input: PureAllocationInput): PureAllocationOutput {
   }
 
   const staffableShifts = shifts.filter(
-    (shift) =>
-      (availabilityByShiftId.get(shift.id)?.size ?? 0) > 0 ||
-      manualRespondentIdByShiftId.has(shift.id),
+    (shift) => (availabilityByShiftId.get(shift.id)?.size ?? 0) > 0 || manualRespondentIdByShiftId.has(shift.id),
   );
   const intendedCappedAfpMinutes = respondents
     .filter((respondent) => respondent.hasAfpCap)
@@ -321,29 +315,22 @@ function runGreedyAllocation(input: PureAllocationInput): PureAllocationOutput {
         sum +
         Math.max(
           manualMinutesByRespondentId.get(respondent.id) ?? 0,
-          Math.min(
-            hoursToMinutes(respondent.afpHoursCap),
-            respondent.availableCapacityMinutes,
-          ),
+          Math.min(hoursToMinutes(respondent.afpHoursCap), respondent.availableCapacityMinutes),
         ),
       0,
     );
   const intendedNonAfpMinutes = Math.max(
     0,
-    staffableShifts.reduce((sum, shift) => sum + hoursToMinutes(shift.durationHours), 0) -
-      intendedCappedAfpMinutes,
+    staffableShifts.reduce((sum, shift) => sum + hoursToMinutes(shift.durationHours), 0) - intendedCappedAfpMinutes,
   );
   const generalRespondents = respondents.filter((respondent) => !respondent.hasAfpCap);
   const generalTargetInputs = generalRespondents.map((respondent) => ({
-      respondentId: respondent.id,
-      penaltyMinutes: hoursToMinutes(respondent.hasPenalty ? respondent.penaltyHours : 0),
-      capacityMinutes: respondent.availableCapacityMinutes,
-      minimumMinutes: manualMinutesByRespondentId.get(respondent.id) ?? 0,
-    }));
-  let targetResult = solveNonAfpPenaltyTargets(
-    generalTargetInputs,
-    intendedNonAfpMinutes,
-  );
+    respondentId: respondent.id,
+    penaltyMinutes: hoursToMinutes(respondent.hasPenalty ? respondent.penaltyHours : 0),
+    capacityMinutes: respondent.availableCapacityMinutes,
+    minimumMinutes: manualMinutesByRespondentId.get(respondent.id) ?? 0,
+  }));
+  let targetResult = solveNonAfpPenaltyTargets(generalTargetInputs, intendedNonAfpMinutes);
   const targetMinutesByRespondentId = new Map<number, number>();
   for (const target of targetResult.targets) {
     targetMinutesByRespondentId.set(target.respondentId, target.targetMinutes);
@@ -352,10 +339,7 @@ function runGreedyAllocation(input: PureAllocationInput): PureAllocationOutput {
     if (respondent.hasAfpCap) {
       targetMinutesByRespondentId.set(
         respondent.id,
-        Math.min(
-          hoursToMinutes(respondent.afpHoursCap),
-          respondent.availableCapacityMinutes,
-        ),
+        Math.min(hoursToMinutes(respondent.afpHoursCap), respondent.availableCapacityMinutes),
       );
     }
   }
@@ -541,10 +525,7 @@ function runGreedyAllocation(input: PureAllocationInput): PureAllocationOutput {
   );
   const provisionalCappedAfpMinutes = respondents
     .filter((respondent) => respondent.hasAfpCap)
-    .reduce(
-      (sum, respondent) => sum + calcMinutes(allocatedShiftIdsFor(respondent.id), shiftMap),
-      0,
-    );
+    .reduce((sum, respondent) => sum + calcMinutes(allocatedShiftIdsFor(respondent.id), shiftMap), 0);
   targetResult = solveNonAfpPenaltyTargets(
     generalTargetInputs,
     Math.max(0, provisionalStaffedMinutes - provisionalCappedAfpMinutes),
@@ -555,6 +536,13 @@ function runGreedyAllocation(input: PureAllocationInput): PureAllocationOutput {
 
   type FairnessScore = {
     maxAbsTargetDeviationMinutes: number;
+    maxStrikeOverageMinutes: number;
+    totalStrikeOverageMinutes: number;
+    comparableMaxAbsTargetDeviationMinutes: number;
+    comparableMaxShortfallMinutes: number;
+    comparableMaxOverageMinutes: number;
+    comparableTotalAbsDeviationMinutes: number;
+    totalAbsTargetDeviationMinutes: number;
     nonPenalizedStdDevMinutes: number;
     sumSquaredDeviationMinutes: number;
     nonPenalizedRangeMinutes: number;
@@ -577,14 +565,11 @@ function runGreedyAllocation(input: PureAllocationInput): PureAllocationOutput {
     const actual = actualMinutesByRespondentId();
     const general = respondents.filter((respondent) => !respondent.hasAfpCap);
     const capacityLimitedRespondentIds = new Set(
-      targetResult.targets
-        .filter((target) => target.capacityLimited)
-        .map((target) => target.respondentId),
+      targetResult.targets.filter((target) => target.capacityLimited).map((target) => target.respondentId),
     );
     const nonPenalized = general.filter(
       (respondent) =>
-        (!respondent.hasPenalty || respondent.penaltyHours <= 0) &&
-        !capacityLimitedRespondentIds.has(respondent.id),
+        (!respondent.hasPenalty || respondent.penaltyHours <= 0) && !capacityLimitedRespondentIds.has(respondent.id),
     );
     const nonPenalizedActual = nonPenalized.map((respondent) => actual.get(respondent.id) ?? 0);
     const nonPenalizedMean =
@@ -597,6 +582,15 @@ function runGreedyAllocation(input: PureAllocationInput): PureAllocationOutput {
       const target = targetMinutesByRespondentId.get(respondent.id) ?? 0;
       return (actual.get(respondent.id) ?? 0) - target;
     });
+    const comparableTargetDeviations = nonPenalized.map((respondent) => {
+      const target = targetMinutesByRespondentId.get(respondent.id) ?? 0;
+      return (actual.get(respondent.id) ?? 0) - target;
+    });
+    const strikeOverages = general
+      .filter((respondent) => respondent.hasPenalty && respondent.penaltyHours > 0)
+      .map((respondent) =>
+        Math.max(0, (actual.get(respondent.id) ?? 0) - (targetMinutesByRespondentId.get(respondent.id) ?? 0)),
+      );
     const maxAbsTargetDeviationMinutes =
       targetDeviations.length > 0 ? Math.max(...targetDeviations.map((value) => Math.abs(value))) : 0;
     const maxDeviationFromMeanMinutes =
@@ -608,15 +602,27 @@ function runGreedyAllocation(input: PureAllocationInput): PureAllocationOutput {
     const warningStdDevHours = 4;
     const highStdDevReasonCodes =
       nonPenalizedStdDevMinutes > hoursToMinutes(targetStdDevHours)
-        ? [
-            ...(targetResult.capacityShortfallMinutes > 0
-              ? ["NON_AFP_CAPACITY_SHORTFALL"]
-              : []),
-          ]
+        ? [...(targetResult.capacityShortfallMinutes > 0 ? ["NON_AFP_CAPACITY_SHORTFALL"] : [])]
         : [];
 
     return {
       maxAbsTargetDeviationMinutes,
+      maxStrikeOverageMinutes: strikeOverages.length > 0 ? Math.max(...strikeOverages) : 0,
+      totalStrikeOverageMinutes: strikeOverages.reduce((sum, value) => sum + value, 0),
+      comparableMaxAbsTargetDeviationMinutes:
+        comparableTargetDeviations.length > 0
+          ? Math.max(...comparableTargetDeviations.map((value) => Math.abs(value)))
+          : 0,
+      comparableMaxShortfallMinutes:
+        comparableTargetDeviations.length > 0
+          ? Math.max(...comparableTargetDeviations.map((value) => Math.max(0, -value)))
+          : 0,
+      comparableMaxOverageMinutes:
+        comparableTargetDeviations.length > 0
+          ? Math.max(...comparableTargetDeviations.map((value) => Math.max(0, value)))
+          : 0,
+      comparableTotalAbsDeviationMinutes: comparableTargetDeviations.reduce((sum, value) => sum + Math.abs(value), 0),
+      totalAbsTargetDeviationMinutes: targetDeviations.reduce((sum, value) => sum + Math.abs(value), 0),
       nonPenalizedStdDevMinutes,
       sumSquaredDeviationMinutes: targetDeviations.reduce((sum, value) => sum + value * value, 0),
       nonPenalizedRangeMinutes: nonPenalizedMax - nonPenalizedMin,
@@ -648,6 +654,13 @@ function runGreedyAllocation(input: PureAllocationInput): PureAllocationOutput {
     const epsilon = 0.5;
     const comparisons: Array<[number, number]> = [
       [next.maxAbsTargetDeviationMinutes, current.maxAbsTargetDeviationMinutes],
+      [next.maxStrikeOverageMinutes, current.maxStrikeOverageMinutes],
+      [next.totalStrikeOverageMinutes, current.totalStrikeOverageMinutes],
+      [next.comparableMaxAbsTargetDeviationMinutes, current.comparableMaxAbsTargetDeviationMinutes],
+      [next.comparableMaxShortfallMinutes, current.comparableMaxShortfallMinutes],
+      [next.comparableMaxOverageMinutes, current.comparableMaxOverageMinutes],
+      [next.comparableTotalAbsDeviationMinutes, current.comparableTotalAbsDeviationMinutes],
+      [next.totalAbsTargetDeviationMinutes, current.totalAbsTargetDeviationMinutes],
       [next.nonPenalizedStdDevMinutes, current.nonPenalizedStdDevMinutes],
       [next.sumSquaredDeviationMinutes, current.sumSquaredDeviationMinutes],
       [next.nonPenalizedRangeMinutes, current.nonPenalizedRangeMinutes],
@@ -911,10 +924,7 @@ function runGreedyAllocation(input: PureAllocationInput): PureAllocationOutput {
   );
   const finalCappedAfpMinutes = respondents
     .filter((respondent) => respondent.hasAfpCap)
-    .reduce(
-      (sum, respondent) => sum + calcMinutes(allocatedShiftIdsFor(respondent.id), shiftMap),
-      0,
-    );
+    .reduce((sum, respondent) => sum + calcMinutes(allocatedShiftIdsFor(respondent.id), shiftMap), 0);
   targetResult = solveNonAfpPenaltyTargets(
     generalTargetInputs,
     Math.max(0, finalStaffedMinutes - finalCappedAfpMinutes),
@@ -925,16 +935,8 @@ function runGreedyAllocation(input: PureAllocationInput): PureAllocationOutput {
 
   for (let iteration = 0; iteration < 200; iteration++) {
     const moved =
-      trySingleFairnessMove(
-        fairnessRepairAttempted,
-        fairnessRepairMoves,
-        assignedShiftCountBeforeFairnessRepair,
-      ) ||
-      tryPairwiseFairnessSwap(
-        fairnessRepairAttempted,
-        fairnessRepairMoves,
-        assignedShiftCountBeforeFairnessRepair,
-      );
+      trySingleFairnessMove(fairnessRepairAttempted, fairnessRepairMoves, assignedShiftCountBeforeFairnessRepair) ||
+      tryPairwiseFairnessSwap(fairnessRepairAttempted, fairnessRepairMoves, assignedShiftCountBeforeFairnessRepair);
     if (!moved) break;
     fairnessRepairAttempted = true;
     fairnessRepairMoves += 1;

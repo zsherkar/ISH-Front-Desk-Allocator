@@ -1394,6 +1394,12 @@ components:
           type: number
         targetHours:
           type: number
+        neutralTargetHours:
+          type: number
+        effectivePenaltyHours:
+          type: number
+        unappliedPenaltyHours:
+          type: number
         availableCapacityHours:
           type: number
         deviationFromTargetHours:
@@ -1425,6 +1431,9 @@ components:
         - penaltyHours
         - penaltyGapHours
         - targetHours
+        - neutralTargetHours
+        - effectivePenaltyHours
+        - unappliedPenaltyHours
         - availableCapacityHours
         - deviationFromTargetHours
         - sameDayDoubleCount
@@ -1452,6 +1461,57 @@ components:
         - shiftId
         - source
         - explanationCodes
+
+    AllocationDryRunRespondentPlan:
+      type: object
+      properties:
+        respondentId:
+          type: integer
+        name:
+          type: string
+        category:
+          type: string
+          enum: [AFP, General]
+        totalHours:
+          type: number
+        targetHours:
+          type: number
+        neutralTargetHours:
+          type: number
+        availableCapacityHours:
+          type: number
+        deviationFromTargetHours:
+          type: number
+        hasPenalty:
+          type: boolean
+        penaltyHours:
+          type: number
+        effectivePenaltyHours:
+          type: number
+        unappliedPenaltyHours:
+          type: number
+        hasAfpCap:
+          type: boolean
+        capacityLimited:
+          type: boolean
+        sameDayDoubleCount:
+          type: integer
+      required:
+        - respondentId
+        - name
+        - category
+        - totalHours
+        - targetHours
+        - neutralTargetHours
+        - availableCapacityHours
+        - deviationFromTargetHours
+        - hasPenalty
+        - penaltyHours
+        - effectivePenaltyHours
+        - unappliedPenaltyHours
+        - hasAfpCap
+        - capacityLimited
+        - sameDayDoubleCount
 
     AllocationDryRunResult:
       type: object
@@ -1506,6 +1566,10 @@ components:
         settings:
           type: object
           additionalProperties: true
+        respondentPlans:
+          type: array
+          items:
+            $ref: "#/components/schemas/AllocationDryRunRespondentPlan"
         assignments:
           type: array
           items:
@@ -1538,6 +1602,7 @@ components:
         - afpCapOverflowAssignments
         - noAvailabilityAfpPlaceholderAssignments
         - settings
+        - respondentPlans
         - assignments
         - unallocatedShiftIds
 

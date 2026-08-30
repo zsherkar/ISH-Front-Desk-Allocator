@@ -65,7 +65,7 @@ const SOLVER_OPTIONS = {
   random_seed: 0,
   threads: 1,
 } as const;
-const MIN_GENERAL_FAIRNESS_ENVELOPE_HOURS = 4;
+const GENERAL_FAIRNESS_BAND_HOURS = 4;
 const highsPromise = loadHighs();
 
 function normalizeShifts(shifts: AllocationShiftInput[]): OptimizerShift[] {
@@ -1060,12 +1060,26 @@ export async function runGlobalAllocation(
 
     let finalSolution = prioritySolution;
     let hasStrikeOverageVariables = false;
+    const capacityLimitedRespondentIds = new Set(
+      targetResult.targets
+        .filter((target) => target.capacityLimited)
+        .map((target) => target.respondentId),
+    );
+    const comparablePoolRespondents = equalPoolRespondents.filter(
+      (respondent) =>
+        (!respondent.hasPenalty || respondent.penaltyHours <= 0) &&
+        !capacityLimitedRespondentIds.has(respondent.id),
+    );
+    const absoluteDeviationVariableKeyByRespondentId = new Map<
+      number,
+      string
+    >();
+    const comparableMaxDeviationVariableKey = "fairness:comparableMaxDeviation";
+    const comparableMaxShortfallVariableKey = "fairness:comparableMaxShortfall";
+    const comparableMaxOverageVariableKey = "fairness:comparableMaxOverage";
+    let hasComparableFairnessVariables = false;
     if (equalPoolRespondents.length > 0) {
       const maxDeviationVariableKey = "fairness:maxDeviation";
-      const absoluteDeviationVariableKeyByRespondentId = new Map<
-        number,
-        string
-      >();
       addCoefficient(builder, maxDeviationVariableKey, "maxDeviation", 1);
       for (const respondent of equalPoolRespondents) {
         const targetMinutes =
@@ -1143,6 +1157,89 @@ export async function runGlobalAllocation(
         );
       }
 
+      for (const respondent of comparablePoolRespondents) {
+        const comparableConstraintKey = `comparableMax:${respondent.id}`;
+        const comparableShortfallConstraintKey = `comparableShortfall:${respondent.id}`;
+        const comparableOverageConstraintKey = `comparableOverage:${respondent.id}`;
+        const targetMinutes =
+          targetMinutesByRespondentId.get(respondent.id) ?? 0;
+        builder.constraints.set(comparableConstraintKey, { max: 0 });
+        builder.constraints.set(comparableShortfallConstraintKey, {
+          min: targetMinutes,
+        });
+        builder.constraints.set(comparableOverageConstraintKey, {
+          max: targetMinutes,
+        });
+        addCoefficient(
+          builder,
+          absoluteDeviationVariableKeyByRespondentId.get(respondent.id)!,
+          comparableConstraintKey,
+          1,
+        );
+        addCoefficient(
+          builder,
+          absoluteDeviationVariableKeyByRespondentId.get(respondent.id)!,
+          "comparableTotalDeviation",
+          1,
+        );
+        addCoefficient(
+          builder,
+          comparableMaxDeviationVariableKey,
+          comparableConstraintKey,
+          -1,
+        );
+        for (const candidate of candidates.filter(
+          (entry) => entry.respondent.id === respondent.id,
+        )) {
+          const durationMinutes = hoursToMinutes(candidate.shift.durationHours);
+          addCoefficient(
+            builder,
+            candidate.variableKey,
+            comparableShortfallConstraintKey,
+            durationMinutes,
+          );
+          addCoefficient(
+            builder,
+            candidate.variableKey,
+            comparableOverageConstraintKey,
+            durationMinutes,
+          );
+        }
+        addCoefficient(
+          builder,
+          comparableMaxShortfallVariableKey,
+          comparableShortfallConstraintKey,
+          1,
+        );
+        addCoefficient(
+          builder,
+          comparableMaxOverageVariableKey,
+          comparableOverageConstraintKey,
+          -1,
+        );
+        hasComparableFairnessVariables = true;
+      }
+      if (hasComparableFairnessVariables) {
+        addCoefficient(
+          builder,
+          comparableMaxDeviationVariableKey,
+          "comparableMaxDeviation",
+          1,
+        );
+        addCoefficient(
+          builder,
+          comparableMaxShortfallVariableKey,
+          "comparableMaxShortfall",
+          1,
+        );
+        addCoefficient(
+          builder,
+          comparableMaxOverageVariableKey,
+          "comparableMaxOverage",
+          1,
+        );
+      }
+
       const maxStrikeOverageVariableKey = "strike:maxOverage";
       for (const penalizedRespondent of equalPoolRespondents.filter(
         (respondent) => respondent.hasPenalty && respondent.penaltyHours > 0,
@@ -1185,7 +1282,9 @@ export async function runGlobalAllocation(
           1,
         );
       }
+    }
 
+    if (equalPoolRespondents.length > 0) {
       const bestProvenMaxDeviationSolution = await solveStage(
         builder,
         "maxDeviation",
@@ -1200,49 +1299,20 @@ export async function runGlobalAllocation(
           reason: `fairness_envelope_${bestProvenMaxDeviationSolution.status}`,
         };
       }
-      // Keep a small granularity allowance when exact target matching would
-      // create an avoidable double, but do not let one person's coarse shifts
-      // loosen the fairness envelope for everybody else.
-      let acceptableFairnessEnvelopeMinutes = 0;
-      for (const respondent of equalPoolRespondents) {
-        const largestRespondentShiftMinutes = candidates.reduce(
-          (largestMinutes, candidate) =>
-            candidate.respondent.id === respondent.id && !candidate.isManual
-              && !candidate.isNoAvailabilityPlaceholder
-              ? Math.max(
-                  largestMinutes,
-                  hoursToMinutes(candidate.shift.durationHours),
-                )
-              : largestMinutes,
-          0,
-        );
-        const respondentEnvelopeMinutes = Math.max(
-          0,
-          bestProvenMaxDeviation,
-          hoursToMinutes(MIN_GENERAL_FAIRNESS_ENVELOPE_HOURS),
-          largestRespondentShiftMinutes,
-        );
-        acceptableFairnessEnvelopeMinutes = Math.max(
-          acceptableFairnessEnvelopeMinutes,
-          respondentEnvelopeMinutes,
-        );
-        const envelopeConstraintKey = `fairnessEnvelope:${respondent.id}`;
-        builder.constraints.set(envelopeConstraintKey, {
-          max: respondentEnvelopeMinutes + 1e-6,
-        });
-        addCoefficient(
-          builder,
-          absoluteDeviationVariableKeyByRespondentId.get(respondent.id)!,
-          envelopeConstraintKey,
-          1,
-        );
-      }
       builder.constraints.set("maxDeviation", {
-        max: acceptableFairnessEnvelopeMinutes + 1e-6,
+        max:
+          Math.max(
+            0,
+            bestProvenMaxDeviation,
+            hoursToMinutes(GENERAL_FAIRNESS_BAND_HOURS),
+          ) + 1e-6,
       });
       finalSolution = bestProvenMaxDeviationSolution;
     }
 
+    // Protect the strike reduction inside the best attainable all-General
+    // fairness envelope. This prevents either policy from being satisfied by
+    // making an ordinary respondent arbitrarily worse.
     if (hasStrikeOverageVariables) {
       const strikeMaxOverageSolution = await solveStage(
         builder,
@@ -1279,6 +1349,81 @@ export async function runGlobalAllocation(
       finalSolution = strikeTotalOverageSolution;
     }
 
+    if (hasComparableFairnessVariables) {
+      const comparableEnvelopeSolution = await solveStage(
+        builder,
+        "comparableMaxDeviation",
+        "minimize",
+      );
+      const bestComparableMaxDeviation = optimalResult(
+        comparableEnvelopeSolution,
+      );
+      if (bestComparableMaxDeviation === null) {
+        return {
+          ok: false,
+          reason: `comparable_fairness_envelope_${comparableEnvelopeSolution.status}`,
+        };
+      }
+      builder.constraints.set("comparableMaxDeviation", {
+        max:
+          Math.max(
+            0,
+            bestComparableMaxDeviation,
+            hoursToMinutes(GENERAL_FAIRNESS_BAND_HOURS),
+          ) + 1e-6,
+      });
+      finalSolution = comparableEnvelopeSolution;
+
+      // A forced high outlier can determine the absolute envelope. Minimize
+      // ordinary-person under-allocation and over-allocation separately so
+      // that outlier cannot license a second, opposite-direction outlier.
+      const comparableShortfallSolution = await solveStage(
+        builder,
+        "comparableMaxShortfall",
+        "minimize",
+      );
+      const bestComparableShortfall = optimalResult(
+        comparableShortfallSolution,
+      );
+      if (bestComparableShortfall === null) {
+        return {
+          ok: false,
+          reason: `comparable_shortfall_${comparableShortfallSolution.status}`,
+        };
+      }
+      builder.constraints.set("comparableMaxShortfall", {
+        max:
+          Math.max(
+            0,
+            bestComparableShortfall,
+            hoursToMinutes(GENERAL_FAIRNESS_BAND_HOURS),
+          ) + 1e-6,
+      });
+      finalSolution = comparableShortfallSolution;
+
+      const comparableOverageSolution = await solveStage(
+        builder,
+        "comparableMaxOverage",
+        "minimize",
+      );
+      const bestComparableOverage = optimalResult(comparableOverageSolution);
+      if (bestComparableOverage === null) {
+        return {
+          ok: false,
+          reason: `comparable_overage_${comparableOverageSolution.status}`,
+        };
+      }
+      builder.constraints.set("comparableMaxOverage", {
+        max:
+          Math.max(
+            0,
+            bestComparableOverage,
+            hoursToMinutes(GENERAL_FAIRNESS_BAND_HOURS),
+          ) + 1e-6,
+      });
+      finalSolution = comparableOverageSolution;
+    }
+
     if (backToBackVariableKeys.length > 0) {
       const backToBackSolution = await solveStage(
         builder,
@@ -1301,29 +1446,33 @@ export async function runGlobalAllocation(
       finalSolution = backToBackSolution;
     }
 
-    if (equalPoolRespondents.length > 0) {
-      const refinedMaxDeviationSolution = await solveStage(
+    if (hasComparableFairnessVariables) {
+      const comparableTotalDeviationSolution = await solveStage(
         builder,
-        "maxDeviation",
+        "comparableTotalDeviation",
         "minimize",
       );
-      const refinedMaxDeviation = feasibleResult(refinedMaxDeviationSolution);
-      if (refinedMaxDeviation === null) {
-        return {
-          ok: false,
-          reason: `refined_max_deviation_${refinedMaxDeviationSolution.status}`,
-        };
-      }
-      if (refinedMaxDeviationSolution.status !== "optimal") {
+      const bestComparableTotalDeviation = feasibleResult(
+        comparableTotalDeviationSolution,
+      );
+      if (bestComparableTotalDeviation !== null) {
+        if (comparableTotalDeviationSolution.status !== "optimal") {
+          boundedStages.push(
+            `comparable_total_deviation_${comparableTotalDeviationSolution.status}`,
+          );
+        }
+        builder.constraints.set("comparableTotalDeviation", {
+          max: Math.max(0, bestComparableTotalDeviation) + 1e-6,
+        });
+        finalSolution = comparableTotalDeviationSolution;
+      } else {
         boundedStages.push(
-          `refined_max_deviation_${refinedMaxDeviationSolution.status}`,
+          `comparable_total_deviation_${comparableTotalDeviationSolution.status}_no_incumbent`,
         );
       }
-      builder.constraints.set("maxDeviation", {
-        max: Math.max(0, refinedMaxDeviation) + 1e-6,
-      });
-      finalSolution = refinedMaxDeviationSolution;
+    }
 
+    if (equalPoolRespondents.length > 0) {
       const totalDeviationSolution = await solveStage(
         builder,
         "totalDeviation",

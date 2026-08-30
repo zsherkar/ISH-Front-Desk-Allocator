@@ -558,7 +558,7 @@ test("global optimizer distributes feasible hours among capped AFP respondents",
   );
 });
 
-test("global optimizer accepts a shift-granularity fairness envelope to avoid a double", async () => {
+test("global optimizer stays within the fairness band before minimizing doubles", async () => {
   const shifts = [
     shift(61, "09:00", "11:00", 2),
     shift(62, "11:00", "13:00", 2),
@@ -617,7 +617,10 @@ test("strike-adjusted fairness preserves the target gap before minimizing back-t
         2,
         "Penalized",
         [...sharedShiftIds, ...penalizedOnlyShifts.map((entry) => entry.id)],
-        { hasPenalty: true, penaltyHours: 4 },
+        {
+          hasPenalty: true,
+          penaltyHours: 4,
+        },
       ),
     ],
   });
@@ -627,10 +630,53 @@ test("strike-adjusted fairness preserves the target gap before minimizing back-t
   const hoursByName = new Map(
     output.plans.map((plan) => [plan.name, plan.totalHours]),
   );
-  assert.equal(output.fairnessDiagnostics.backToBackPairDays, 3);
-  assert.equal(hoursByName.get("Unpenalized"), 14);
-  assert.equal(hoursByName.get("Penalized"), 10);
+  assert.equal(output.fairnessDiagnostics.backToBackPairDays, 4);
+  assert.equal(hoursByName.get("Unpenalized"), 16);
+  assert.equal(hoursByName.get("Penalized"), 8);
   assert.equal(output.fairnessDiagnostics.maxDeviationFromTargetHours, 0);
+});
+
+test("a forced penalized outlier cannot loosen ordinary people beyond the fairness band", async () => {
+  const shifts = [
+    { ...shift(301, "09:00", "11:00", 2), date: "2026-09-01" },
+    { ...shift(302, "11:00", "13:00", 2), date: "2026-09-01" },
+    { ...shift(303, "09:00", "11:00", 2), date: "2026-09-02" },
+    { ...shift(304, "11:00", "13:00", 2), date: "2026-09-02" },
+    { ...shift(305, "09:00", "11:00", 2), date: "2026-09-03" },
+    { ...shift(306, "09:00", "11:00", 2), date: "2026-09-04" },
+    { ...shift(307, "09:00", "11:00", 2), date: "2026-09-05" },
+    { ...shift(308, "09:00", "11:00", 2), date: "2026-09-06" },
+  ];
+
+  const output = await runPureAllocation({
+    shifts,
+    respondents: [
+      respondent(1, "Ordinary A", [301, 302, 303, 304, 305, 306]),
+      respondent(2, "Ordinary B", [301, 302, 303, 304]),
+      respondent(3, "Penalized", [307, 308], {
+        hasPenalty: true,
+        penaltyHours: 10,
+      }),
+    ],
+  });
+
+  assert.equal(output.assignments.length, 8);
+  assert.deepEqual(output.unallocatedShiftIds, []);
+  assert.deepEqual(
+    new Map(output.plans.map((plan) => [plan.name, plan.totalHours])),
+    new Map([
+      ["Ordinary A", 8],
+      ["Ordinary B", 4],
+      ["Penalized", 4],
+    ]),
+  );
+  assert.equal(output.fairnessDiagnostics.backToBackPairDays, 0);
+  assert.equal(output.fairnessDiagnostics.nonPenalizedGeneralStdDevHours, 2);
+  assert.equal(output.fairnessDiagnostics.maxDeviationFromTargetHours, 4);
+  assert.equal(
+    output.fairnessDiagnostics.sumSquaredDeviationFromTargetHours,
+    32,
+  );
 });
 
 test("fairness capacity respects the feasible same-day maximum instead of raw availability", async () => {
@@ -829,7 +875,10 @@ test("greedy fallback uses per-date feasible capacity for General targets", asyn
     allowExtremeNoAvailabilityAfpStacking: true,
   });
 
-  assert.equal(output.fairnessDiagnostics.optimizationMethod, "greedy_fallback");
+  assert.equal(
+    output.fairnessDiagnostics.optimizationMethod,
+    "greedy_fallback",
+  );
   assert.equal(output.assignments.length, 3);
   assert.deepEqual(
     output.plans.map((plan) => plan.totalHours).sort((a, b) => a - b),
@@ -854,8 +903,16 @@ test("greedy fallback absorbs fixed General manual hours into its targets", asyn
   const output = await runPureAllocation({
     shifts: [...sharedShifts, ...manualShifts],
     respondents: [
-      respondent(1, "Alice", sharedShifts.map((entry) => entry.id)),
-      respondent(2, "Bob", sharedShifts.map((entry) => entry.id)),
+      respondent(
+        1,
+        "Alice",
+        sharedShifts.map((entry) => entry.id),
+      ),
+      respondent(
+        2,
+        "Bob",
+        sharedShifts.map((entry) => entry.id),
+      ),
       respondent(3, "Manual", []),
     ],
     manualAssignments: manualShifts.map((entry) => ({
@@ -865,7 +922,10 @@ test("greedy fallback absorbs fixed General manual hours into its targets", asyn
     allowExtremeNoAvailabilityAfpStacking: true,
   });
 
-  assert.equal(output.fairnessDiagnostics.optimizationMethod, "greedy_fallback");
+  assert.equal(
+    output.fairnessDiagnostics.optimizationMethod,
+    "greedy_fallback",
+  );
   assert.equal(output.assignments.length, 5);
   assert.deepEqual(
     output.plans.map((plan) => plan.totalHours).sort((a, b) => a - b),
@@ -906,7 +966,10 @@ test("greedy fallback derives General targets from actual overlapping AFP alloca
   const hoursByName = new Map(
     output.plans.map((plan) => [plan.name, plan.totalHours]),
   );
-  assert.equal(output.fairnessDiagnostics.optimizationMethod, "greedy_fallback");
+  assert.equal(
+    output.fairnessDiagnostics.optimizationMethod,
+    "greedy_fallback",
+  );
   assert.equal(hoursByName.get("General One"), 2);
   assert.equal(hoursByName.get("General Two"), 2);
   assert.equal(
@@ -939,7 +1002,10 @@ test("greedy fallback repairs normal allocation after adding AFP placeholders", 
     allowExtremeNoAvailabilityAfpStacking: true,
   });
 
-  assert.equal(output.fairnessDiagnostics.optimizationMethod, "greedy_fallback");
+  assert.equal(
+    output.fairnessDiagnostics.optimizationMethod,
+    "greedy_fallback",
+  );
   assert.equal(assignmentFor(output, normalShift.id)?.respondentId, 2);
   assert.deepEqual(
     output.plans.map((plan) => plan.totalHours).sort((a, b) => a - b),
@@ -966,7 +1032,10 @@ test("greedy fallback excludes capacity-limited people from equal-pool spread", 
     allowExtremeNoAvailabilityAfpStacking: true,
   });
 
-  assert.equal(output.fairnessDiagnostics.optimizationMethod, "greedy_fallback");
+  assert.equal(
+    output.fairnessDiagnostics.optimizationMethod,
+    "greedy_fallback",
+  );
   assert.equal(output.fairnessDiagnostics.nonPenalizedGeneralMeanHours, 10);
   assert.equal(output.fairnessDiagnostics.nonPenalizedGeneralMedianHours, 10);
   assert.equal(output.fairnessDiagnostics.nonPenalizedGeneralMinHours, 10);

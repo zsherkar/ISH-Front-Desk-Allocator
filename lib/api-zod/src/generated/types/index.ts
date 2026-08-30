@@ -14,6 +14,8 @@ export * from "./allocationAuditAvailableRespondent";
 export * from "./allocationAuditAvailableRespondentCategory";
 export * from "./allocationBlankAuditRow";
 export * from "./allocationDryRunAssignment";
+export * from "./allocationDryRunRespondentPlan";
+export * from "./allocationDryRunRespondentPlanCategory";
 export * from "./allocationDryRunResult";
 export * from "./allocationDryRunResultOptimizationMethod";
 export * from "./allocationDryRunResultSettings";

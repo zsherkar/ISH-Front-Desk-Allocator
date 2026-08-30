@@ -56,6 +56,7 @@ import type { Borders, Fill, Style } from "exceljs";
 import { format, parseISO } from "date-fns";
 import { buildCalendarWorkbook } from "@/lib/calendarXlsx";
 import { formatAllocationDisplayName } from "@/lib/allocationDisplay";
+import type { AllocationDryRunRespondentPlan } from "@workspace/api-client-react";
 
 function formatTime12(time: string) {
   const [h, m] = time.split(":").map(Number);
@@ -178,6 +179,80 @@ function AllocationSummaryPanel({
           <p className="text-slate-500">Max Gap</p>
           <p className="text-lg font-bold text-slate-900">{summary.maxDeviation.toFixed(1)} hrs</p>
         </div>
+      </div>
+    </div>
+  );
+}
+
+function DryRunRespondentPlanTable({ plans }: { plans: AllocationDryRunRespondentPlan[] }) {
+  const sortedPlans = [...plans].sort(
+    (a, b) =>
+      Number(a.hasAfpCap) - Number(b.hasAfpCap) ||
+      Number(a.hasPenalty) - Number(b.hasPenalty) ||
+      a.name.localeCompare(b.name),
+  );
+
+  return (
+    <div className="mt-4 overflow-hidden rounded-xl border border-slate-200">
+      <div className="border-b border-slate-200 bg-slate-50 px-4 py-3">
+        <p className="font-semibold text-slate-900">Proposed hours by person</p>
+        <p className="text-xs text-slate-500">
+          Review these totals before saving. Strike targets show the neutral share followed by the reduced target.
+        </p>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-[780px] text-left text-sm">
+          <thead className="bg-white text-xs uppercase tracking-wide text-slate-500">
+            <tr>
+              <th className="px-4 py-3">Name</th>
+              <th className="px-4 py-3">Rule</th>
+              <th className="px-4 py-3">Available</th>
+              <th className="px-4 py-3">Target</th>
+              <th className="px-4 py-3">Proposed</th>
+              <th className="px-4 py-3">From target</th>
+              <th className="px-4 py-3">Same-day doubles</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100 bg-white">
+            {sortedPlans.map((plan) => {
+              const deviationIsLarge = Math.abs(plan.deviationFromTargetHours) >= 4;
+              return (
+                <tr key={plan.respondentId}>
+                  <td className="px-4 py-3 font-semibold text-slate-900">{plan.name}</td>
+                  <td className="px-4 py-3 text-slate-600">
+                    {plan.hasAfpCap
+                      ? "AFP cap"
+                      : plan.hasPenalty
+                        ? `Strike -${plan.penaltyHours.toFixed(1)}h`
+                        : "Equal pool"}
+                    {plan.capacityLimited && (
+                      <span className="ml-2 rounded bg-slate-100 px-1.5 py-0.5 text-xs text-slate-600">
+                        availability-limited
+                      </span>
+                    )}
+                  </td>
+                  <td className="px-4 py-3 text-slate-600">{plan.availableCapacityHours.toFixed(1)}h</td>
+                  <td className="px-4 py-3 text-slate-700">
+                    {plan.hasPenalty
+                      ? `${plan.neutralTargetHours.toFixed(1)}h → ${plan.targetHours.toFixed(1)}h`
+                      : `${plan.targetHours.toFixed(1)}h`}
+                  </td>
+                  <td className="px-4 py-3 font-bold text-slate-900">{plan.totalHours.toFixed(1)}h</td>
+                  <td
+                    className={clsx(
+                      "px-4 py-3 font-semibold",
+                      deviationIsLarge ? "text-amber-700" : "text-emerald-700",
+                    )}
+                  >
+                    {plan.deviationFromTargetHours >= 0 ? "+" : ""}
+                    {plan.deviationFromTargetHours.toFixed(1)}h
+                  </td>
+                  <td className="px-4 py-3 text-slate-700">{plan.sameDayDoubleCount}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
       </div>
     </div>
   );
@@ -906,7 +981,7 @@ export function AdminSurveyDetail() {
                 <tr>
                   <th className="px-6 py-4">Use</th>
                   <th className="px-6 py-4">Respondent</th>
-                  <th className="px-6 py-4">Strike</th>
+                  <th className="px-6 py-4">Target reduction</th>
                   <th className="px-6 py-4">AFP Cap</th>
                   <th className="px-6 py-4">Shifts Selected</th>
                   <th className="px-6 py-4">Total Available Hours</th>
@@ -1395,6 +1470,7 @@ export function AdminSurveyDetail() {
                       <p className="font-bold">{dryRunAllocationMutation.data.backToBackPairDays}</p>
                     </div>
                   </div>
+                  <DryRunRespondentPlanTable plans={dryRunAllocationMutation.data.respondentPlans} />
                 </div>
               )}
             </div>
@@ -1611,6 +1687,7 @@ export function AdminSurveyDetail() {
                       <p className="font-bold">{dryRunAllocationMutation.data.backToBackPairDays}</p>
                     </div>
                   </div>
+                  <DryRunRespondentPlanTable plans={dryRunAllocationMutation.data.respondentPlans} />
                 </div>
               )}
 
@@ -1835,7 +1912,7 @@ export function AdminSurveyDetail() {
                     <p className="mt-1 text-sm text-slate-600">
                       Comparable General pool standard-deviation target:{" "}
                       {allocStats.fairnessTargetStdDevHours.toFixed(1)} hrs; warning:{" "}
-                      {allocStats.fairnessWarningStdDevHours.toFixed(1)} hrs. Strike and availability-limited
+                      {allocStats.fairnessWarningStdDevHours.toFixed(1)} hrs. Strike-adjusted and availability-limited
                       respondents are excluded from this raw-spread comparison but remain covered by target residuals.
                     </p>
                     {allocStats.fairnessHighStdDevReason && (
@@ -1896,8 +1973,8 @@ export function AdminSurveyDetail() {
                   summary={generalAllocationSummary}
                 />
                 <AllocationSummaryPanel
-                  title="Equal Allocation, Strike"
-                  note="Each person is checked against the virtual availability-adjusted baseline used to derive strike targets."
+                  title="Target Reduction (Strike)"
+                  note="Each configured reduction is subtracted from that person's neutral no-strike target."
                   summary={penalizedAllocationSummary}
                 />
                 <AllocationSummaryPanel
@@ -1909,18 +1986,22 @@ export function AdminSurveyDetail() {
               {allocStats.penalizedStats.length > 0 && (
                 <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden mt-4">
                   <div className="p-4 border-b border-slate-100 bg-slate-50/50">
-                    <h3 className="font-bold text-slate-900">Strike Gap Check</h3>
+                    <h3 className="font-bold text-slate-900">Strike Target Reduction Check</h3>
                     <p className="mt-1 text-sm text-slate-500">
-                      Actual gap uses the virtual availability-adjusted baseline that generated each strike target.
+                      The adjusted target is the neutral no-strike share minus the configured reduction. Coverage can
+                      force the final allocation above that target.
                     </p>
                   </div>
                   <table className="w-full text-sm text-left">
                     <thead className="bg-slate-50 text-slate-500 font-medium">
                       <tr>
                         <th className="px-6 py-3">Name</th>
-                        <th className="px-6 py-3">Penalty</th>
+                        <th className="px-6 py-3">Reduction</th>
+                        <th className="px-6 py-3">Neutral target</th>
+                        <th className="px-6 py-3">Adjusted target</th>
                         <th className="px-6 py-3">Allocated</th>
-                        <th className="px-6 py-3">Actual Gap</th>
+                        <th className="px-6 py-3">Actual reduction</th>
+                        <th className="px-6 py-3">From target</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
@@ -1928,8 +2009,14 @@ export function AdminSurveyDetail() {
                         <tr key={s.respondentId}>
                           <td className="px-6 py-3 font-medium text-slate-900">{s.name}</td>
                           <td className="px-6 py-3">{s.penaltyHours.toFixed(1)} hrs</td>
+                          <td className="px-6 py-3">{s.neutralTargetHours.toFixed(1)} hrs</td>
+                          <td className="px-6 py-3">{s.targetHours.toFixed(1)} hrs</td>
                           <td className="px-6 py-3 font-bold">{s.totalHours.toFixed(1)} hrs</td>
                           <td className="px-6 py-3">{s.penaltyGapHours.toFixed(1)} hrs</td>
+                          <td className="px-6 py-3">
+                            {s.deviationFromTargetHours >= 0 ? "+" : ""}
+                            {s.deviationFromTargetHours.toFixed(1)} hrs
+                          </td>
                         </tr>
                       ))}
                     </tbody>
@@ -2226,7 +2313,7 @@ export function AdminSurveyDetail() {
                       setSelectedPenaltyHours(enabled ? Math.max(1, selectedPenaltyHours) : 0);
                     }}
                   />
-                  Strike penalty
+                  Strike target reduction
                 </label>
                 <label className="flex items-center gap-2 text-sm text-slate-700">
                   Deduct
@@ -2241,6 +2328,9 @@ export function AdminSurveyDetail() {
                   />
                   hours
                 </label>
+                <p className="text-xs text-slate-500 sm:col-span-2">
+                  Subtracts these hours from the neutral equal-allocation target. This is not an hours cap.
+                </p>
                 {selectedCategory === "AFP" && (
                   <div className="flex flex-wrap items-center gap-4 sm:col-span-2">
                     <label className="flex items-center gap-2 text-sm text-slate-700">

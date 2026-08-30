@@ -3,14 +3,10 @@ import { after, test } from "node:test";
 
 process.env.DATABASE_URL ??= "postgresql://test:test@127.0.0.1:5432/test";
 
-const { hoursToMinutes, maxFeasibleShiftCapacityMinutes, solveNonAfpPenaltyTargets } = await import(
-  "../lib/allocationCore.js"
-);
-const {
-  buildGeneralFairnessWarning,
-  penaltyGapHoursFromTargetBaseline,
-  summarizeGeneralFairnessComparison,
-} = await import("./allocations.js");
+const { hoursToMinutes, maxFeasibleShiftCapacityMinutes, solveNonAfpPenaltyTargets } =
+  await import("../lib/allocationCore.js");
+const { buildGeneralFairnessWarning, penaltyGapHoursFromNeutralTarget, summarizeGeneralFairnessComparison } =
+  await import("./allocations.js");
 
 after(async () => {
   const { pool } = await import("@workspace/db");
@@ -92,9 +88,7 @@ test("does not turn a zero residual into an offender when the threshold is zero"
 test("does not warn for high raw spread caused solely by a capacity-limited respondent", () => {
   const rawHours = [12, 40, 42];
   const rawMean = rawHours.reduce((sum, hours) => sum + hours, 0) / rawHours.length;
-  const rawStdDev = Math.sqrt(
-    rawHours.reduce((sum, hours) => sum + Math.pow(hours - rawMean, 2), 0) / rawHours.length,
-  );
+  const rawStdDev = Math.sqrt(rawHours.reduce((sum, hours) => sum + Math.pow(hours - rawMean, 2), 0) / rawHours.length);
   assert.equal(rawStdDev > 4, true);
 
   const result = buildGeneralFairnessWarning({
@@ -133,12 +127,24 @@ test("does not warn for high raw spread caused solely by a capacity-limited resp
   assert.deepEqual(result, { warning: false, reason: "" });
 });
 
-test("uses the virtual target baseline for strike gaps and the comparable headline pool", () => {
+test("uses the respondent's neutral target for strike gaps and the comparable headline pool", () => {
   const targetResult = solveNonAfpPenaltyTargets(
     [
-      { respondentId: 1, penaltyMinutes: 0, capacityMinutes: hoursToMinutes(10) },
-      { respondentId: 2, penaltyMinutes: 0, capacityMinutes: hoursToMinutes(100) },
-      { respondentId: 3, penaltyMinutes: hoursToMinutes(10), capacityMinutes: hoursToMinutes(100) },
+      {
+        respondentId: 1,
+        penaltyMinutes: 0,
+        capacityMinutes: hoursToMinutes(10),
+      },
+      {
+        respondentId: 2,
+        penaltyMinutes: 0,
+        capacityMinutes: hoursToMinutes(100),
+      },
+      {
+        respondentId: 3,
+        penaltyMinutes: hoursToMinutes(10),
+        capacityMinutes: hoursToMinutes(100),
+      },
     ],
     hoursToMinutes(70),
   );
@@ -150,12 +156,14 @@ test("uses the virtual target baseline for strike gaps and the comparable headli
 
   assert.equal(misleadingRawMean - penalizedHours, -2.5);
   assert.equal(
-    penaltyGapHoursFromTargetBaseline({
-      hasPenalty: true,
-      targetBaselineMinutes: targetResult.baselineMinutes,
-      totalHours: penalizedHours,
-    }),
-    10,
+    Math.abs(
+      penaltyGapHoursFromNeutralTarget({
+        hasPenalty: true,
+        neutralTargetMinutes: targetById.get(3)?.neutralTargetMinutes ?? 0,
+        totalHours: penalizedHours,
+      }) - 5,
+    ) < 1e-9,
+    true,
   );
 
   const comparison = summarizeGeneralFairnessComparison([
