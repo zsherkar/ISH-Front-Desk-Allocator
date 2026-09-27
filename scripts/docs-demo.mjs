@@ -9,6 +9,20 @@ import { fileURLToPath } from "node:url";
 const root = fileURLToPath(new URL("../", import.meta.url));
 const dist = path.join(root, "artifacts/shift-scheduler/dist/public");
 const port = Number(process.env.DOCS_PORT || 4387);
+// Optional simulated states for local visual QA only. Never calls a solver or DB.
+const auditFixture = process.env.DOCS_ALLOCATION_AUDIT;
+const runSummary = auditFixture ? {
+  status: ["stale", "not_recorded"].includes(auditFixture) ? auditFixture : "current",
+  savedAt: "2026-09-27T00:00:00Z",
+  policyVersion: "VISUAL TEST FIXTURE",
+  optimizerStatus: auditFixture === "bounded" ? "bounded:back_to_back_timedout" : "optimal",
+  optimizationMethod: "global_milp",
+  optimalCoverageProven: !["stale", "not_recorded"].includes(auditFixture),
+  backToBackPairDays: 0,
+  backToBackOptimalWithinFairness: auditFixture === "optimal",
+  warnings: auditFixture === "bounded" ? ["VISUAL TEST FIXTURE: a later optimization stage timed out; validated incumbent retained."] : auditFixture === "stale" ? ["VISUAL TEST FIXTURE: availability changed after this run; rerun the audit."] : auditFixture === "not_recorded" ? ["VISUAL TEST FIXTURE: older allocation diagnostics were not recorded."] : ["VISUAL TEST FIXTURE: simulated optimizer metadata, not a real allocation result."],
+  settings: { allowNoAvailabilityAfpPlaceholders: false, noAvailabilityFallbackAfpIds: [], afpRespondentIds: [], allowAfpOverCapForAvailableShifts: false, preserveManualLocks: true },
+} : undefined;
 const names = [
   "Alex Morgan",
   "Sam Rivera",
@@ -275,6 +289,7 @@ const fixtures = new Map([
     {
       surveyId: 1,
       allocations,
+      runSummary,
       averageHours: mean,
       stdDev: Math.sqrt(variance),
       unallocatedShiftIds: [],
@@ -303,6 +318,18 @@ const fixtures = new Map([
     },
   ],
 ]);
+if (runSummary) {
+  allocationStats.runSummary = runSummary;
+  fixtures.set("/api/surveys/1/allocations/dry-run", {
+    surveyId: 1, dryRun: true, totalShifts: shifts.length, assignedShifts: shifts.length, normalAssignedShifts: shifts.length,
+    blankShifts: 0, blankWithAvailabilityCount: 0, blankZeroAvailabilityShiftCount: 0, allowedNoAvailabilityAfpPlaceholderAssignments: 0,
+    illegalAssignmentsWithoutAvailability: 0, nonPenalizedGeneralMeanHours: mean, nonPenalizedGeneralStdDevHours: Math.sqrt(variance), nonPenalizedGeneralRangeHours: sorted.at(-1) - sorted[0],
+    fairnessRepairMoveCount: 0, highStdDevReasonCodes: [], optimizationMethod: "global_milp", optimizerStatus: runSummary.optimizerStatus,
+    policyVersion: "VISUAL TEST FIXTURE", optimalCoverageProven: true, backToBackPairDays: 0, backToBackEmergencyAssignments: 0,
+    afpCapOverflowAssignments: 0, noAvailabilityAfpPlaceholderAssignments: 0, settings: runSummary.settings,
+    respondentPlans: respondentStats.map((r) => ({ ...r, normalHours: r.totalHours, noAvailabilityPlaceholderHours: 0, hasAfpCap: false, capacityLimited: false, sameDayDoubleCount: 0 })), assignments: [], unallocatedShiftIds: [],
+  });
+}
 const types = {
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript",
@@ -314,12 +341,13 @@ const types = {
 const server = createServer(async (req, res) => {
   res.setHeader("Cache-Control", "no-store");
   res.setHeader("X-Content-Type-Options", "nosniff");
-  if (req.method !== "GET" && req.method !== "HEAD") {
+  const pathname = new URL(req.url, `http://127.0.0.1:${port}`).pathname;
+  const isReadOnlyFixtureAudit = Boolean(auditFixture) && req.method === "POST" && pathname === "/api/surveys/1/allocations/dry-run";
+  if (req.method !== "GET" && req.method !== "HEAD" && !isReadOnlyFixtureAudit) {
     res.writeHead(405, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: "Documentation preview is read-only." }));
     return;
   }
-  const pathname = new URL(req.url, `http://127.0.0.1:${port}`).pathname;
   if (pathname.startsWith("/api/")) {
     res.writeHead(fixtures.has(pathname) ? 200 : 404, {
       "Content-Type": "application/json",

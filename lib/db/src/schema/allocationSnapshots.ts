@@ -31,6 +31,7 @@ export const allocationSnapshotsTable = pgTable(
     allocationIncludedRespondentIds: jsonb(
       "allocation_included_respondent_ids",
     ).$type<number[]>(),
+    allocationRunMetadata: jsonb("allocation_run_metadata").$type<unknown>(),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),

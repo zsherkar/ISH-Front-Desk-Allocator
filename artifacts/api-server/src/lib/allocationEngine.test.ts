@@ -311,7 +311,10 @@ test("AFP cap respected for normal and back-to-back emergency assignments", asyn
 test("preserve manual locks keeps manual assignments and allocates around them", async () => {
   const output = await runPureAllocation({
     shifts: [weekday[0], weekday[1]],
-    respondents: [respondent(1, "Manual", []), respondent(2, "Available", [2])],
+    respondents: [
+      respondent(1, "Manual", [1]),
+      respondent(2, "Available", [2]),
+    ],
     manualAssignments: [{ respondentId: 1, shiftId: 1 }],
   });
 
@@ -362,7 +365,7 @@ test("global diagnostics exclude capacity-limited people from equal-pool spread"
         "Broad Availability",
         generalShifts.map((entry) => entry.id),
       ),
-      respondent(3, "Manual AFP", [], {
+      respondent(3, "Manual AFP", [manualAfpShift.id], {
         category: "AFP",
         afpHoursCap: 8,
       }),
@@ -533,17 +536,12 @@ test("AFP placeholders count as actual workload without inflating availability c
   );
   assert.equal(output.fairnessDiagnostics.maxDeviationFromTargetHours, 2);
 
-  const fallbackOutput = await runPureAllocation({
-    ...input,
-    allowExtremeNoAvailabilityAfpStacking: true,
-  });
-  assert.equal(
-    fallbackOutput.fairnessDiagnostics.optimizationMethod,
-    "greedy_fallback",
-  );
-  assert.equal(
-    fallbackOutput.fairnessDiagnostics.maxDeviationFromTargetHours,
-    2,
+  await assert.rejects(
+    runPureAllocation({
+      ...input,
+      allowExtremeNoAvailabilityAfpStacking: true,
+    }),
+    { code: "ALLOCATION_OPTIMIZATION_FAILED" },
   );
 });
 
@@ -986,7 +984,11 @@ test("a fixed manual outlier does not loosen fairness for other General responde
         ...sharedShiftIds,
         ...broadOnlyShifts.map((entry) => entry.id),
       ]),
-      respondent(3, "Manual", []),
+      respondent(
+        3,
+        "Manual",
+        manualShifts.map((entry) => entry.id),
+      ),
     ],
     manualAssignments: manualShifts.map((entry) => ({
       respondentId: 3,
@@ -1009,7 +1011,7 @@ test("a fixed manual outlier does not loosen fairness for other General responde
   );
 });
 
-test("greedy fallback uses per-date feasible capacity for General targets", async () => {
+test("global optimizer uses per-date feasible capacity for General targets", async () => {
   const sameDayNonAdjacent = [
     shift(181, "09:00", "11:00", 2),
     shift(182, "13:00", "15:00", 2),
@@ -1030,13 +1032,9 @@ test("greedy fallback uses per-date feasible capacity for General targets", asyn
       ),
       respondent(2, "Broad Availability", [181, 182, 183, 184]),
     ],
-    allowExtremeNoAvailabilityAfpStacking: true,
   });
 
-  assert.equal(
-    output.fairnessDiagnostics.optimizationMethod,
-    "greedy_fallback",
-  );
+  assert.equal(output.fairnessDiagnostics.optimizationMethod, "global_milp");
   assert.equal(output.assignments.length, 3);
   assert.deepEqual(
     output.plans.map((plan) => plan.totalHours).sort((a, b) => a - b),
@@ -1048,7 +1046,7 @@ test("greedy fallback uses per-date feasible capacity for General targets", asyn
   );
 });
 
-test("greedy fallback absorbs fixed General manual hours into its targets", async () => {
+test("global optimizer absorbs fixed General manual hours into its targets", async () => {
   const sharedShifts = [
     shift(191, "09:00", "11:00", 2),
     { ...shift(192, "09:00", "11:00", 2), date: "2026-05-05" },
@@ -1071,19 +1069,19 @@ test("greedy fallback absorbs fixed General manual hours into its targets", asyn
         "Bob",
         sharedShifts.map((entry) => entry.id),
       ),
-      respondent(3, "Manual", []),
+      respondent(
+        3,
+        "Manual",
+        manualShifts.map((entry) => entry.id),
+      ),
     ],
     manualAssignments: manualShifts.map((entry) => ({
       respondentId: 3,
       shiftId: entry.id,
     })),
-    allowExtremeNoAvailabilityAfpStacking: true,
   });
 
-  assert.equal(
-    output.fairnessDiagnostics.optimizationMethod,
-    "greedy_fallback",
-  );
+  assert.equal(output.fairnessDiagnostics.optimizationMethod, "global_milp");
   assert.equal(output.assignments.length, 5);
   assert.deepEqual(
     output.plans.map((plan) => plan.totalHours).sort((a, b) => a - b),
@@ -1095,7 +1093,7 @@ test("greedy fallback absorbs fixed General manual hours into its targets", asyn
   );
 });
 
-test("greedy fallback derives General targets from actual overlapping AFP allocation", async () => {
+test("global optimizer derives General targets from actual overlapping AFP allocation", async () => {
   const afpShift = shift(241, "09:00", "11:00", 2);
   const generalShifts = [
     { ...shift(242, "09:00", "11:00", 2), date: "2026-05-05" },
@@ -1118,16 +1116,12 @@ test("greedy fallback derives General targets from actual overlapping AFP alloca
         generalShifts.map((entry) => entry.id),
       ),
     ],
-    allowExtremeNoAvailabilityAfpStacking: true,
   });
 
   const hoursByName = new Map(
     output.plans.map((plan) => [plan.name, plan.totalHours]),
   );
-  assert.equal(
-    output.fairnessDiagnostics.optimizationMethod,
-    "greedy_fallback",
-  );
+  assert.equal(output.fairnessDiagnostics.optimizationMethod, "global_milp");
   assert.equal(hoursByName.get("General One"), 2);
   assert.equal(hoursByName.get("General Two"), 2);
   assert.equal(
@@ -1136,7 +1130,7 @@ test("greedy fallback derives General targets from actual overlapping AFP alloca
   );
 });
 
-test("greedy fallback repairs normal allocation after adding AFP placeholders", async () => {
+test("global optimizer balances normal allocation after adding AFP placeholders", async () => {
   const placeholderShifts = [
     shift(261, "09:00", "11:00", 2),
     { ...shift(262, "09:00", "11:00", 2), date: "2026-05-05" },
@@ -1157,13 +1151,9 @@ test("greedy fallback repairs normal allocation after adding AFP placeholders", 
       respondent(2, "Bob General", [normalShift.id]),
     ],
     allowNoAvailabilityAfpPlaceholders: true,
-    allowExtremeNoAvailabilityAfpStacking: true,
   });
 
-  assert.equal(
-    output.fairnessDiagnostics.optimizationMethod,
-    "greedy_fallback",
-  );
+  assert.equal(output.fairnessDiagnostics.optimizationMethod, "global_milp");
   assert.equal(assignmentFor(output, normalShift.id)?.respondentId, 2);
   assert.deepEqual(
     output.plans.map((plan) => plan.totalHours).sort((a, b) => a - b),
@@ -1171,7 +1161,7 @@ test("greedy fallback repairs normal allocation after adding AFP placeholders", 
   );
 });
 
-test("greedy fallback excludes capacity-limited people from equal-pool spread", async () => {
+test("global optimizer excludes capacity-limited people from equal-pool spread", async () => {
   const shifts = Array.from({ length: 6 }, (_, index) => ({
     ...shift(251 + index, "09:00", "11:00", 2),
     date: `2026-05-${String(4 + index).padStart(2, "0")}`,
@@ -1187,13 +1177,9 @@ test("greedy fallback excludes capacity-limited people from equal-pool spread", 
         shifts.map((entry) => entry.id),
       ),
     ],
-    allowExtremeNoAvailabilityAfpStacking: true,
   });
 
-  assert.equal(
-    output.fairnessDiagnostics.optimizationMethod,
-    "greedy_fallback",
-  );
+  assert.equal(output.fairnessDiagnostics.optimizationMethod, "global_milp");
   assert.equal(output.fairnessDiagnostics.nonPenalizedGeneralMeanHours, 10);
   assert.equal(output.fairnessDiagnostics.nonPenalizedGeneralMedianHours, 10);
   assert.equal(output.fairnessDiagnostics.nonPenalizedGeneralMinHours, 10);

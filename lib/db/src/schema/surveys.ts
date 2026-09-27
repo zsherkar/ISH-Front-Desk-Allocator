@@ -11,6 +11,7 @@ export const surveysTable = pgTable("surveys", {
   closesAt: timestamp("closes_at", { withTimezone: true }),
   token: text("token").notNull().unique(),
   allocationIncludedRespondentIds: jsonb("allocation_included_respondent_ids").$type<number[]>(),
+  allocationRunMetadata: jsonb("allocation_run_metadata").$type<unknown>(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 });
