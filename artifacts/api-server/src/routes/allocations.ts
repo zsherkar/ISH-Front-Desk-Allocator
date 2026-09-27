@@ -11,6 +11,7 @@ import {
 } from "@workspace/db";
 import { runAllocation } from "../lib/allocationEngine.js";
 import { allocationInputFingerprint, createAllocationRunMetadata, readAllocationRunMetadata, recordedAssignmentSource, recordedNormalHours, summarizeAllocationRun } from "../lib/allocationRunMetadata.js";
+import { AllocationWriteConflictError, allocationWriteStateFingerprint, assertAllocationWriteUnchanged, isAllocationWriteConflict } from "../lib/allocationWriteGuard.js";
 import {
   type AssignmentSource,
   type ExplanationCode,
@@ -42,10 +43,10 @@ function isNoAvailabilityAfpPlaceholderSource(source: string): boolean {
   return source === "admin_no_availability_afp_placeholder" || source === "engine_no_availability_afp_fallback";
 }
 
-async function readAllocationInputFingerprint(surveyId: number, includedIds: number[]) {
+async function readAllocationInputFingerprint(surveyId: number, includedIds: number[], reader: Pick<typeof db, "select"> = db) {
   const [shifts, responses] = await Promise.all([
-    db.select().from(shiftsTable).where(eq(shiftsTable.surveyId, surveyId)),
-    db.select({ respondentId: responsesTable.respondentId, shiftId: responsesTable.shiftId, respondentCategory: respondentsTable.category, hasPenalty: responsesTable.hasPenalty, penaltyHours: responsesTable.penaltyHours, hasAfpCap: responsesTable.hasAfpCap, afpHoursCap: responsesTable.afpHoursCap }).from(responsesTable).innerJoin(respondentsTable, eq(responsesTable.respondentId, respondentsTable.id)).where(eq(responsesTable.surveyId, surveyId)),
+    reader.select().from(shiftsTable).where(eq(shiftsTable.surveyId, surveyId)),
+    reader.select({ respondentId: responsesTable.respondentId, shiftId: responsesTable.shiftId, respondentCategory: respondentsTable.category, hasPenalty: responsesTable.hasPenalty, penaltyHours: responsesTable.penaltyHours, hasAfpCap: responsesTable.hasAfpCap, afpHoursCap: responsesTable.afpHoursCap }).from(responsesTable).innerJoin(respondentsTable, eq(responsesTable.respondentId, respondentsTable.id)).where(eq(responsesTable.surveyId, surveyId)),
   ]);
   return allocationInputFingerprint(shifts, responses, includedIds);
 }
@@ -737,21 +738,15 @@ router.post("/surveys/:id/allocate", async (req, res): Promise<void> => {
   }
 
   const preserveManualLocks = parsed.data.preserveManualLocks !== false;
+  const baselineAllocations = await db
+    .select({ respondentId: allocationsTable.respondentId, shiftId: allocationsTable.shiftId, isManuallyAdjusted: allocationsTable.isManuallyAdjusted, penaltyNote: allocationsTable.penaltyNote })
+    .from(allocationsTable).where(eq(allocationsTable.surveyId, id));
+  const stateFingerprint = allocationWriteStateFingerprint(survey, baselineAllocations);
   const existingManualAssignments =
     preserveManualLocks && effectiveIncludedRespondentIds.length > 0
-      ? await db
-          .select({
-            respondentId: allocationsTable.respondentId,
-            shiftId: allocationsTable.shiftId,
-          })
-          .from(allocationsTable)
-          .where(
-            and(
-              eq(allocationsTable.surveyId, id),
-              eq(allocationsTable.isManuallyAdjusted, true),
-              inArray(allocationsTable.respondentId, effectiveIncludedRespondentIds),
-            ),
-          )
+      ? baselineAllocations
+          .filter((assignment) => assignment.isManuallyAdjusted && effectiveIncludedRespondentIds.includes(assignment.respondentId))
+          .map(({ respondentId, shiftId }) => ({ respondentId, shiftId }))
       : [];
 
   if (existingManualAssignments.length > 0) {
@@ -787,17 +782,17 @@ router.post("/surveys/:id/allocate", async (req, res): Promise<void> => {
     existingManualAssignments,
   }, res);
   if (!result) return;
-  if (inputFingerprint !== await readAllocationInputFingerprint(id, effectiveIncludedRespondentIds)) {
-    res.status(409).json({ error: "Availability or respondent rules changed during optimization. Run the allocation again. The saved allocation was unchanged.", code: "ALLOCATION_INPUT_CHANGED" });
-    return;
-  }
   const runMetadata = createAllocationRunMetadata(inputFingerprint, {
     allowNoAvailabilityAfpPlaceholders, noAvailabilityFallbackAfpIds, afpRespondentIds,
     allowAfpOverCapForAvailableShifts: parsed.data.allowAfpOverCapForAvailableShifts ?? false,
     preserveManualLocks,
   }, result.fairnessDiagnostics, result.assignments);
   let createdSnapshotId: number | null = null;
+  try {
   await db.transaction(async (tx) => {
+    // Optimize without holding a database transaction. At commit, lock the
+    // survey and reread both inputs and saved state in one serializable view.
+    const [currentSurvey] = await tx.select().from(surveysTable).where(eq(surveysTable.id, id)).for("update");
     const currentAllocations = await tx
       .select({
         respondentId: allocationsTable.respondentId,
@@ -807,6 +802,14 @@ router.post("/surveys/:id/allocate", async (req, res): Promise<void> => {
       })
       .from(allocationsTable)
       .where(eq(allocationsTable.surveyId, id));
+    assertAllocationWriteUnchanged(
+      { inputFingerprint, stateFingerprint },
+      {
+        inputFingerprint: await readAllocationInputFingerprint(id, effectiveIncludedRespondentIds, tx),
+        stateFingerprint: allocationWriteStateFingerprint(currentSurvey, currentAllocations),
+        surveyStatus: currentSurvey?.status,
+      },
+    );
     if (currentAllocations.length > 0) {
       const [snapshot] = await tx
         .insert(allocationSnapshotsTable)
@@ -854,7 +857,13 @@ router.post("/surveys/:id/allocate", async (req, res): Promise<void> => {
       .update(surveysTable)
       .set({ allocationIncludedRespondentIds: effectiveIncludedRespondentIds, allocationRunMetadata: runMetadata })
       .where(eq(surveysTable.id, id));
-  });
+  }, { isolationLevel: "serializable" });
+  } catch (error) {
+    if (!isAllocationWriteConflict(error)) throw error;
+    const conflict = new AllocationWriteConflictError();
+    res.status(409).json({ error: conflict.message, code: conflict.code });
+    return;
+  }
 
   const allocationResult = await buildAllocationResult(id);
   res.json({ ...allocationResult, createdSnapshotId });

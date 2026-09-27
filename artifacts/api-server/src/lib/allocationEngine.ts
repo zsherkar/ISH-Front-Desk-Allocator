@@ -12,7 +12,7 @@ import {
   stableShiftKey,
 } from "./allocationCore.js";
 import { safeDisplayName } from "./inputValidation.js";
-import { runGlobalAllocation } from "./allocationOptimizer.js";
+import { runAllocationInWorker } from "./allocationWorkerRuntime.js";
 import { assertValidAllocationInput, assertValidAllocationResult } from "./allocationValidation.js";
 
 export interface AllocationOptions {
@@ -1038,6 +1038,7 @@ export async function runPureAllocation(
   input: PureAllocationInput,
 ): Promise<PureAllocationOutput> {
   assertValidAllocationInput(input);
+  const { runGlobalAllocation } = await import("./allocationOptimizer.js");
   const globalAttempt = await runGlobalAllocation(input);
   if (!globalAttempt.ok)
     throw new AllocationOptimizationError(globalAttempt.reason);
@@ -1125,7 +1126,7 @@ export async function runAllocation(options: AllocationOptions): Promise<PureAll
     respondent.availableShiftIds.add(response.shiftId);
   }
 
-  return runPureAllocation({
+  return runAllocationInWorker({
     shifts,
     respondents: Array.from(respondentMap.values()),
     allowAfpOverCapForAvailableShifts,
