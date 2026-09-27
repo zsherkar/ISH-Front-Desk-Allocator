@@ -37,11 +37,15 @@ async function buildAll() {
   );
 
   await esbuild({
-    entryPoints: [path.resolve(__dirname, "src/index.ts")],
+    entryPoints: {
+      index: path.resolve(__dirname, "src/index.ts"),
+      allocationWorker: path.resolve(__dirname, "src/lib/allocationWorker.ts"),
+    },
     platform: "node",
     bundle: true,
     format: "cjs",
-    outfile: path.resolve(distDir, "index.cjs"),
+    outdir: distDir,
+    outExtension: { ".js": ".cjs" },
     define: {
       "process.env.NODE_ENV": '"production"',
     },
