@@ -56,7 +56,22 @@ import type { Borders, Fill, Style } from "exceljs";
 import { format, parseISO } from "date-fns";
 import { buildCalendarWorkbook } from "@/lib/calendarXlsx";
 import { formatAllocationDisplayName } from "@/lib/allocationDisplay";
-import type { AllocationDryRunRespondentPlan } from "@workspace/api-client-react";
+import type { AllocationDryRunRespondentPlan, AllocationRunSummary } from "@workspace/api-client-react";
+
+function optimizerLabel(method: string, status: string) {
+  if (method !== "global_milp") return "Not recorded";
+  return status === "optimal" ? "All policy stages optimal" : "Validated result; optimization incomplete";
+}
+
+function SavedAllocationRunNotice({ summary }: { summary?: AllocationRunSummary }) {
+  return <div className="rounded-xl border border-slate-200 bg-white p-4 text-sm">
+    <h4 className="font-bold text-slate-900">Saved allocation audit</h4>
+    <p className="mt-1 font-medium">{summary?.status === "current" ? optimizerLabel(summary.optimizationMethod, summary.optimizerStatus) : summary?.status === "stale" ? "Audit needs refreshing" : "Run diagnostics not recorded"}</p>
+    {summary?.status === "current" && <p className="mt-1 text-slate-600">Coverage {summary.optimalCoverageProven ? "proven optimal" : "not proven optimal"} · {summary.backToBackPairDays ?? "—"} back-to-back pair-days{summary.backToBackOptimalWithinFairness ? " (minimum within the fairness policy)" : ""}{summary.policyVersion ? ` · Policy ${summary.policyVersion}` : ""}</p>}
+    {(summary?.warnings ?? ["This older allocation has no saved optimizer diagnostics."]).map((warning) => <p key={warning} className="mt-2 text-amber-800">{warning}</p>)}
+    {summary?.settings && <p className="mt-2 text-slate-500">AFP normal hours have their own cap. Placeholder hours are additional and count toward daily shift limits. {summary.settings.noAvailabilityFallbackAfpIds.length} AFP respondent(s) selected for placeholders in this run.</p>}
+  </div>;
+}
 
 function formatTime12(time: string) {
   const [h, m] = time.split(":").map(Number);
@@ -131,8 +146,6 @@ function AllocationSummaryPanel({
   note: string;
   summary: AllocationStatSummary;
 }) {
-  const withinOneDeviation = summary.count <= 2 || summary.maxDeviation <= summary.stdDev + 0.01;
-
   return (
     <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -142,12 +155,7 @@ function AllocationSummaryPanel({
         </div>
         <Badge
           variant="outline"
-          className={clsx(
-            "rounded-md",
-            withinOneDeviation
-              ? "border-emerald-200 bg-emerald-50 text-emerald-700"
-              : "border-amber-200 bg-amber-50 text-amber-700",
-          )}
+          className="rounded-md border-slate-200 bg-slate-50 text-slate-700"
         >
           {summary.count} people
         </Badge>
@@ -185,6 +193,7 @@ function AllocationSummaryPanel({
 }
 
 function DryRunRespondentPlanTable({ plans }: { plans: AllocationDryRunRespondentPlan[] }) {
+  const allGeneral = summarizeAllocationStats(plans.filter((plan) => plan.category === "General"));
   const sortedPlans = [...plans].sort(
     (a, b) =>
       Number(a.hasAfpCap) - Number(b.hasAfpCap) ||
@@ -197,8 +206,9 @@ function DryRunRespondentPlanTable({ plans }: { plans: AllocationDryRunResponden
       <div className="border-b border-slate-200 bg-slate-50 px-4 py-3">
         <p className="font-semibold text-slate-900">Proposed hours by person</p>
         <p className="text-xs text-slate-500">
-          Review these totals before saving. Strike targets show the neutral share followed by the reduced target.
+          AFP targets count normal hours only; placeholders are additional. Strike targets show the neutral share followed by the reduced target.
         </p>
+        <p className="mt-1 text-xs text-slate-600">All included General: mean {allGeneral.average.toFixed(2)}h · SD {allGeneral.stdDev.toFixed(2)}h · range {allGeneral.min.toFixed(1)}–{allGeneral.max.toFixed(1)}h. This includes availability-limited and strike respondents.</p>
       </div>
       <div className="overflow-x-auto">
         <table className="w-full min-w-[780px] text-left text-sm">
@@ -209,6 +219,8 @@ function DryRunRespondentPlanTable({ plans }: { plans: AllocationDryRunResponden
               <th className="px-4 py-3">Available</th>
               <th className="px-4 py-3">Target</th>
               <th className="px-4 py-3">Proposed</th>
+              <th className="px-4 py-3">Normal hours</th>
+              <th className="px-4 py-3">Placeholder hours</th>
               <th className="px-4 py-3">From target</th>
               <th className="px-4 py-3">Same-day doubles</th>
             </tr>
@@ -238,6 +250,8 @@ function DryRunRespondentPlanTable({ plans }: { plans: AllocationDryRunResponden
                       : `${plan.targetHours.toFixed(1)}h`}
                   </td>
                   <td className="px-4 py-3 font-bold text-slate-900">{plan.totalHours.toFixed(1)}h</td>
+                  <td className="px-4 py-3 text-slate-700">{(plan.normalHours ?? plan.totalHours).toFixed(1)}h</td>
+                  <td className="px-4 py-3 text-slate-700">{(plan.noAvailabilityPlaceholderHours ?? 0).toFixed(1)}h</td>
                   <td
                     className={clsx(
                       "px-4 py-3 font-semibold",
@@ -308,6 +322,16 @@ export function AdminSurveyDetail() {
   const deleteResponseMutation = useDeleteSurveyResponse();
   const calendarRef = useRef<HTMLDivElement>(null);
   const didInitializeIncludedIds = useRef(false);
+  const initializedRunSettings = useRef<string | null>(null);
+  useEffect(() => {
+    const summary = allocations?.runSummary;
+    if (!summary?.savedAt || !summary.settings || initializedRunSettings.current === summary.savedAt) return;
+    initializedRunSettings.current = summary.savedAt;
+    setAllowNoAvailabilityAfpPlaceholders(summary.settings.allowNoAvailabilityAfpPlaceholders);
+    setNoAvailabilityFallbackAfpIds(new Set(summary.settings.noAvailabilityFallbackAfpIds));
+    setAllowAfpOverCapForAvailableShifts(summary.settings.allowAfpOverCapForAvailableShifts);
+    setPreserveManualLocks(summary.settings.preserveManualLocks);
+  }, [allocations?.runSummary]);
   const { data: respondentHistory } = useGetRespondentFdHistory(selectedRespondentId ?? 0);
   const hasExistingAllocations = (allocations?.allocations.length ?? 0) > 0;
   const blankShiftExplanations = allocations?.blankShiftExplanations ?? [];
@@ -326,12 +350,11 @@ export function AdminSurveyDetail() {
   const generalAllocationSummary = useMemo(
     () =>
       summarizeAllocationStats(
-        allocStats?.nonPenalizedGeneralStats ??
-          allocStats?.generalStats ??
+        allocStats?.generalStats.filter((allocation) => allocation.category === "General") ??
           allocations?.allocations.filter((allocation) => allocation.category === "General") ??
           [],
       ),
-    [allocStats?.generalStats, allocStats?.nonPenalizedGeneralStats, allocations?.allocations],
+    [allocStats?.generalStats, allocations?.allocations],
   );
   const penalizedAllocationSummary = useMemo(
     () => summarizeAllocationStats(allocStats?.penalizedStats ?? []),
@@ -361,8 +384,9 @@ export function AdminSurveyDetail() {
 
   useEffect(() => {
     if (!responses) return;
-    setAfpIds(new Set(responses.filter((r) => r.hasAfpCap).map((r) => r.respondentId)));
-  }, [responses]);
+    const recordedCapIds = allocations?.runSummary?.status === "current" ? allocations.runSummary.settings?.afpRespondentIds ?? [] : [];
+    setAfpIds(new Set([...responses.filter((r) => r.hasAfpCap).map((r) => r.respondentId), ...recordedCapIds]));
+  }, [responses, allocations?.runSummary?.savedAt, allocations?.runSummary?.status]);
 
   const toggleNoAvailabilityFallbackAfp = (id: number) => {
     const next = new Set(noAvailabilityFallbackAfpIds);
@@ -532,7 +556,7 @@ export function AdminSurveyDetail() {
           preserveManualLocks,
         },
       },
-      { onSuccess: () => setShowCalendar(true) },
+      { onSuccess: () => setShowCalendar(true), onError: (error) => alert(error instanceof Error ? error.message : "Allocation could not be validated. The saved allocation was unchanged.") },
     );
   };
 
@@ -578,7 +602,7 @@ export function AdminSurveyDetail() {
         allowAfpOverCapForAvailableShifts,
         preserveManualLocks,
       },
-    });
+    }, { onError: (error) => alert(error instanceof Error ? error.message : "The allocation audit could not finish. Review availability and manual locks, then retry.") });
   };
 
   const shiftStatsByShift = useMemo(() => {
@@ -1458,11 +1482,7 @@ export function AdminSurveyDetail() {
                     <div>
                       <p className="text-xs text-slate-500">Optimizer</p>
                       <p className="font-bold">
-                        {dryRunAllocationMutation.data.optimizationMethod === "global_milp"
-                          ? dryRunAllocationMutation.data.optimizerStatus === "optimal"
-                            ? "Global exact"
-                            : "Global bounded"
-                          : "Fallback"}
+                        {optimizerLabel(dryRunAllocationMutation.data.optimizationMethod, dryRunAllocationMutation.data.optimizerStatus)}
                       </p>
                     </div>
                     <div>
@@ -1470,6 +1490,7 @@ export function AdminSurveyDetail() {
                       <p className="font-bold">{dryRunAllocationMutation.data.backToBackPairDays}</p>
                     </div>
                   </div>
+                  {dryRunAllocationMutation.data.optimizerStatus !== "optimal" && <p className="mt-3 text-amber-800">Some optimization stages were incomplete: {dryRunAllocationMutation.data.optimizerStatus}. Hard allocation rules still passed validation.</p>}
                   <DryRunRespondentPlanTable plans={dryRunAllocationMutation.data.respondentPlans} />
                 </div>
               )}
@@ -1478,13 +1499,14 @@ export function AdminSurveyDetail() {
 
           {hasExistingAllocations && allocations && (
             <div className="space-y-6">
+              <SavedAllocationRunNotice summary={allocations.runSummary} />
               <div className="flex flex-wrap justify-between items-center bg-indigo-50 p-4 rounded-xl border border-indigo-100 gap-3">
                 <div className="flex items-center gap-3">
                   <CheckCircle2 className="w-6 h-6 text-indigo-600 shrink-0" />
                   <div>
                     <h3 className="font-bold text-indigo-900">Allocation Complete</h3>
                     <p className="text-sm text-indigo-700">
-                      Equal-allocation avg: {generalAllocationSummary.average.toFixed(1)} hrs | Std Dev:{" "}
+                      All-General mean: {generalAllocationSummary.average.toFixed(1)} hrs | Std Dev:{" "}
                       {generalAllocationSummary.stdDev.toFixed(2)} | AFP caps enabled: {afpIds.size}
                     </p>
                   </div>
@@ -1675,11 +1697,7 @@ export function AdminSurveyDetail() {
                     <div>
                       <p className="text-xs text-indigo-700/80">Optimizer</p>
                       <p className="font-bold">
-                        {dryRunAllocationMutation.data.optimizationMethod === "global_milp"
-                          ? dryRunAllocationMutation.data.optimizerStatus === "optimal"
-                            ? "Global exact"
-                            : "Global bounded"
-                          : "Fallback"}
+                        {optimizerLabel(dryRunAllocationMutation.data.optimizationMethod, dryRunAllocationMutation.data.optimizerStatus)}
                       </p>
                     </div>
                     <div>
@@ -1687,6 +1705,7 @@ export function AdminSurveyDetail() {
                       <p className="font-bold">{dryRunAllocationMutation.data.backToBackPairDays}</p>
                     </div>
                   </div>
+                  {dryRunAllocationMutation.data.optimizerStatus !== "optimal" && <p className="mt-3 text-amber-800">Some optimization stages were incomplete: {dryRunAllocationMutation.data.optimizerStatus}. Hard allocation rules still passed validation.</p>}
                   <DryRunRespondentPlanTable plans={dryRunAllocationMutation.data.respondentPlans} />
                 </div>
               )}
@@ -1968,8 +1987,8 @@ export function AdminSurveyDetail() {
               </div>
               <div className="grid gap-4 xl:grid-cols-3">
                 <AllocationSummaryPanel
-                  title="Comparable General Pool"
-                  note="Excludes strike and availability-limited respondents; every General respondent remains in target-residual checks."
+                  title="General, All Included Respondents"
+                  note="Includes availability-limited and strike respondents. SD describes spread; it is not proof of fairness."
                   summary={generalAllocationSummary}
                 />
                 <AllocationSummaryPanel
@@ -1979,7 +1998,7 @@ export function AdminSurveyDetail() {
                 />
                 <AllocationSummaryPanel
                   title="AFP Allocation"
-                  note="All AFP respondents are shown here; only those explicitly enabled in Responses use an hours cap."
+                  note="Total AFP workload, including separate placeholder hours. The per-person table separates normal hours from placeholders."
                   summary={afpAllocationSummary}
                 />
               </div>
@@ -2088,6 +2107,8 @@ export function AdminSurveyDetail() {
                       <th className="px-6 py-3">Name</th>
                       <th className="px-6 py-3">Category</th>
                       <th className="px-6 py-3">Total Hrs</th>
+                      <th className="px-6 py-3">Normal Hrs</th>
+                      <th className="px-6 py-3">Placeholder Hrs</th>
                       <th className="px-6 py-3">Weekday Shifts</th>
                       <th className="px-6 py-3">Weekend Shifts</th>
                     </tr>
@@ -2105,6 +2126,8 @@ export function AdminSurveyDetail() {
                         </td>
                         <td className="px-6 py-3">{s.category}</td>
                         <td className="px-6 py-3 font-bold">{s.totalHours}</td>
+                        <td className="px-6 py-3">{allocations?.runSummary?.status === "not_recorded" ? "Not recorded" : (s.normalHours + s.manualHours + s.afpCapOverflowHours).toFixed(1)}</td>
+                        <td className="px-6 py-3">{allocations?.runSummary?.status === "not_recorded" ? "Not recorded" : s.noAvailabilityPlaceholderHours.toFixed(1)}</td>
                         <td className="px-6 py-3 text-slate-600">{s.weekdayShifts}</td>
                         <td className="px-6 py-3 text-slate-600">{s.weekendShifts}</td>
                       </tr>

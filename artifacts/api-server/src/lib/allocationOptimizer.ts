@@ -46,6 +46,8 @@ interface Constraint {
 }
 
 interface OptimizerSolution {
+  objective: string;
+  verified: boolean;
   status: "optimal" | "infeasible" | "unbounded" | "timedout" | "failed";
   result: number;
   variables: [string, number][];
@@ -59,13 +61,13 @@ export type GlobalAllocationAttempt =
 const SOLVER_OPTIONS = {
   output_flag: false,
   presolve: "on",
-  time_limit: 4,
+  time_limit: 12,
   mip_rel_gap: 0,
   mip_abs_gap: 0,
   random_seed: 0,
   threads: 1,
 } as const;
-const GENERAL_FAIRNESS_BAND_HOURS = 4;
+const GENERAL_FAIRNESS_BAND_HOURS = 2;
 const highsPromise = loadHighs();
 
 function normalizeShifts(shifts: AllocationShiftInput[]): OptimizerShift[] {
@@ -133,7 +135,29 @@ function addCoefficient(
 
 function formatNumber(value: number): string {
   if (Number.isInteger(value)) return String(value);
-  return String(Number(value.toFixed(8)));
+  return String(Number(value.toPrecision(15)));
+}
+
+// Minute totals and pair counts live on an integer lattice. Adding a tiny
+// epsilon to those bounds can confuse MIP presolve into removing legal integer
+// solutions. Fractional objectives receive 0.001 objective-unit slack (minutes
+// for minute objectives; 0.1 percentage point for the dimensionless ratio).
+const INTEGER_OBJECTIVES = new Set([
+  "coverage",
+  "staffedMinutes",
+  "capOverflow",
+  "afpMaxShortfall",
+  "afpTotalShortfall",
+  "limitedTotalShortfallMinutes",
+  "comparableRange",
+  "backToBack",
+  "placeholderMaxMinutes",
+  "placeholderRangeMinutes",
+]);
+function objectiveUpperBound(objective: string, value: number): number {
+  return INTEGER_OBJECTIVES.has(objective)
+    ? Math.round(Math.max(0, value))
+    : Math.max(0, value) + 0.001;
 }
 
 function formatExpression(
@@ -155,6 +179,7 @@ function buildLpModel(
   builder: ModelBuilder,
   objective: string,
   direction: "maximize" | "minimize",
+  fixedBinaries?: Map<string, number>,
 ): {
   lp: string;
   variableKeyBySolverName: Map<string, string>;
@@ -226,6 +251,16 @@ function buildLpModel(
       ` obj: ${objectiveExpression}`,
       "Subject To",
       ...rows,
+      ...(fixedBinaries
+        ? [
+            "Bounds",
+            ...Array.from(
+              fixedBinaries,
+              ([key, value]) =>
+                ` ${solverNameByVariableKey.get(key)} = ${value}`,
+            ),
+          ]
+        : []),
       ...(binaryRows.length > 0 ? ["Binary", ...binaryRows] : []),
       "End",
     ].join("\n"),
@@ -238,50 +273,117 @@ async function solveStage(
   objective: string,
   direction: "maximize" | "minimize",
 ): Promise<OptimizerSolution> {
-  const highs = await highsPromise;
-  const { lp, variableKeyBySolverName } = buildLpModel(
-    builder,
-    objective,
-    direction,
-  );
-  const rawSolution = highs.solve(lp, SOLVER_OPTIONS);
-  const status: OptimizerSolution["status"] =
-    rawSolution.Status === "Optimal"
-      ? "optimal"
-      : rawSolution.Status === "Infeasible"
-        ? "infeasible"
-        : rawSolution.Status === "Unbounded" ||
-            rawSolution.Status === "Primal infeasible or unbounded"
-          ? "unbounded"
-          : rawSolution.Status === "Time limit reached" ||
-              rawSolution.Status === "Iteration limit reached" ||
-              rawSolution.Status === "Bound on objective reached" ||
-              rawSolution.Status === "Target for objective reached"
-            ? "timedout"
-            : "failed";
-  const variables: [string, number][] = [];
-  for (const [solverName, column] of Object.entries(rawSolution.Columns)) {
-    if (!("Primal" in column)) continue;
-    const variableKey = variableKeyBySolverName.get(solverName);
-    if (!variableKey) continue;
-    variables.push([variableKey, column.Primal]);
+  try {
+    const highs = await highsPromise;
+    const { lp, variableKeyBySolverName } = buildLpModel(
+      builder,
+      objective,
+      direction,
+    );
+    let rawSolution = highs.solve(lp, SOLVER_OPTIONS);
+    // Recheck an infeasibility claim without presolve before giving up a feasible
+    // schedule. A later objective must never erase an earlier valid incumbent.
+    if (rawSolution.Status === "Infeasible") {
+      rawSolution = highs.solve(lp, { ...SOLVER_OPTIONS, presolve: "off" });
+    }
+    const status: OptimizerSolution["status"] =
+      rawSolution.Status === "Optimal"
+        ? "optimal"
+        : rawSolution.Status === "Infeasible"
+          ? "infeasible"
+          : rawSolution.Status === "Unbounded" ||
+              rawSolution.Status === "Primal infeasible or unbounded"
+            ? "unbounded"
+            : rawSolution.Status === "Time limit reached" ||
+                rawSolution.Status === "Iteration limit reached" ||
+                rawSolution.Status === "Bound on objective reached" ||
+                rawSolution.Status === "Target for objective reached"
+              ? "timedout"
+              : "failed";
+    const rawStatus = rawSolution.Status;
+    const fixedBinaries = new Map<string, number>();
+    let verified = false;
+    if (
+      (status === "optimal" || status === "timedout") &&
+      Number.isFinite(rawSolution.ObjectiveValue)
+    ) {
+      for (const [solverName, variableKey] of variableKeyBySolverName) {
+        if (!builder.binaries.has(variableKey)) continue;
+        const column = rawSolution.Columns[solverName];
+        const value = column && "Primal" in column ? column.Primal : NaN;
+        const rounded = Math.round(value);
+        if (
+          !Number.isFinite(value) ||
+          (rounded !== 0 && rounded !== 1) ||
+          Math.abs(value - rounded) > 1e-5
+        ) {
+          break;
+        }
+        fixedBinaries.set(variableKey, rounded);
+      }
+      if (fixedBinaries.size === builder.binaries.size) {
+        // The WASM wrapper rounds auxiliary values in its solution export. Rebuild
+        // them with the discrete schedule fixed, instead of trusting a finite
+        // objective or checking rounded continuous values against tiny epsilons.
+        const fixedModel = buildLpModel(
+          builder,
+          objective,
+          direction,
+          fixedBinaries,
+        );
+        const check = highs.solve(fixedModel.lp, {
+          ...SOLVER_OPTIONS,
+          presolve: "off",
+        });
+        if (
+          check.Status === "Optimal" &&
+          Number.isFinite(check.ObjectiveValue)
+        ) {
+          verified = true;
+          rawSolution = check;
+        }
+      }
+    }
+    const variables: [string, number][] = [];
+    for (const [solverName, column] of Object.entries(rawSolution.Columns)) {
+      if (!("Primal" in column)) continue;
+      const variableKey = variableKeyBySolverName.get(solverName);
+      if (!variableKey) continue;
+      variables.push([variableKey, column.Primal]);
+    }
+    return {
+      objective,
+      verified,
+      status,
+      result: rawSolution.ObjectiveValue,
+      variables,
+      rawStatus,
+    };
+  } catch (error) {
+    // A failed optional refinement retains the previously verified schedule.
+    // Required coverage/AFP stages still fail closed without a valid result.
+    return {
+      objective,
+      verified: false,
+      status: "failed",
+      result: NaN,
+      variables: [],
+      rawStatus: error instanceof Error ? error.message : "Solver exception",
+    };
   }
-  return {
-    status,
-    result: rawSolution.ObjectiveValue,
-    variables,
-    rawStatus: rawSolution.Status,
-  };
 }
 
 function optimalResult(solution: OptimizerSolution): number | null {
-  return solution.status === "optimal" && Number.isFinite(solution.result)
+  return solution.verified &&
+    solution.status === "optimal" &&
+    Number.isFinite(solution.result)
     ? solution.result
     : null;
 }
 
 function feasibleResult(solution: OptimizerSolution): number | null {
-  return (solution.status === "optimal" || solution.status === "timedout") &&
+  return solution.verified &&
+    (solution.status === "optimal" || solution.status === "timedout") &&
     Number.isFinite(solution.result)
     ? solution.result
     : null;
@@ -522,6 +624,8 @@ function buildDiagnostics({
     assignedShiftCountAfterRepair: assignments.length,
     highStdDevReasonCodes,
     optimizationMethod: "global_milp",
+    policyVersion: "2026-10-v2",
+    backToBackOptimalWithinFairness: optimizerStatus === "optimal",
     optimizerStatus,
     backToBackPairDays,
     optimalCoverageProven: true,
@@ -956,7 +1060,7 @@ export async function runGlobalAllocation(
         };
       }
       builder.constraints.set("capOverflow", {
-        max: Math.max(0, bestCapOverflow) + 1e-6,
+        max: objectiveUpperBound("capOverflow", bestCapOverflow),
       });
       prioritySolution = capOverflowSolution;
     }
@@ -978,7 +1082,7 @@ export async function runGlobalAllocation(
         boundedStages.push(`afp_max_shortfall_${maxShortfallSolution.status}`);
       }
       builder.constraints.set("afpMaxShortfall", {
-        max: Math.max(0, bestMaxShortfall) + 1e-6,
+        max: objectiveUpperBound("afpMaxShortfall", bestMaxShortfall),
       });
       prioritySolution = maxShortfallSolution;
 
@@ -1000,7 +1104,7 @@ export async function runGlobalAllocation(
         );
       }
       builder.constraints.set("afpTotalShortfall", {
-        max: Math.max(0, bestTotalShortfall) + 1e-6,
+        max: objectiveUpperBound("afpTotalShortfall", bestTotalShortfall),
       });
       prioritySolution = totalShortfallSolution;
     }
@@ -1059,6 +1163,61 @@ export async function runGlobalAllocation(
     }
 
     let finalSolution = prioritySolution;
+    const acceptFairnessResult = (
+      solution: OptimizerSolution,
+    ): number | null => {
+      const result = feasibleResult(solution);
+      if (result !== null && solution.status !== "optimal") {
+        boundedStages.push(solution.objective + "_" + solution.status);
+      }
+      return result;
+    };
+    const finishResult = (failureReason?: string): GlobalAllocationAttempt => {
+      if (failureReason)
+        boundedStages.push(failureReason + "_retained_incumbent");
+      const selectedKeys = selectedVariableKeys(finalSolution);
+      const selectedCandidates = candidates.filter((candidate) =>
+        selectedKeys.has(candidate.variableKey),
+      );
+      if (selectedCandidates.length !== bestCoverage) {
+        return {
+          ok: false,
+          reason: "solution_coverage_mismatch",
+        };
+      }
+      const selectedShiftIds = new Set(
+        selectedCandidates.map((candidate) => candidate.shift.id),
+      );
+      if (selectedShiftIds.size !== selectedCandidates.length) {
+        return {
+          ok: false,
+          reason: "solution_duplicate_shift",
+        };
+      }
+
+      return {
+        ok: true,
+        output: buildOutput({
+          respondents,
+          shifts,
+          selectedCandidates,
+          targetMinutesByRespondentId,
+          capacityLimitedRespondentIds: new Set(
+            targetResult.targets
+              .filter((target) => target.capacityLimited)
+              .map((target) => target.respondentId),
+          ),
+          targetCapacityShortfallMinutes: targetResult.capacityShortfallMinutes,
+          allowAfpOverCapForAvailableShifts:
+            input.allowAfpOverCapForAvailableShifts ?? false,
+          optimizerStatus:
+            boundedStages.length === 0
+              ? "optimal"
+              : `bounded:${boundedStages.join(",")}`,
+        }),
+      };
+    };
+
     let hasStrikeOverageVariables = false;
     const capacityLimitedRespondentIds = new Set(
       targetResult.targets
@@ -1381,19 +1540,19 @@ export async function runGlobalAllocation(
           builder,
           shortfallVariableKey,
           maxShortfallConstraintKey,
-          1 / targetMinutes,
+          1,
         );
         addCoefficient(
           builder,
           availabilityLimitedMaxShortfallRatioVariableKey,
           maxShortfallConstraintKey,
-          -1,
+          -targetMinutes,
         );
         addCoefficient(
           builder,
           shortfallVariableKey,
           "limitedTotalShortfallRatio",
-          1 / targetMinutes,
+          60 / targetMinutes,
         );
         addCoefficient(
           builder,
@@ -1418,14 +1577,13 @@ export async function runGlobalAllocation(
         "maxDeviation",
         "minimize",
       );
-      const bestProvenMaxDeviation = optimalResult(
+      const bestProvenMaxDeviation = acceptFairnessResult(
         bestProvenMaxDeviationSolution,
       );
       if (bestProvenMaxDeviation === null) {
-        return {
-          ok: false,
-          reason: `fairness_envelope_${bestProvenMaxDeviationSolution.status}`,
-        };
+        return finishResult(
+          `fairness_envelope_${bestProvenMaxDeviationSolution.status}`,
+        );
       }
       builder.constraints.set("maxDeviation", {
         max:
@@ -1433,7 +1591,7 @@ export async function runGlobalAllocation(
             0,
             bestProvenMaxDeviation,
             hoursToMinutes(GENERAL_FAIRNESS_BAND_HOURS),
-          ) + 1e-6,
+          ) + 0.001,
       });
       finalSolution = bestProvenMaxDeviationSolution;
     }
@@ -1447,15 +1605,16 @@ export async function runGlobalAllocation(
         "strikeMaxOverage",
         "minimize",
       );
-      const bestStrikeMaxOverage = optimalResult(strikeMaxOverageSolution);
+      const bestStrikeMaxOverage = acceptFairnessResult(
+        strikeMaxOverageSolution,
+      );
       if (bestStrikeMaxOverage === null) {
-        return {
-          ok: false,
-          reason: `strike_max_overage_${strikeMaxOverageSolution.status}`,
-        };
+        return finishResult(
+          `strike_max_overage_${strikeMaxOverageSolution.status}`,
+        );
       }
       builder.constraints.set("strikeMaxOverage", {
-        max: Math.max(0, bestStrikeMaxOverage) + 1e-6,
+        max: objectiveUpperBound("strikeMaxOverage", bestStrikeMaxOverage),
       });
       finalSolution = strikeMaxOverageSolution;
 
@@ -1464,15 +1623,16 @@ export async function runGlobalAllocation(
         "strikeTotalOverage",
         "minimize",
       );
-      const bestStrikeTotalOverage = optimalResult(strikeTotalOverageSolution);
+      const bestStrikeTotalOverage = acceptFairnessResult(
+        strikeTotalOverageSolution,
+      );
       if (bestStrikeTotalOverage === null) {
-        return {
-          ok: false,
-          reason: `strike_total_overage_${strikeTotalOverageSolution.status}`,
-        };
+        return finishResult(
+          `strike_total_overage_${strikeTotalOverageSolution.status}`,
+        );
       }
       builder.constraints.set("strikeTotalOverage", {
-        max: Math.max(0, bestStrikeTotalOverage) + 1e-6,
+        max: objectiveUpperBound("strikeTotalOverage", bestStrikeTotalOverage),
       });
       finalSolution = strikeTotalOverageSolution;
     }
@@ -1483,17 +1643,19 @@ export async function runGlobalAllocation(
         "limitedMaxShortfallRatio",
         "minimize",
       );
-      const bestLimitedMaxShortfallRatio = optimalResult(
+      const bestLimitedMaxShortfallRatio = acceptFairnessResult(
         limitedMaxShortfallRatioSolution,
       );
       if (bestLimitedMaxShortfallRatio === null) {
-        return {
-          ok: false,
-          reason: `limited_max_shortfall_ratio_${limitedMaxShortfallRatioSolution.status}`,
-        };
+        return finishResult(
+          `limited_max_shortfall_ratio_${limitedMaxShortfallRatioSolution.status}`,
+        );
       }
       builder.constraints.set("limitedMaxShortfallRatio", {
-        max: Math.max(0, bestLimitedMaxShortfallRatio) + 1e-6,
+        max: objectiveUpperBound(
+          "limitedMaxShortfallRatio",
+          bestLimitedMaxShortfallRatio,
+        ),
       });
       finalSolution = limitedMaxShortfallRatioSolution;
 
@@ -1502,17 +1664,19 @@ export async function runGlobalAllocation(
         "limitedTotalShortfallRatio",
         "minimize",
       );
-      const bestLimitedTotalShortfallRatio = optimalResult(
+      const bestLimitedTotalShortfallRatio = acceptFairnessResult(
         limitedTotalShortfallRatioSolution,
       );
       if (bestLimitedTotalShortfallRatio === null) {
-        return {
-          ok: false,
-          reason: `limited_total_shortfall_ratio_${limitedTotalShortfallRatioSolution.status}`,
-        };
+        return finishResult(
+          `limited_total_shortfall_ratio_${limitedTotalShortfallRatioSolution.status}`,
+        );
       }
       builder.constraints.set("limitedTotalShortfallRatio", {
-        max: Math.max(0, bestLimitedTotalShortfallRatio) + 1e-6,
+        max: objectiveUpperBound(
+          "limitedTotalShortfallRatio",
+          bestLimitedTotalShortfallRatio,
+        ),
       });
       finalSolution = limitedTotalShortfallRatioSolution;
 
@@ -1521,17 +1685,19 @@ export async function runGlobalAllocation(
         "limitedTotalShortfallMinutes",
         "minimize",
       );
-      const bestLimitedTotalShortfallMinutes = optimalResult(
+      const bestLimitedTotalShortfallMinutes = acceptFairnessResult(
         limitedTotalShortfallMinutesSolution,
       );
       if (bestLimitedTotalShortfallMinutes === null) {
-        return {
-          ok: false,
-          reason: `limited_total_shortfall_minutes_${limitedTotalShortfallMinutesSolution.status}`,
-        };
+        return finishResult(
+          `limited_total_shortfall_minutes_${limitedTotalShortfallMinutesSolution.status}`,
+        );
       }
       builder.constraints.set("limitedTotalShortfallMinutes", {
-        max: Math.max(0, bestLimitedTotalShortfallMinutes) + 1e-6,
+        max: objectiveUpperBound(
+          "limitedTotalShortfallMinutes",
+          bestLimitedTotalShortfallMinutes,
+        ),
       });
       finalSolution = limitedTotalShortfallMinutesSolution;
     }
@@ -1542,14 +1708,13 @@ export async function runGlobalAllocation(
         "comparableMaxDeviation",
         "minimize",
       );
-      const bestComparableMaxDeviation = optimalResult(
+      const bestComparableMaxDeviation = acceptFairnessResult(
         comparableEnvelopeSolution,
       );
       if (bestComparableMaxDeviation === null) {
-        return {
-          ok: false,
-          reason: `comparable_fairness_envelope_${comparableEnvelopeSolution.status}`,
-        };
+        return finishResult(
+          `comparable_fairness_envelope_${comparableEnvelopeSolution.status}`,
+        );
       }
       builder.constraints.set("comparableMaxDeviation", {
         max:
@@ -1557,7 +1722,7 @@ export async function runGlobalAllocation(
             0,
             bestComparableMaxDeviation,
             hoursToMinutes(GENERAL_FAIRNESS_BAND_HOURS),
-          ) + 1e-6,
+          ) + 0.001,
       });
       finalSolution = comparableEnvelopeSolution;
 
@@ -1569,14 +1734,13 @@ export async function runGlobalAllocation(
         "comparableMaxShortfall",
         "minimize",
       );
-      const bestComparableShortfall = optimalResult(
+      const bestComparableShortfall = acceptFairnessResult(
         comparableShortfallSolution,
       );
       if (bestComparableShortfall === null) {
-        return {
-          ok: false,
-          reason: `comparable_shortfall_${comparableShortfallSolution.status}`,
-        };
+        return finishResult(
+          `comparable_shortfall_${comparableShortfallSolution.status}`,
+        );
       }
       builder.constraints.set("comparableMaxShortfall", {
         max:
@@ -1584,7 +1748,7 @@ export async function runGlobalAllocation(
             0,
             bestComparableShortfall,
             hoursToMinutes(GENERAL_FAIRNESS_BAND_HOURS),
-          ) + 1e-6,
+          ) + 0.001,
       });
       finalSolution = comparableShortfallSolution;
 
@@ -1593,12 +1757,13 @@ export async function runGlobalAllocation(
         "comparableMaxOverage",
         "minimize",
       );
-      const bestComparableOverage = optimalResult(comparableOverageSolution);
+      const bestComparableOverage = acceptFairnessResult(
+        comparableOverageSolution,
+      );
       if (bestComparableOverage === null) {
-        return {
-          ok: false,
-          reason: `comparable_overage_${comparableOverageSolution.status}`,
-        };
+        return finishResult(
+          `comparable_overage_${comparableOverageSolution.status}`,
+        );
       }
       builder.constraints.set("comparableMaxOverage", {
         max:
@@ -1606,7 +1771,7 @@ export async function runGlobalAllocation(
             0,
             bestComparableOverage,
             hoursToMinutes(GENERAL_FAIRNESS_BAND_HOURS),
-          ) + 1e-6,
+          ) + 0.001,
       });
       finalSolution = comparableOverageSolution;
     }
@@ -1617,15 +1782,14 @@ export async function runGlobalAllocation(
         "comparableRange",
         "minimize",
       );
-      const bestComparableRange = optimalResult(comparableRangeSolution);
+      const bestComparableRange = acceptFairnessResult(comparableRangeSolution);
       if (bestComparableRange === null) {
-        return {
-          ok: false,
-          reason: `comparable_range_${comparableRangeSolution.status}`,
-        };
+        return finishResult(
+          `comparable_range_${comparableRangeSolution.status}`,
+        );
       }
       builder.constraints.set("comparableRange", {
-        max: Math.max(0, bestComparableRange) + 1e-6,
+        max: objectiveUpperBound("comparableRange", bestComparableRange),
       });
       finalSolution = comparableRangeSolution;
     }
@@ -1646,13 +1810,98 @@ export async function runGlobalAllocation(
           );
         }
         builder.constraints.set("comparableTotalDeviation", {
-          max: Math.max(0, bestComparableTotalDeviation) + 1e-6,
+          max: objectiveUpperBound(
+            "comparableTotalDeviation",
+            bestComparableTotalDeviation,
+          ),
         });
         finalSolution = comparableTotalDeviationSolution;
       } else {
         boundedStages.push(
           `comparable_total_deviation_${comparableTotalDeviationSolution.status}_no_incumbent`,
         );
+      }
+    }
+
+    // AFP placeholders are a separate workload from normal capped hours. Capped
+    // AFP respondents are outside the General fairness pool, so that pool's
+    // objectives cannot prevent every placeholder landing on one person.
+    // Balance only the explicitly selected AFP pool, while preserving every
+    // normal-cap, availability, coverage, and earlier fairness constraint.
+    const placeholderPool = respondents.filter(
+      (respondent) =>
+        respondent.category === "AFP" && respondent.allowNoAvailabilityFallback,
+    );
+    const placeholderCandidates = candidates.filter(
+      (candidate) => candidate.isNoAvailabilityPlaceholder,
+    );
+    if (placeholderPool.length > 1 && placeholderCandidates.length > 0) {
+      const maxPlaceholderVariable = "placeholder:maxMinutes";
+      const rangePlaceholderVariable = "placeholder:rangeMinutes";
+      for (const respondent of placeholderPool) {
+        const maxConstraint = `placeholderMax:${respondent.id}`;
+        builder.constraints.set(maxConstraint, { max: 0 });
+        addCoefficient(builder, maxPlaceholderVariable, maxConstraint, -1);
+        for (const candidate of placeholderCandidates.filter(
+          (entry) => entry.respondent.id === respondent.id,
+        )) {
+          addCoefficient(
+            builder,
+            candidate.variableKey,
+            maxConstraint,
+            hoursToMinutes(candidate.shift.durationHours),
+          );
+        }
+        for (const other of placeholderPool) {
+          if (respondent.id === other.id) continue;
+          const rangeConstraint = `placeholderRange:${respondent.id}:${other.id}`;
+          builder.constraints.set(rangeConstraint, { max: 0 });
+          addCoefficient(
+            builder,
+            rangePlaceholderVariable,
+            rangeConstraint,
+            -1,
+          );
+          for (const candidate of placeholderCandidates) {
+            if (
+              candidate.respondent.id !== respondent.id &&
+              candidate.respondent.id !== other.id
+            )
+              continue;
+            addCoefficient(
+              builder,
+              candidate.variableKey,
+              rangeConstraint,
+              hoursToMinutes(candidate.shift.durationHours) *
+                (candidate.respondent.id === respondent.id ? 1 : -1),
+            );
+          }
+        }
+      }
+      addCoefficient(
+        builder,
+        maxPlaceholderVariable,
+        "placeholderMaxMinutes",
+        1,
+      );
+      addCoefficient(
+        builder,
+        rangePlaceholderVariable,
+        "placeholderRangeMinutes",
+        1,
+      );
+      for (const objective of [
+        "placeholderMaxMinutes",
+        "placeholderRangeMinutes",
+      ]) {
+        const solution = await solveStage(builder, objective, "minimize");
+        const best = acceptFairnessResult(solution);
+        if (best === null)
+          return finishResult(`${objective}_${solution.status}`);
+        builder.constraints.set(objective, {
+          max: objectiveUpperBound(objective, best),
+        });
+        finalSolution = solution;
       }
     }
 
@@ -1664,16 +1913,13 @@ export async function runGlobalAllocation(
       );
       const bestBackToBack = feasibleResult(backToBackSolution);
       if (bestBackToBack === null) {
-        return {
-          ok: false,
-          reason: `back_to_back_${backToBackSolution.status}`,
-        };
+        return finishResult(`back_to_back_${backToBackSolution.status}`);
       }
       if (backToBackSolution.status !== "optimal") {
         boundedStages.push(`back_to_back_${backToBackSolution.status}`);
       }
       builder.constraints.set("backToBack", {
-        max: Math.max(0, bestBackToBack) + 1e-6,
+        max: objectiveUpperBound("backToBack", bestBackToBack),
       });
       finalSolution = backToBackSolution;
     }
@@ -1692,7 +1938,7 @@ export async function runGlobalAllocation(
           );
         }
         builder.constraints.set("totalDeviation", {
-          max: Math.max(0, bestTotalDeviation) + 1e-6,
+          max: objectiveUpperBound("totalDeviation", bestTotalDeviation),
         });
         finalSolution = totalDeviationSolution;
       } else {
@@ -1702,47 +1948,7 @@ export async function runGlobalAllocation(
       }
     }
 
-    const selectedKeys = selectedVariableKeys(finalSolution);
-    const selectedCandidates = candidates.filter((candidate) =>
-      selectedKeys.has(candidate.variableKey),
-    );
-    if (selectedCandidates.length !== bestCoverage) {
-      return {
-        ok: false,
-        reason: "solution_coverage_mismatch",
-      };
-    }
-    const selectedShiftIds = new Set(
-      selectedCandidates.map((candidate) => candidate.shift.id),
-    );
-    if (selectedShiftIds.size !== selectedCandidates.length) {
-      return {
-        ok: false,
-        reason: "solution_duplicate_shift",
-      };
-    }
-
-    return {
-      ok: true,
-      output: buildOutput({
-        respondents,
-        shifts,
-        selectedCandidates,
-        targetMinutesByRespondentId,
-        capacityLimitedRespondentIds: new Set(
-          targetResult.targets
-            .filter((target) => target.capacityLimited)
-            .map((target) => target.respondentId),
-        ),
-        targetCapacityShortfallMinutes: targetResult.capacityShortfallMinutes,
-        allowAfpOverCapForAvailableShifts:
-          input.allowAfpOverCapForAvailableShifts ?? false,
-        optimizerStatus:
-          boundedStages.length === 0
-            ? "optimal"
-            : `bounded:${boundedStages.join(",")}`,
-      }),
-    };
+    return finishResult();
   } catch (error) {
     return {
       ok: false,

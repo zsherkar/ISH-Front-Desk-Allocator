@@ -13,6 +13,7 @@ import {
 } from "./allocationCore.js";
 import { safeDisplayName } from "./inputValidation.js";
 import { runGlobalAllocation } from "./allocationOptimizer.js";
+import { assertValidAllocationInput, assertValidAllocationResult } from "./allocationValidation.js";
 
 export interface AllocationOptions {
   surveyId: number;
@@ -105,6 +106,8 @@ export interface PureAllocationOutput {
 }
 
 export interface FairnessDiagnostics {
+  policyVersion?: "2026-10-v2";
+  backToBackOptimalWithinFairness?: boolean;
   nonPenalizedGeneralMeanHours: number;
   nonPenalizedGeneralMedianHours: number;
   nonPenalizedGeneralMinHours: number;
@@ -1031,15 +1034,25 @@ function runGreedyAllocation(input: PureAllocationInput): PureAllocationOutput {
   };
 }
 
-export async function runPureAllocation(input: PureAllocationInput): Promise<PureAllocationOutput> {
+export async function runPureAllocation(
+  input: PureAllocationInput,
+): Promise<PureAllocationOutput> {
+  assertValidAllocationInput(input);
   const globalAttempt = await runGlobalAllocation(input);
-  if (globalAttempt.ok) return globalAttempt.output;
+  if (!globalAttempt.ok)
+    throw new AllocationOptimizationError(globalAttempt.reason);
+  assertValidAllocationResult(input, globalAttempt.output);
+  return globalAttempt.output;
+}
 
-  const fallback = runGreedyAllocation(input);
-  fallback.fairnessDiagnostics.optimizationMethod = "greedy_fallback";
-  fallback.fairnessDiagnostics.optimizerStatus = globalAttempt.reason;
-  fallback.fairnessDiagnostics.optimalCoverageProven = false;
-  return fallback;
+export class AllocationOptimizationError extends Error {
+  readonly code = "ALLOCATION_OPTIMIZATION_FAILED";
+  constructor(readonly reason: string) {
+    super(
+      `The allocator could not verify a schedule (${reason}). Your saved allocation has not been changed.`,
+    );
+    this.name = "AllocationOptimizationError";
+  }
 }
 
 export async function runAllocation(options: AllocationOptions): Promise<PureAllocationOutput> {

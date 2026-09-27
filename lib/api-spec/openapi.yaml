@@ -971,6 +971,7 @@ components:
             - engine_afp_cap_overflow_available
             - manual
             - blank
+            - not_recorded
         isManual:
           type: boolean
         isEmergency:
@@ -1211,6 +1212,8 @@ components:
     AllocationResult:
       type: object
       properties:
+        runSummary:
+          $ref: "#/components/schemas/AllocationRunSummary"
         surveyId:
           type: integer
         allocations:
@@ -1462,9 +1465,60 @@ components:
         - source
         - explanationCodes
 
+    AllocationRunSettings:
+      type: ["object", "null"]
+      properties:
+        allowNoAvailabilityAfpPlaceholders:
+          type: boolean
+        noAvailabilityFallbackAfpIds:
+          type: array
+          items:
+            type: integer
+        afpRespondentIds:
+          type: array
+          items:
+            type: integer
+        allowAfpOverCapForAvailableShifts:
+          type: boolean
+        preserveManualLocks:
+          type: boolean
+      required: [allowNoAvailabilityAfpPlaceholders, noAvailabilityFallbackAfpIds, afpRespondentIds, allowAfpOverCapForAvailableShifts, preserveManualLocks]
+
+    AllocationRunSummary:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [current, stale, not_recorded]
+        savedAt:
+          type: ["string", "null"]
+        policyVersion:
+          type: ["string", "null"]
+        optimizerStatus:
+          type: string
+        optimizationMethod:
+          type: string
+        optimalCoverageProven:
+          type: boolean
+        backToBackPairDays:
+          type: ["integer", "null"]
+        backToBackOptimalWithinFairness:
+          type: boolean
+        warnings:
+          type: array
+          items:
+            type: string
+        settings:
+          $ref: "#/components/schemas/AllocationRunSettings"
+      required: [status, savedAt, policyVersion, optimizerStatus, optimizationMethod, optimalCoverageProven, backToBackPairDays, backToBackOptimalWithinFairness, warnings, settings]
+
     AllocationDryRunRespondentPlan:
       type: object
       properties:
+        normalHours:
+          type: number
+        noAvailabilityPlaceholderHours:
+          type: number
         respondentId:
           type: integer
         name:
@@ -1516,6 +1570,10 @@ components:
     AllocationDryRunResult:
       type: object
       properties:
+        policyVersion:
+          type: string
+        backToBackOptimalWithinFairness:
+          type: boolean
         surveyId:
           type: integer
         dryRun:
@@ -1609,6 +1667,8 @@ components:
     AllocationStats:
       type: object
       properties:
+        runSummary:
+          $ref: "#/components/schemas/AllocationRunSummary"
         meanHours:
           type: number
         averageHours:
