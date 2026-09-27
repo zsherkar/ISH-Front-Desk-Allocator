@@ -29,7 +29,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import {
   ArrowLeft,
   Lock,
@@ -298,6 +298,7 @@ export function AdminSurveyDetail() {
   const [noAvailabilityFallbackAfpIds, setNoAvailabilityFallbackAfpIds] = useState<Set<number>>(new Set());
   const [allowAfpOverCapForAvailableShifts, setAllowAfpOverCapForAvailableShifts] = useState(false);
   const [preserveManualLocks, setPreserveManualLocks] = useState(true);
+  const [showRunAllocationConfirmation, setShowRunAllocationConfirmation] = useState(false);
   const [showCalendar, setShowCalendar] = useState(false);
   const [selectedRespondentId, setSelectedRespondentId] = useState<number | null>(null);
   const [selectedResponse, setSelectedResponse] = useState<any | null>(null);
@@ -524,7 +525,8 @@ export function AdminSurveyDetail() {
     }
   };
 
-  const handleRunAllocation = () => {
+  const requestAllocationRun = (confirmed: boolean) => {
+    if (runAllocMutation.isPending) return;
     if (survey?.status !== "closed") {
       alert("Survey must be closed before running allocation.");
       return;
@@ -533,12 +535,11 @@ export function AdminSurveyDetail() {
       alert("Select at least one respondent to include in allocation.");
       return;
     }
-    if (
-      hasExistingAllocations &&
-      !confirm("Run a new allocation? The current schedule will be saved as a recovery point first.")
-    ) {
+    if (hasExistingAllocations && !confirmed) {
+      setShowRunAllocationConfirmation(true);
       return;
     }
+    setShowRunAllocationConfirmation(false);
     runAllocMutation.mutate(
       {
         id: surveyId,
@@ -559,6 +560,7 @@ export function AdminSurveyDetail() {
       { onSuccess: () => setShowCalendar(true), onError: (error) => alert(error instanceof Error ? error.message : "Allocation could not be validated. The saved allocation was unchanged.") },
     );
   };
+  const handleRunAllocation = () => requestAllocationRun(false);
 
   const handleRestoreAllocationSnapshot = async (snapshot: NonNullable<typeof allocationSnapshots>[number]) => {
     const createdAt = format(new Date(snapshot.createdAt), "MMM d, yyyy h:mm a");
@@ -2238,6 +2240,35 @@ export function AdminSurveyDetail() {
           )}
         </TabsContent>
       </Tabs>
+
+      <Dialog open={showRunAllocationConfirmation} onOpenChange={setShowRunAllocationConfirmation}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Run a new allocation?</DialogTitle>
+            <DialogDescription>
+              The current schedule will be saved as a recovery point first.
+            </DialogDescription>
+          </DialogHeader>
+          {allowNoAvailabilityAfpPlaceholders ? (
+            <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm">
+              <p className="font-medium text-slate-900">Chosen AFP placeholder recipients</p>
+              <p className="mt-1 text-slate-700">
+                {Array.from(noAvailabilityFallbackAfpIds).map((respondentId) => {
+                  const response = responses?.find((entry) => entry.respondentId === respondentId);
+                  return response ? displayRespondentName(response) : `Respondent ${respondentId}`;
+                }).join(", ") || "None selected"}
+              </p>
+              <p className="mt-2 text-slate-600">Placeholder hours are separate from normal AFP caps.</p>
+            </div>
+          ) : (
+            <p className="text-sm text-slate-600">AFP placeholders are disabled for this run.</p>
+          )}
+          <DialogFooter className="gap-2">
+            <Button variant="outline" onClick={() => setShowRunAllocationConfirmation(false)}>Cancel</Button>
+            <Button disabled={runAllocMutation.isPending} onClick={() => requestAllocationRun(true)}>Run new allocation</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog
         open={selectedResponse !== null}
